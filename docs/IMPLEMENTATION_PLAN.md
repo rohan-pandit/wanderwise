@@ -51,6 +51,8 @@ Source of truth for *why* is `PROJECT_BRIEF.md`. This doc is the *how* and *in w
 
 **Not started — this is the next phase.** Nothing below is implemented; the items are pre-loaded with the decisions/discussion from the planning conversation that preceded it, so the next session doesn't have to re-derive them.
 
+**Start here:** (1) confirm the model-selection item below with the user before writing any model-client code — it was asked once and dismissed unanswered, so don't default to the recommendation silently; (2) then build the structured Zod schemas (first bullet) — pure TypeScript, no model calls, fully unit-testable, same low-risk-first pattern Phase 2 used for its deterministic services.
+
 - [ ] Structured output schemas (Zod or similar) for requirement/preference/decision extraction
 - [ ] Intake and Revision Interpreter agent
 - [ ] Clarification behavior — **design discussed, not yet built:** don't hand-author a question-ordering decision tree. `PROJECT_BRIEF.md` §12 already models this as a single `request_clarification(missing_fields, reason)` tool call the agent makes each turn based on current trip state — the agent decides *what* to ask and *how to phrase it*; only the completeness check (which fields are required before `requirements_ready`) should be deterministic code, not the agent's call. Revisit only if scripted/predictable question ordering turns out to matter more than natural conversation (e.g. for demo reliability) than assumed here.
