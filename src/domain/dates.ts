@@ -17,6 +17,13 @@ export class InvalidDateRangeError extends Error {
   }
 }
 
+export class InvalidDateError extends Error {
+  constructor(isoDate: string) {
+    super(`Invalid ISO date string: "${isoDate}"`);
+    this.name = "InvalidDateError";
+  }
+}
+
 export function dateRange(start: string, end: string): DateRange {
   const range = { start, end };
   if (toEpochDay(end) < toEpochDay(start)) {
@@ -44,6 +51,25 @@ export function rangesOverlap(a: DateRange, b: DateRange): boolean {
   return toEpochDay(a.start) <= toEpochDay(b.end) && toEpochDay(b.start) <= toEpochDay(a.end);
 }
 
+/**
+ * The local calendar date (YYYY-MM-DD) a UTC timestamp falls on in `timeZone`.
+ * Use this instead of slicing an ISO string when a timestamptz has been
+ * normalized to UTC and you need the date as the event's own timezone would
+ * display it (e.g. a flight's local departure date).
+ */
+export function localDateInTimeZone(isoTimestamp: string, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(isoTimestamp));
+}
+
 function toEpochDay(isoDate: string): number {
-  return Math.floor(Date.parse(`${isoDate}T00:00:00Z`) / 86_400_000);
+  const epochMs = Date.parse(`${isoDate}T00:00:00Z`);
+  if (Number.isNaN(epochMs)) {
+    throw new InvalidDateError(isoDate);
+  }
+  return Math.floor(epochMs / 86_400_000);
 }

@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { cache } from "react";
 import type { Database } from "./database.types";
 
 /**
@@ -7,8 +8,14 @@ import type { Database } from "./database.types";
  * Handlers. Uses the anon key + the caller's session cookie, so RLS applies
  * exactly as it would for that authenticated user — this is NOT the
  * service-role client.
+ *
+ * Wrapped in React's `cache()` so every Server Component in the same
+ * request shares one client (and one `getUser()` session lookup) instead
+ * of each caller paying for its own — this matters more as later phases
+ * add more components (chat panel, itinerary panel, sidebar, ...) that
+ * each need a client.
  */
-export async function createClient() {
+export const createClient = cache(async () => {
   const cookieStore = await cookies();
 
   return createServerClient<Database>(
@@ -32,4 +39,4 @@ export async function createClient() {
       },
     },
   );
-}
+});

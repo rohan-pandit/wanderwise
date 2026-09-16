@@ -1,11 +1,14 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/config/supabase/database.types";
+import { CURRENT_INVENTORY_VERSION } from "@/src/domain/inventory";
+import { hasValues, unwrapOrThrow } from "./shared";
 
 export type Destination = Database["public"]["Tables"]["destinations"]["Row"];
 
 export interface DestinationFilter {
   vibeTags?: string[];
   maxDailyCostUsd?: number;
+  inventoryVersion?: number;
 }
 
 /**
@@ -18,29 +21,32 @@ export async function findDestinations(
   supabase: SupabaseClient<Database>,
   filter: DestinationFilter = {},
 ): Promise<Destination[]> {
-  let query = supabase.from("destinations").select("*");
+  let query = supabase
+    .from("destinations")
+    .select("*")
+    .eq("inventory_version", filter.inventoryVersion ?? CURRENT_INVENTORY_VERSION);
 
-  if (filter.vibeTags && filter.vibeTags.length > 0) {
+  if (hasValues(filter.vibeTags)) {
     query = query.overlaps("vibe_tags", filter.vibeTags);
   }
   if (filter.maxDailyCostUsd !== undefined) {
     query = query.lte("estimated_daily_cost_usd", filter.maxDailyCostUsd);
   }
 
-  const { data, error } = await query;
-  if (error) throw error;
-  return data;
+  return unwrapOrThrow(query);
 }
 
 export async function getDestinationByName(
   supabase: SupabaseClient<Database>,
   name: string,
+  inventoryVersion: number = CURRENT_INVENTORY_VERSION,
 ): Promise<Destination | null> {
-  const { data, error } = await supabase
-    .from("destinations")
-    .select("*")
-    .eq("name", name)
-    .maybeSingle();
-  if (error) throw error;
-  return data;
+  return unwrapOrThrow(
+    supabase
+      .from("destinations")
+      .select("*")
+      .eq("name", name)
+      .eq("inventory_version", inventoryVersion)
+      .maybeSingle(),
+  );
 }

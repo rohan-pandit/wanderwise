@@ -2,13 +2,27 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/src/config/supabase/server";
 
 /**
+ * True if `path` is safe to redirect to after sign-in: a same-origin,
+ * relative path. Rejects protocol-relative ("//evil.com") and absolute
+ * URLs so an attacker-controlled redirectTo query param can't send a
+ * successfully-authenticated user off-site (open redirect).
+ */
+function isSafeRedirectPath(path: string): boolean {
+  return path.startsWith("/") && !path.startsWith("//") && !path.includes("://");
+}
+
+/**
  * Completes the Supabase magic-link sign-in: exchanges the emailed code
  * for a session, then redirects into the app.
  */
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
-  const redirectTo = searchParams.get("redirectTo") ?? "/app";
+  const requestedRedirect = searchParams.get("redirectTo");
+  const redirectTo =
+    requestedRedirect && isSafeRedirectPath(requestedRedirect)
+      ? requestedRedirect
+      : "/app";
 
   if (code) {
     const supabase = await createClient();

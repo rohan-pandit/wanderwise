@@ -107,3 +107,31 @@ Entry format and rationale in `PROJECT_BRIEF.md` §17.4. Updated per work sessio
 **Verification:** `npm test` (17/17 passing), `npx tsc --noEmit` (clean), `npm run build` (clean), `npm run lint` (clean). Also spot-checked the repositories against the live hosted data with a throwaway script (not committed): confirmed inventory-version filtering separates the stale v0 fixtures correctly, red-eye exclusion correctly returns zero results for the one route where every flight is a red-eye, rating and closed-day filters return the expected rows.
 
 **Next up:** Phase 2 — deterministic services (budget engine, hard-constraint engine, candidate combination, itinerary feasibility engine, inventory-reference validation, state-transition validation), all unit-tested, no LLM involved yet.
+
+---
+
+## 2026-09-16 — Post-Phase-1 review and fixes
+
+**What I built:** Nothing new-feature-wise — a full code review of everything built in Phases 0-1 (four review angles: correctness/cross-file, reuse/simplification, efficiency/altitude, CLAUDE.md conventions), then fixed everything it found. This is now a standing step after every phase, not a one-off.
+
+**Why:** Requested explicitly — catch bloat, hacky code, and scalability gaps early, while they're cheap to fix, rather than letting them compound as more phases build on top.
+
+**What the review found and I fixed (10 items):**
+1. **`findDestinations`/`findActivities`/`findHotels` didn't filter by `inventory_version`** (only `findFlights` did) — the stale `v0` fixtures seeded specifically to test this were being returned as live data. Added `src/domain/inventory.ts` (`CURRENT_INVENTORY_VERSION`) and defaulted all four repos to it. Also fixed `getDestinationByName`, which — verified live — was an actual crash bug: two same-named Lisbon rows (current + stale) made `.maybeSingle()` throw "multiple rows returned."
+2. **Flight date search had a timezone bug**: it compared a UTC day-boundary window against `departure_time`, which is stored/returned in UTC without preserving each flight's local offset. Fixed by widening the DB query ±1 day and filtering precisely by local calendar date (new `localDateInTimeZone` helper in `src/domain/dates.ts`, using `departure_time_zone`). Verified live: the old approach found 1 matching flight for NY→Lisbon on 2026-10-05, the fix correctly finds 2.
+3. **Open redirect in the auth callback** — `redirectTo` from the query string was concatenated into the post-login redirect with no validation. Added `isSafeRedirectPath()` (same-origin relative paths only).
+4. **Auth gate was an allowlist-by-prefix (`pathname.startsWith("/app")`)**, not deny-by-default — a future route outside `/app` (e.g. an API endpoint) wouldn't be protected unless someone remembered to prefix it. Flipped `proxy.ts` to a `PUBLIC_PATHS` allowlist (`/`, `/auth/callback`) with everything else protected by default.
+5. **`dateRange` silently produced `NaN` for unparseable date strings** instead of throwing, because `NaN < NaN` is always `false`. Added `InvalidDateError` and an explicit `Number.isNaN` check in `toEpochDay`.
+6. **Trip detail page couldn't distinguish a real DB error from "trip doesn't exist"** — both rendered the same 404. Now checks for PostgREST's `PGRST116` ("no rows") specifically before calling `notFound()`; any other error is rethrown.
+7. **Sign-out had no error handling** — `signOut()`'s returned `error` was ignored, so a failure silently skipped the redirect with no feedback. Now checks the error and shows an inline message.
+8. **Duplicate auth check per `/app` request** — `proxy.ts` and `AppLayout` both called `getUser()`. Removed the layout's redundant check; `proxy.ts` is now the sole auth gate, RLS remains the data-level defense in depth (the same pattern the trip detail page already used).
+9. **No per-request memoization of the Supabase server client** — wrapped `createClient()` in `src/config/supabase/server.ts` with React's `cache()`, the standard Supabase/Next.js SSR pattern, so multiple Server Components in one request share a single client and session lookup.
+10. **Filter-building and error-unwrapping logic was copy-pasted across all four repositories** — extracted `src/repositories/shared.ts` (`unwrapOrThrow`, `hasValues`), used by all four.
+
+**Decisions made:** Made this review + fix + retest cycle a standing part of "phase done," not just a one-time cleanup — saved as a standing preference so it happens automatically after every future phase without being asked again.
+
+**What didn't work / dead ends:** After the fixes, the dev server's browser tab showed a stale "Expected ',', got '<eof>'" parse error on `src/config/supabase/server.ts` that persisted through a server restart and a `.next` cache wipe — but `tsc --noEmit`, lint, `next build`, and the actual server logs (real requests returning 200) all confirmed the file was fine. Traced it to a stale WebSocket/HMR artifact in the specific browser tab that had been open during the edit; closing that tab and opening a fresh one cleared it immediately. Not a real bug — noting it in case it recurs, so it's not mistaken for one next time.
+
+**Verification:** `npm test` (19/19 passing, 2 new test cases for the date-validation and timezone fixes), `npx tsc --noEmit` (clean), `npm run build` (clean, and `/app` is now statically optimizable since it no longer does per-request auth work), `npm run lint` (clean). All three DB-touching fixes (inventory-version filtering, `getDestinationByName`, flight timezone) spot-verified against the live hosted data with a throwaway script (not committed).
+
+**Next up:** Phase 2 — deterministic services, unchanged from the prior plan.

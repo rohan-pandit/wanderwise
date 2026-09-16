@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   dateRange,
   daysBetween,
+  InvalidDateError,
   InvalidDateRangeError,
   isWithinRange,
+  localDateInTimeZone,
   nightsBetween,
   rangesOverlap,
 } from "./dates";
@@ -55,5 +57,20 @@ describe("dates", () => {
     const a = dateRange("2026-10-01", "2026-10-06");
     const b = dateRange("2026-10-06", "2026-10-10");
     expect(rangesOverlap(a, b)).toBe(true);
+  });
+
+  it("rejects an unparseable date string instead of silently producing NaN", () => {
+    expect(() => dateRange("2026-10-01", "not-a-date")).toThrow(InvalidDateError);
+    expect(() => dateRange("not-a-date", "2026-10-01")).toThrow(InvalidDateError);
+  });
+
+  it("computes the local calendar date a UTC timestamp falls on in a given timezone", () => {
+    // 2026-10-05T20:10:00-04:00 is 2026-10-06T00:10:00Z
+    expect(
+      localDateInTimeZone("2026-10-06T00:10:00Z", "America/New_York"),
+    ).toBe("2026-10-05");
+    expect(localDateInTimeZone("2026-10-06T00:10:00Z", "UTC")).toBe(
+      "2026-10-06",
+    );
   });
 });

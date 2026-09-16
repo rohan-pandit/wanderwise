@@ -1,17 +1,22 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/config/supabase/database.types";
+import { CURRENT_INVENTORY_VERSION } from "@/src/domain/inventory";
+import { localDateInTimeZone } from "@/src/domain/dates";
+import { unwrapOrThrow } from "./shared";
 
 export type Flight = Database["public"]["Tables"]["flights"]["Row"];
 
 export interface FlightSearchFilter {
   origin: string;
   destination: string;
-  /** ISO date (YYYY-MM-DD) — matches departures on this calendar day. */
+  /** ISO date (YYYY-MM-DD) — matches departures on this calendar day, in the flight's own local timezone. */
   departureDate?: string;
   maxPriceUsd?: number;
   excludeRedEye?: boolean;
   inventoryVersion?: number;
 }
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Relational query layer backing the `search_flights` model-facing tool
@@ -27,12 +32,21 @@ export async function findFlights(
     .from("flights")
     .select("*")
     .eq("origin", filter.origin)
-    .eq("destination", filter.destination);
+    .eq("destination", filter.destination)
+    .eq("inventory_version", filter.inventoryVersion ?? CURRENT_INVENTORY_VERSION);
 
   if (filter.departureDate) {
-    const start = `${filter.departureDate}T00:00:00Z`;
-    const end = `${filter.departureDate}T23:59:59Z`;
-    query = query.gte("departure_time", start).lte("departure_time", end);
+    // departure_time is a timestamptz, stored and returned normalized to
+    // UTC — it does not preserve the flight's local offset, so a UTC
+    // day-boundary query can miss (or wrongly include) flights near
+    // midnight depending on departure_time_zone. Widen the DB-level query
+    // by a day on each side (safely covers any real-world UTC offset,
+    // -12..+14) and filter to the exact local calendar date below, in
+    // application code, using departure_time_zone.
+    const requested = new Date(`${filter.departureDate}T00:00:00Z`).getTime();
+    query = query
+      .gte("departure_time", new Date(requested - ONE_DAY_MS).toISOString())
+      .lt("departure_time", new Date(requested + 2 * ONE_DAY_MS).toISOString());
   }
   if (filter.maxPriceUsd !== undefined) {
     query = query.lte("price_usd", filter.maxPriceUsd);
@@ -40,11 +54,17 @@ export async function findFlights(
   if (filter.excludeRedEye) {
     query = query.eq("is_red_eye", false);
   }
-  if (filter.inventoryVersion !== undefined) {
-    query = query.eq("inventory_version", filter.inventoryVersion);
-  }
 
-  const { data, error } = await query.order("price_usd", { ascending: true });
-  if (error) throw error;
+  const data = await unwrapOrThrow(query.order("price_usd", { ascending: true }));
+
+  if (filter.departureDate) {
+    return data.filter(
+      (flight) =>
+        localDateInTimeZone(
+          flight.departure_time,
+          flight.departure_time_zone ?? "UTC",
+        ) === filter.departureDate,
+    );
+  }
   return data;
 }

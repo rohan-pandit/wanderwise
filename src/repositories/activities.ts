@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/config/supabase/database.types";
+import { CURRENT_INVENTORY_VERSION } from "@/src/domain/inventory";
+import { hasValues, unwrapOrThrow } from "./shared";
 
 export type Activity = Database["public"]["Tables"]["activities"]["Row"];
 
@@ -7,8 +9,9 @@ export interface ActivitySearchFilter {
   destination: string;
   vibeTags?: string[];
   maxPriceUsd?: number;
-  /** Excludes activities closed on this day name, e.g. "Monday". */
+  /** Excludes activities closed on this day name, e.g. "monday". */
   excludeClosedOn?: string;
+  inventoryVersion?: number;
 }
 
 /**
@@ -23,17 +26,17 @@ export async function findActivities(
   let query = supabase
     .from("activities")
     .select("*")
-    .eq("destination", filter.destination);
+    .eq("destination", filter.destination)
+    .eq("inventory_version", filter.inventoryVersion ?? CURRENT_INVENTORY_VERSION);
 
-  if (filter.vibeTags && filter.vibeTags.length > 0) {
+  if (hasValues(filter.vibeTags)) {
     query = query.overlaps("vibe_tags", filter.vibeTags);
   }
   if (filter.maxPriceUsd !== undefined) {
     query = query.lte("price_usd", filter.maxPriceUsd);
   }
 
-  const { data, error } = await query.order("price_usd", { ascending: true });
-  if (error) throw error;
+  const data = await unwrapOrThrow(query.order("price_usd", { ascending: true }));
 
   if (filter.excludeClosedOn) {
     return data.filter(

@@ -1,28 +1,20 @@
-import { redirect } from "next/navigation";
 import Link from "next/link";
-import { createClient } from "@/src/config/supabase/server";
 import { SignOutButton } from "./_components/sign-out-button";
 
 /**
- * Protected shell for everything under /app. Middleware already redirects
- * signed-out requests, but this check is defense in depth (per
- * PROJECT_BRIEF.md §6.6, server-side authorization checks) in case this
- * layout is ever reached a way that bypasses middleware.
+ * Shell for everything under /app. The auth check itself lives solely in
+ * proxy.ts — it already redirects every signed-out request before it
+ * reaches this layout, so re-checking here would just be a second
+ * Supabase Auth network round-trip per request with no added protection.
+ * The real defense in depth for user *data* is Row Level Security (see
+ * supabase/migrations/0001_initial_schema.sql), the same pattern
+ * app/app/trips/[tripId]/page.tsx already relies on.
  */
-export default async function AppLayout({
+export default function AppLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    redirect("/");
-  }
-
   return (
     <div className="flex flex-1 flex-col">
       <header className="flex items-center justify-between border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
