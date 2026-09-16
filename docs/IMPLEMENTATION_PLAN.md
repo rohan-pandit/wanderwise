@@ -18,8 +18,8 @@ Source of truth for *why* is `PROJECT_BRIEF.md`. This doc is the *how* and *in w
 - [x] Propose initial domain model and schema (this doc + migration)
 - [x] Create `BUILD_LOG.md`
 - [x] Scaffold the actual Next.js app (`create-next-app`, TypeScript, App Router, Tailwind)
-- [x] Configure environment variables (`.env.local.example` template committed; real `.env.local` still needs local Supabase keys — blocked, see below)
-- [ ] Establish local Supabase workflow — `supabase init` done (`supabase/config.toml`); `supabase start` is **blocked: Docker Desktop is installed but not running**. Start Docker Desktop, then run `npx supabase start` and copy the printed URL/anon key/service role key into `.env.local`; migration `0001_initial_schema.sql` will apply automatically.
+- [x] Configure environment variables — `.env.local` populated with a **hosted** Supabase project's URL/anon/service-role keys, plus `ANTHROPIC_API_KEY` (see below for why hosted instead of local)
+- [x] Supabase workflow established — **against a hosted project, not local Docker** (see below). Migration `0001_initial_schema.sql` pushed via `supabase db push --db-url`. Local Supabase (`supabase start`) remains blocked by a machine-level Windows issue (see `BUILD_LOG.md`, 2026-09-16 "Docker/local Supabase blocker" entry) — `supabase/config.toml` from `supabase init` is still in the repo in case local dev becomes viable again later, but the working setup for now is hosted-only.
 - [x] Set up route skeleton: `/` (landing + magic-link sign-in), `/auth/callback`, `/app` (protected — chat + itinerary placeholder), `/app/trips` (history list, live query), `/app/trips/[tripId]` (placeholder)
 - [x] Set up test runner (Vitest) with a trivial passing test, wired into `npm test`
 
