@@ -82,3 +82,28 @@ Entry format and rationale in `PROJECT_BRIEF.md` §17.4. Updated per work sessio
 - Left as an open, unresolved mystery: something about this specific Windows machine's socket-provider stack rejects AF_UNIX socket creation with `EACCES`, survives a full Winsock reset, survives Developer Mode + reboot, and survives a Docker reinstall. Worth revisiting later with `sfc /scannow` / `DISM` (system file corruption) or a Process Monitor trace to see exactly what's denying the request, but not worth further time right now given the hosted-Supabase workaround unblocks everything.
 
 **Next up:** Confirm the magic-link email actually completes the flow (click-through → `/auth/callback` → redirected into `/app`, session persists). Then Phase 1 — seed data and inventory repositories.
+
+---
+
+## 2026-09-16 — Phase 1: domain types, inventory repositories, seed data
+
+**What I built:**
+- `src/domain/money.ts` and `src/domain/dates.ts` — normalized `Money` (currency-checked arithmetic, throws `CurrencyMismatchError` on mismatch) and `DateRange` (ISO date strings, not `Date` objects) types, each with unit tests (17 tests total, all passing).
+- `src/repositories/{destinations,flights,hotels,activities}.ts` — typed query functions over the inventory tables, taking a `SupabaseClient<Database>` and returning typed rows. These are the relational query layer the `search_flights`/`search_hotels`/`retrieve_activities` model-facing tools will wrap in Phase 6, not the tools themselves.
+- `src/config/supabase/database.types.ts` — hand-written `Database` type for all three Supabase client factories (browser/server/service), covering the 13 tables actually queried so far. `supabase gen types typescript` needs Docker (spins up a local introspection container), which is still unavailable, so this is maintained by hand for now.
+- `supabase/migrations/0002_seed_data.sql` — 6 destinations, 22 flights, 17 hotels, 27 activities, pushed to the hosted project via `supabase db push`.
+
+**Why:** Phase 2 (deterministic services — budget engine, constraint filtering, feasibility engine) needs both a normalized money/date vocabulary and real inventory to filter against; building those without seed data first would mean testing against nothing.
+
+**Decisions made:**
+- Seed data lives in `supabase/migrations/0002_seed_data.sql`, not `supabase/seed.sql` as `PROJECT_BRIEF.md` §15 sketches — one file works for both `db push` (hosted, what we actually have) and a future local `db reset`, instead of two copies that could drift. Documented in the migration file's own header.
+- Went with 6/22/17/27 (destinations/flights/hotels/activities) rather than the higher end of the ~4-6/~20-25/~15-20/~25-30 target range from the original plan — enough to make search and edge-case testing feel real without over-investing in hand-authored mock data at this phase.
+- Deferred all embeddings (`destinations.embedding`, `activities.embedding`) to Phase 5 as originally planned — they're nullable columns, so leaving them null now doesn't block anything.
+
+**What didn't work / dead ends:**
+- `supabase gen types typescript --db-url ...` failed — it also requires Docker/Podman on PATH (`docker: command not found (podman also not found)`), same root cause as the local-Supabase blocker from the previous session. Hand-wrote the types instead.
+- The hand-written types initially made every `.select(...)` resolve to `never` — postgrest-js's generic inference requires a `Relationships: []` field on every table (even if empty), which `supabase gen types` output always includes but I'd omitted. Traced this by reading postgrest-js's own `GenericTable` type definition in `node_modules` rather than guessing further; adding `Relationships: []` to all 13 tables fixed it, confirmed by a clean `tsc --noEmit`.
+
+**Verification:** `npm test` (17/17 passing), `npx tsc --noEmit` (clean), `npm run build` (clean), `npm run lint` (clean). Also spot-checked the repositories against the live hosted data with a throwaway script (not committed): confirmed inventory-version filtering separates the stale v0 fixtures correctly, red-eye exclusion correctly returns zero results for the one route where every flight is a red-eye, rating and closed-day filters return the expected rows.
+
+**Next up:** Phase 2 — deterministic services (budget engine, hard-constraint engine, candidate combination, itinerary feasibility engine, inventory-reference validation, state-transition validation), all unit-tested, no LLM involved yet.

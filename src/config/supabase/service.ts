@@ -1,5 +1,6 @@
 import "server-only";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "./database.types";
 
 /**
  * Service-role Supabase client. Bypasses RLS entirely — this is how
@@ -13,7 +14,7 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
  * use it for anything a user-scoped RLS check should be gating.
  */
 export function createServiceClient() {
-  return createSupabaseClient(
+  return createSupabaseClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { autoRefreshToken: false, persistSession: false } },

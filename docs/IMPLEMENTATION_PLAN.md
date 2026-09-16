@@ -24,10 +24,11 @@ Source of truth for *why* is `PROJECT_BRIEF.md`. This doc is the *how* and *in w
 - [x] Set up test runner (Vitest) with a trivial passing test, wired into `npm test`
 
 ### Phase 1 — Domain model and seeded data
-- [ ] Finalize normalized money/date types (shared TS types for currency amounts, date ranges)
-- [ ] Implement inventory repositories (typed query functions over `destinations`/`flights`/`hotels`/`activities`)
-- [ ] Write seed data: target ~4-6 destinations, ~20-25 flights, ~15-20 hotels, ~25-30 activities — enough to make search feel real and to hit the edge cases in `PROJECT_BRIEF.md` §11.2 (red-eyes, closed days, overlapping activities, stale inventory versions, etc.) without hand-authoring an unreasonable volume of mock data
-- [ ] Add edge-case fixtures deliberately (at least one of each edge case listed in §11.2)
+- [x] Finalize normalized money/date types — `src/domain/money.ts` (`Money`, currency-checked arithmetic) and `src/domain/dates.ts` (`DateRange`, ISO-date-string based, no `Date` objects in domain code), both unit-tested
+- [x] Implement inventory repositories — `src/repositories/{destinations,flights,hotels,activities}.ts`, typed query functions over a `SupabaseClient<Database>`, backing the future `search_flights`/`search_hotels`/`retrieve_activities` tools
+- [x] Hand-wrote `src/config/supabase/database.types.ts` (the `Database` type for all Supabase clients) since `supabase gen types` requires Docker, which is still unavailable — keep in sync by hand until Docker works, then regenerate and diff
+- [x] Write seed data — 6 destinations, 22 flights, 17 hotels, 27 activities in `supabase/migrations/0002_seed_data.sql` (lives in `migrations/`, not `seed.sql`, so one copy of the data works for both `db push` against hosted and a future local `db reset` — see the file's header comment), pushed to the hosted project and spot-verified against live queries
+- [x] Edge-case fixtures — deliberately included: red-eye flights (including the cheapest option on a route, for eval scenario 5), a stale `inventory_version = 0` row in each of the four inventory tables (eval scenario 10), a Monday-closed activity, two activities in Barcelona with overlapping opening hours (for later itinerary-feasibility-engine testing), a full-day (480 min) activity, null `description`/`rating` fields, a non-refundable hotel, a 2-person-capacity hotel (occupancy constraint), and two near-duplicate-looking Lisbon hotels
 
 ### Phase 2 — Deterministic services (no LLM)
 - [ ] `calculateBudget()`
