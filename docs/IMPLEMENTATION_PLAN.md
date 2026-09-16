@@ -45,7 +45,7 @@ Source of truth for *why* is `PROJECT_BRIEF.md`. This doc is the *how* and *in w
 - [x] Event history writes — `src/repositories/trip-events.ts`
 - [x] Explicit workflow state machine — built in Phase 2 (`src/workflow/state-machine.ts`); Phase 3 wires it into an actual controller
 - [x] Retry/idempotency/cancellation handling — `src/workflow/controller.ts` (`startTrip`/`advanceTrip`); cancellation is just the `cancel` event through the same controller (Phase 2's wildcard-from rule)
-- [x] Workflow telemetry (`workflow_runs`/`workflow_steps` writes) — `src/repositories/workflow-runs.ts`
+- [x] Workflow telemetry (`workflow_runs`/`workflow_steps` writes) — `src/repositories/workflow-runs.ts`. **Known gap, not yet fixed: see §5's open-items list** — `getOrCreateActiveWorkflowRun` has an unguarded concurrent-insert race.
 
 ### Phase 4 — Intake and revision interpretation
 - [ ] Structured output schemas (Zod or similar) for requirement/preference/decision extraction
@@ -243,5 +243,9 @@ From `PROJECT_BRIEF.md` §22, still unresolved or deferred:
 - **Seed data volume** — resolved as a working default above (Phase 1); revisit if search feels thin or evals need more edge-case density.
 - **Analytics dashboard access control** — `/internal/analytics` is scoped to authenticated users for now; whether it needs its own elevated-permission check (vs. any signed-in user) is a Phase 8 decision.
 - **CI setup** — deferred to Phase 8 per the build sequence; GitHub Actions is the likely choice given the repo is already on GitHub.
+
+Bugs/gaps found and deliberately not fixed on the spot — **do not mark the owning phase's checklist item done without also resolving or re-deferring this list**:
+
+- [ ] **`getOrCreateActiveWorkflowRun` (`src/repositories/workflow-runs.ts`) has an unguarded race**: two concurrent `advanceTrip`/`startTrip` calls for the same trip (a double-submit, a client retry racing the original — plausible today, not a Phase-6-only scenario) can both see no active run and both insert one, producing two simultaneously-"active" `workflow_runs` rows for one trip. Scoped to telemetry only — `trip_state_versions` (the source of truth) is unaffected — but it corrupts the §7.3 observability/replay story this table exists for. Found during Phase 3's review, 2026-09-16; deferred because the fix needs a migration (a partial unique index on `workflow_runs(trip_id) where status='running' and completed_at is null`, plus catching the resulting `23505` in code and re-fetching the winner's row). **Fix this before or during Phase 6** (when the orchestrator becomes a real concurrent caller of `advanceTrip`), or sooner if it's cheap to bundle with any other migration in the meantime.
 
 No other open items remain from §22 — app stack, auth, and git/GitHub are now decided (see ADR-000, ADR-003, and `BUILD_LOG.md`).
