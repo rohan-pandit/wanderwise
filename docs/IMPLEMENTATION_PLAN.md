@@ -40,12 +40,12 @@ Source of truth for *why* is `PROJECT_BRIEF.md`. This doc is the *how* and *in w
 - [x] Unit tests for all of the above, independent of any LLM call (82 total, all passing)
 
 ### Phase 3 — State and workflow foundation
-- [ ] Session/trip repositories (typed CRUD over the schema in `0001_initial_schema.sql`)
-- [ ] State versioning writes (append to `trip_state_versions`, enforce optimistic concurrency)
-- [ ] Event history writes (`trip_events`)
-- [ ] Explicit workflow state machine implementation (`PROJECT_BRIEF.md` §8.1)
-- [ ] Retry/idempotency/cancellation handling
-- [ ] Workflow telemetry (`workflow_runs`/`workflow_steps` writes)
+- [x] Session/trip repositories (typed CRUD) — `src/repositories/{sessions,trips}.ts`
+- [x] State versioning writes, optimistic concurrency — `src/repositories/trip-state.ts` (`unique(trip_id, version)`, plus a partial unique index on `(trip_id, correlation_id)` — `supabase/migrations/0003_trip_state_idempotency.sql`)
+- [x] Event history writes — `src/repositories/trip-events.ts`
+- [x] Explicit workflow state machine — built in Phase 2 (`src/workflow/state-machine.ts`); Phase 3 wires it into an actual controller
+- [x] Retry/idempotency/cancellation handling — `src/workflow/controller.ts` (`startTrip`/`advanceTrip`); cancellation is just the `cancel` event through the same controller (Phase 2's wildcard-from rule)
+- [x] Workflow telemetry (`workflow_runs`/`workflow_steps` writes) — `src/repositories/workflow-runs.ts`
 
 ### Phase 4 — Intake and revision interpretation
 - [ ] Structured output schemas (Zod or similar) for requirement/preference/decision extraction

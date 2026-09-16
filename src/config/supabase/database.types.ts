@@ -221,6 +221,48 @@ export interface Database {
           Database["public"]["Tables"]["approval_records"]["Insert"]
         >;
       };
+      workflow_runs: {
+        Row: {
+          id: string;
+          trip_id: string;
+          status: string;
+          started_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          trip_id: string;
+          status: string;
+          started_at?: string;
+          completed_at?: string | null;
+        };
+        Relationships: [];
+        Update: Partial<Database["public"]["Tables"]["workflow_runs"]["Insert"]>;
+      };
+      workflow_steps: {
+        Row: {
+          id: string;
+          workflow_run_id: string;
+          from_state: string | null;
+          to_state: string | null;
+          event: string;
+          actor: string;
+          correlation_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          workflow_run_id: string;
+          from_state?: string | null;
+          to_state?: string | null;
+          event: string;
+          actor: string;
+          correlation_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+        Update: Partial<Database["public"]["Tables"]["workflow_steps"]["Insert"]>;
+      };
       destinations: {
         Row: {
           id: string;

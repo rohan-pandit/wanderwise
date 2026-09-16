@@ -127,6 +127,13 @@ describe("validateStateTransition", () => {
     ).toEqual({ allowed: true, toState: "requirements_ready" });
   });
 
+  it("rejects resuming into failed_recoverable itself as a no-op", () => {
+    const result = validateStateTransition(
+      req({ fromState: "failed_recoverable", event: "resume", resumeState: "failed_recoverable" }),
+    );
+    expect(result).toEqual({ allowed: false, reason: expect.stringContaining("no-op") });
+  });
+
   it("rejects any transition once a trip has reached a terminal state", () => {
     for (const fromState of ["finalized", "cancelled", "failed_terminal"] as WorkflowState[]) {
       const result = validateStateTransition(req({ fromState, event: "start_intake" }));

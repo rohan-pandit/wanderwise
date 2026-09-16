@@ -59,6 +59,10 @@ export type WorkflowEvent = (typeof WORKFLOW_EVENTS)[number];
 
 const TERMINAL_STATES = new Set<WorkflowState>(["finalized", "cancelled", "failed_terminal"]);
 
+export function isTerminalState(state: WorkflowState): boolean {
+  return TERMINAL_STATES.has(state);
+}
+
 /** Matches a transition rule "from" any non-terminal state. */
 const ANY_STATE = "*" as const;
 
@@ -143,6 +147,7 @@ const RULES: TransitionRule[] = [
       if (!req.resumeState) return "A resumeState is required to resume from failed_recoverable.";
       if (!WORKFLOW_STATES.includes(req.resumeState)) return `Unknown resumeState "${req.resumeState}".`;
       if (TERMINAL_STATES.has(req.resumeState)) return `Cannot resume directly into terminal state "${req.resumeState}".`;
+      if (req.resumeState === req.fromState) return `Cannot resume into "${req.resumeState}" itself — that's a no-op, not a recovery.`;
       return undefined;
     },
   },
