@@ -8,20 +8,20 @@ export type WorkflowStep = Database["public"]["Tables"]["workflow_steps"]["Row"]
 
 const ACTIVE_STATUS = "running";
 
+/** Postgres unique_violation — see `workflow_runs_trip_active_unique` (partial unique index on `(trip_id) where status='running' and completed_at is null`). */
+const UNIQUE_VIOLATION = "23505";
+
 /**
  * Workflow execution telemetry (PROJECT_BRIEF.md §8.5) — one run spans every
  * step from a trip entering planning to it reaching a terminal state. A trip
  * has at most one active (not-yet-completed) run at a time; a new one starts
  * only once the previous run has completed.
  *
- * Known gap: this is a plain select-then-insert with no DB constraint behind
- * it (unlike `trip_state_versions`'s `unique(trip_id, version)`), so two
- * concurrent calls for the same trip that both see no active run could both
- * insert one. Not closed yet — would need a partial unique index on
- * `workflow_runs(trip_id) where status = 'running'`, deferred until a real
- * concurrent caller exists (nothing calls this concurrently as of Phase 3;
- * the workflow controller is the only caller, and it's not yet invoked from
- * more than one place at a time).
+ * The "at most one active run" invariant is enforced by the DB (a partial
+ * unique index), not just by this function checking first — if two calls
+ * for the same trip race past the initial select and both try to insert,
+ * the loser's insert fails with a unique_violation; it re-fetches and
+ * returns the winner's row instead of erroring.
  */
 export async function getOrCreateActiveWorkflowRun(
   supabase: SupabaseClient<Database>,
@@ -38,13 +38,29 @@ export async function getOrCreateActiveWorkflowRun(
   );
   if (existing) return existing;
 
-  return unwrapOrThrow(
+  const { data, error } = await supabase
+    .from("workflow_runs")
+    .insert({ trip_id: tripId, status: ACTIVE_STATUS })
+    .select()
+    .single();
+  if (!error) return data;
+  if (error.code !== UNIQUE_VIOLATION) throw error;
+
+  const winner = await unwrapOrThrow(
     supabase
       .from("workflow_runs")
-      .insert({ trip_id: tripId, status: ACTIVE_STATUS })
-      .select()
-      .single(),
+      .select("*")
+      .eq("trip_id", tripId)
+      .eq("status", ACTIVE_STATUS)
+      .is("completed_at", null)
+      .maybeSingle(),
   );
+  if (!winner) {
+    throw new Error(
+      `Lost a workflow_runs insert race for trip ${tripId}, but no active run was found on re-fetch.`,
+    );
+  }
+  return winner;
 }
 
 /**

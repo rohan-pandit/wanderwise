@@ -225,6 +225,22 @@ Efficiency review found nothing worth changing at this project's actual scale (s
 
 **Verification:** `npm test` (105/105 passing), `npx tsc --noEmit` (clean), `npm run lint` (clean), `npm run build` (clean). Live-spot-checked twice against the hosted Supabase project with throwaway scripts (not committed, each creating and deleting its own auth user): first confirmed the raw insert/update paths, the `unique(trip_id, version)` optimistic-concurrency rejection, and the new idempotency partial-unique-index rejection all behave as designed (and caught the `correlation_id`-must-be-a-UUID bug in the process); second round re-confirmed the review-fix assumptions specifically (a zero-row `.update()` really does return `[]` with no thrown error; the idempotent `completeWorkflowRun` filter really does make a second call a harmless no-op).
 
-**Known limitations carried forward:** `getOrCreateActiveWorkflowRun`'s TOCTOU race (above). The identifier-space assumption in `validateInventoryReferences` from Phase 2 is unrelated to this phase and still stands.
+**Known limitations carried forward:** `getOrCreateActiveWorkflowRun`'s TOCTOU race (above — resolved same day, see next entry). The identifier-space assumption in `validateInventoryReferences` from Phase 2 is unrelated to this phase and still stands.
 
 **Next up:** Phase 4 — structured output schemas for requirement/preference/decision extraction, and the Intake and Revision Interpreter agent (the first place an LLM enters the system).
+
+---
+
+## 2026-09-16 — Closed the workflow_runs concurrent-insert race
+
+**What I built:** Closed the race documented in the previous entry rather than leaving it deferred to Phase 6 — asked directly whether "no concurrent caller yet" actually held up (a double-click or client retry hits `advanceTrip` twice today, no orchestrator required), and it didn't.
+- `supabase/migrations/0004_workflow_runs_single_active.sql` — a partial unique index, `workflow_runs(trip_id) where status='running' and completed_at is null`, making the database itself enforce "at most one active run per trip."
+- `src/repositories/workflow-runs.ts` — `getOrCreateActiveWorkflowRun` now catches the `23505` a losing concurrent insert produces and re-fetches the winner's row instead of erroring, mirroring the same catch-and-recover pattern already used for `trip_state_versions`' optimistic concurrency.
+
+**Why:** Asked directly, after initially deferring this with the reasoning "no real concurrent caller exists as of Phase 3" — that reasoning didn't hold up to being questioned (double-submission is a today problem, not a Phase-6 problem), and the fix was cheap enough (one migration, one small code change) that deferring it further wasn't worth the tracking overhead.
+
+**Decisions made:** Also restructured how deferred items get tracked going forward — `docs/IMPLEMENTATION_PLAN.md` §5 is now the single place every deferred bug/gap/constraint lives as an explicit checklist item (checked off, not deleted, when resolved, so the history stays visible), rather than prose scattered across `BUILD_LOG.md` entries that's easy to skim past. Audited every prior entry and added the two other still-open gaps that hadn't made it into a tracked list yet (`validateInventoryReferences`' destination identifier-space assumption from Phase 2; `startTrip` not being idempotency-keyed from this phase), plus the hotel room-type/availability assumption and the unreachable `"blocked"` state as lower-priority notes. **Standing instruction going forward: when a deferred issue or open item comes up (in a review, while building, or anywhere else), ask whether to address it now or later — don't silently decide to defer it.**
+
+**Verification:** `npm test` (105/105 passing, no test changes needed — the fix is internal to `getOrCreateActiveWorkflowRun`), `npx tsc --noEmit` (clean), `npm run lint` (clean), `npm run build` (clean). Live-verified against the hosted Supabase project with a throwaway script (not committed): two concurrent inserts for the same trip, confirmed exactly one succeeds and the other fails with `23505`; confirmed the loser's re-fetch finds the winner's row; confirmed a new active run can still be created after the first one completes (the fix doesn't permanently lock a trip out of new runs).
+
+**Next up:** Phase 4, unchanged from the prior entry.

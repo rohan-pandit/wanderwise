@@ -45,7 +45,7 @@ Source of truth for *why* is `PROJECT_BRIEF.md`. This doc is the *how* and *in w
 - [x] Event history writes — `src/repositories/trip-events.ts`
 - [x] Explicit workflow state machine — built in Phase 2 (`src/workflow/state-machine.ts`); Phase 3 wires it into an actual controller
 - [x] Retry/idempotency/cancellation handling — `src/workflow/controller.ts` (`startTrip`/`advanceTrip`); cancellation is just the `cancel` event through the same controller (Phase 2's wildcard-from rule)
-- [x] Workflow telemetry (`workflow_runs`/`workflow_steps` writes) — `src/repositories/workflow-runs.ts`. **Known gap, not yet fixed: see §5's open-items list** — `getOrCreateActiveWorkflowRun` has an unguarded concurrent-insert race.
+- [x] Workflow telemetry (`workflow_runs`/`workflow_steps` writes) — `src/repositories/workflow-runs.ts`
 
 ### Phase 4 — Intake and revision interpretation
 - [ ] Structured output schemas (Zod or similar) for requirement/preference/decision extraction
@@ -238,14 +238,27 @@ Every one of these gets unit tests with no LLM involved, per `PROJECT_BRIEF.md` 
 
 ## 5. Open items carried forward
 
-From `PROJECT_BRIEF.md` §22, still unresolved or deferred:
+This section is the single place every deferred decision, known bug, and standing constraint gets tracked — **whenever a review, a build session, or a live-data check surfaces something deliberately not fixed on the spot, it goes here as an unchecked item before moving on, and a phase's checklist in §1 does not get marked done while a bug it introduced sits here unresolved.** Checked items are kept (struck through in spirit, not deleted) with the date/entry that closed them, so the history of what was found and when doesn't disappear.
 
-- **Seed data volume** — resolved as a working default above (Phase 1); revisit if search feels thin or evals need more edge-case density.
+### From `PROJECT_BRIEF.md` §22
+
+- **Seed data volume** — resolved as a working default (Phase 1); revisit if search feels thin or evals need more edge-case density.
 - **Analytics dashboard access control** — `/internal/analytics` is scoped to authenticated users for now; whether it needs its own elevated-permission check (vs. any signed-in user) is a Phase 8 decision.
 - **CI setup** — deferred to Phase 8 per the build sequence; GitHub Actions is the likely choice given the repo is already on GitHub.
 
-Bugs/gaps found and deliberately not fixed on the spot — **do not mark the owning phase's checklist item done without also resolving or re-deferring this list**:
-
-- [ ] **`getOrCreateActiveWorkflowRun` (`src/repositories/workflow-runs.ts`) has an unguarded race**: two concurrent `advanceTrip`/`startTrip` calls for the same trip (a double-submit, a client retry racing the original — plausible today, not a Phase-6-only scenario) can both see no active run and both insert one, producing two simultaneously-"active" `workflow_runs` rows for one trip. Scoped to telemetry only — `trip_state_versions` (the source of truth) is unaffected — but it corrupts the §7.3 observability/replay story this table exists for. Found during Phase 3's review, 2026-09-16; deferred because the fix needs a migration (a partial unique index on `workflow_runs(trip_id) where status='running' and completed_at is null`, plus catching the resulting `23505` in code and re-fetching the winner's row). **Fix this before or during Phase 6** (when the orchestrator becomes a real concurrent caller of `advanceTrip`), or sooner if it's cheap to bundle with any other migration in the meantime.
-
 No other open items remain from §22 — app stack, auth, and git/GitHub are now decided (see ADR-000, ADR-003, and `BUILD_LOG.md`).
+
+### Standing environment/tooling constraints
+
+- **`src/config/supabase/database.types.ts` is hand-maintained, not generated.** `supabase gen types typescript` requires Docker/Podman, which is blocked on this machine at the OS level (see BUILD_LOG.md, 2026-09-16 "Docker/local Supabase blocker" — root cause never resolved, hosted Supabase is the permanent workaround). Every schema migration must be followed by a manual, matching edit to this file — nothing catches a drift between the two automatically. Revisit if the Docker blocker ever gets resolved (worth an occasional retry of `sfc /scannow`/a Process Monitor trace per that entry, but not on any schedule).
+
+### Known bugs/gaps — unresolved
+
+- [ ] **`validateInventoryReferences` (`src/validation/inventory-references.ts`) assumes `flights.destination`/`hotels.destination`/`activities.destination` and `destinations.name` share one identifier space** (plain city-name strings), since none of them are foreign keys. Two different real-world destinations that happened to share a display name could pass a reference check against the wrong approved set; not reachable today (all 6 seed destinations have unique names) but not prevented by the type system either. Found during Phase 2's review, 2026-09-16. Real fix: a `destination_id uuid references destinations(id)` FK replacing the free-text columns — a schema change, reasonably deferred to whenever destinations are first referenced by ID elsewhere (Phase 5's retrieval work is a natural point to revisit).
+- [ ] **`startTrip` (`src/workflow/controller.ts`) is not idempotency-keyed.** `trips` has no correlation-id column, so a lost response followed by a naive client retry creates a second, orphaned trip with its own genesis state and workflow run. Deliberately scoped out of Phase 3 ("state and workflow foundation" is about the transition machinery, not HTTP-layer request dedup) — but it's a real gap once a real API route calls this from a real client. Found during Phase 3's review, 2026-09-16. Natural point to close it: whenever Phase 6 builds the Route Handler that calls `startTrip`, since that's where an HTTP-level idempotency key (or client-side dedup) would actually need to be threaded through anyway.
+- [ ] **Hotel bookings assume every room group fits the same room type at the same nightly rate.** The `hotels` table models one row as one bookable room type with no room-type variety or availability count, so `assembleCandidateCombinations` can't express "2 doubles + 1 twin" or check whether a hotel actually *has* enough rooms of that type free. Inherited from the Phase 1 schema, restated as an explicit limitation once the multi-room-booking feature made room count visible, 2026-09-16. Low priority — revisit only if a future phase wants richer room-type preferences.
+- [ ] **The `"blocked"` workflow state is declared but unreachable.** `WORKFLOW_STATES` (`src/workflow/state-machine.ts`) lists it as a valid non-terminal state, but no `TransitionRule` ever sets `to: "blocked"`. Not an active bug (nothing can hit it), just a latent trap: a future rule that transitions into it could easily forget to decide whether that should end the workflow run. Found during Phase 3's review, 2026-09-16; skipped as not worth inventing a scenario for. Revisit only if a real need for a `"blocked"` state materializes.
+
+### Known bugs — resolved
+
+- [x] **`getOrCreateActiveWorkflowRun` (`src/repositories/workflow-runs.ts`) had an unguarded concurrent-insert race** — two concurrent calls for the same trip could both create an "active" `workflow_runs` row. Found during Phase 3's review, 2026-09-16; closed the same day via `supabase/migrations/0004_workflow_runs_single_active.sql` (a partial unique index) plus a catch-and-refetch in code, live-verified against a real concurrent-insert race on the hosted DB.
