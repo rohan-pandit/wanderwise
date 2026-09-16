@@ -6,8 +6,11 @@ import {
   InvalidDateRangeError,
   isWithinRange,
   localDateInTimeZone,
+  localMinutesOfDay,
   nightsBetween,
   rangesOverlap,
+  toEpochDay,
+  weekdayOf,
 } from "./dates";
 
 describe("dates", () => {
@@ -72,5 +75,22 @@ describe("dates", () => {
     expect(localDateInTimeZone("2026-10-06T00:10:00Z", "UTC")).toBe(
       "2026-10-06",
     );
+  });
+
+  it("computes minutes after local midnight a UTC timestamp falls at in a given timezone", () => {
+    // 2026-10-06T09:00:00Z is 10:00 in Lisbon (UTC+1 in October)
+    expect(localMinutesOfDay("2026-10-06T09:00:00Z", "Europe/Lisbon")).toBe(600);
+    expect(localMinutesOfDay("2026-10-06T09:00:00Z", "UTC")).toBe(540);
+  });
+
+  it("computes the weekday of an ISO calendar date independent of timezone", () => {
+    expect(weekdayOf("2026-10-05")).toBe("monday");
+    expect(weekdayOf("2026-10-11")).toBe("sunday");
+    expect(weekdayOf("1970-01-01")).toBe("thursday");
+  });
+
+  it("computes epoch day for an ISO calendar date", () => {
+    expect(toEpochDay("1970-01-01")).toBe(0);
+    expect(toEpochDay("1970-01-02")).toBe(1);
   });
 });

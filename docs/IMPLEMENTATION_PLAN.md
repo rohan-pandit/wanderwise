@@ -31,13 +31,13 @@ Source of truth for *why* is `PROJECT_BRIEF.md`. This doc is the *how* and *in w
 - [x] Edge-case fixtures — deliberately included: red-eye flights (including the cheapest option on a route, for eval scenario 5), a stale `inventory_version = 0` row in each of the four inventory tables (eval scenario 10), a Monday-closed activity, two activities in Barcelona with overlapping opening hours (for later itinerary-feasibility-engine testing), a full-day (480 min) activity, null `description`/`rating` fields, a non-refundable hotel, a 2-person-capacity hotel (occupancy constraint), and two near-duplicate-looking Lisbon hotels
 
 ### Phase 2 — Deterministic services (no LLM)
-- [ ] `calculateBudget()`
-- [ ] `filterHardConstraints()`
-- [ ] `assembleCandidateCombinations()`
-- [ ] `validateItineraryFeasibility()`
-- [ ] `validateInventoryReferences()`
-- [ ] `validateStateTransition()`
-- [ ] Unit tests for all of the above, independent of any LLM call
+- [x] `calculateBudget()` — `src/domain/budget.ts`
+- [x] `filterHardConstraints()` — `src/domain/constraints.ts`
+- [x] `assembleCandidateCombinations()` — `src/domain/combinations.ts`
+- [x] `validateItineraryFeasibility()` — `src/domain/feasibility.ts`
+- [x] `validateInventoryReferences()` — `src/validation/inventory-references.ts`
+- [x] `validateStateTransition()` — `src/workflow/state-machine.ts`
+- [x] Unit tests for all of the above, independent of any LLM call (82 total, all passing)
 
 ### Phase 3 — State and workflow foundation
 - [ ] Session/trip repositories (typed CRUD over the schema in `0001_initial_schema.sql`)
@@ -214,6 +214,12 @@ function validateStateTransition(req: TransitionRequest): { allowed: boolean; re
 ```
 
 Every one of these gets unit tests with no LLM involved, per `PROJECT_BRIEF.md` §12.2 and §17.1.
+
+**As implemented in Phase 2, the actual signatures deviate slightly from this sketch** (this section was "proposed," not locked):
+- `calculateBudget`/`BudgetBreakdown` use the existing `Money` type (`src/domain/money.ts`) throughout rather than raw numbers with a separate `currency` string, for currency-checked arithmetic.
+- `filterHardConstraints` takes an array of small `HardConstraint<T>` objects (each with its own `code`/`describe()`/`isSatisfiedBy()`) rather than a `HardConstraint[]` union type — each constraint is independently constructed and testable (`noRedEyeConstraint()`, `minHotelRatingConstraint(4)`, etc., in `src/domain/constraints.ts`).
+- `validateInventoryReferences` takes a lightweight `{ flightIds, hotelIds, activityIds }` reference struct plus an `ApprovedCandidateSet`, not a full `DraftItinerary` — it doesn't need the itinerary's dates/schedule, only which IDs were referenced.
+- `validateStateTransition`'s `TransitionRequest` gained `proposalHashMatches`, `guardrailsPassed`, and `resumeState` fields to carry the extra preconditions from `PROJECT_BRIEF.md` §8.2's example (finalization requires a matching proposal hash and passing guardrails) and the `failed_recoverable` → resume path from §8.4.
 
 ---
 

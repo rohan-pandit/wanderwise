@@ -1,0 +1,132 @@
+/**
+ * Hard-constraint engine (PROJECT_BRIEF.md §9.5). Hard constraints must be
+ * represented structurally and checked by code — never left to a model to
+ * "remember" or a prompt to enforce. Each constraint is a small, independently
+ * testable predicate over one candidate kind; `filterHardConstraints` just
+ * partitions a candidate list by them and records why each rejection happened.
+ */
+import type { Activity } from "@/src/repositories/activities";
+import type { Flight } from "@/src/repositories/flights";
+import type { Hotel } from "@/src/repositories/hotels";
+
+export interface HardConstraint<T> {
+  /** Stable machine-readable identifier, used in violation/guardrail logs. */
+  code: string;
+  /** Human-readable reason shown when a candidate fails this constraint. */
+  describe(): string;
+  isSatisfiedBy(candidate: T): boolean;
+}
+
+export interface HardConstraintRejection<T> {
+  candidate: T;
+  code: string;
+  reason: string;
+}
+
+export interface HardConstraintFilterResult<T> {
+  passing: T[];
+  rejected: HardConstraintRejection<T>[];
+}
+
+/**
+ * Applies every constraint to every candidate. A candidate is rejected on the
+ * first constraint it fails; `rejected` records which one and why, so the
+ * caller can explain "no red-eye flights" style outcomes instead of just
+ * silently returning fewer results.
+ */
+export function filterHardConstraints<T>(
+  candidates: T[],
+  constraints: HardConstraint<T>[],
+): HardConstraintFilterResult<T> {
+  const passing: T[] = [];
+  const rejected: HardConstraintRejection<T>[] = [];
+
+  for (const candidate of candidates) {
+    const failed = constraints.find((c) => !c.isSatisfiedBy(candidate));
+    if (failed) {
+      rejected.push({ candidate, code: failed.code, reason: failed.describe() });
+    } else {
+      passing.push(candidate);
+    }
+  }
+
+  return { passing, rejected };
+}
+
+export function noRedEyeConstraint(): HardConstraint<Flight> {
+  return {
+    code: "NO_RED_EYE",
+    describe: () => "Red-eye flights are excluded.",
+    isSatisfiedBy: (flight) => !flight.is_red_eye,
+  };
+}
+
+export function maxFlightPriceConstraint(maxPriceUsd: number): HardConstraint<Flight> {
+  return {
+    code: "MAX_FLIGHT_PRICE",
+    describe: () => `Flight price must not exceed $${maxPriceUsd}.`,
+    isSatisfiedBy: (flight) => flight.price_usd <= maxPriceUsd,
+  };
+}
+
+export function minHotelRatingConstraint(minRating: number): HardConstraint<Hotel> {
+  return {
+    code: "MIN_HOTEL_RATING",
+    describe: () => `Hotel rating must be at least ${minRating}.`,
+    isSatisfiedBy: (hotel) => (hotel.rating ?? 0) >= minRating,
+  };
+}
+
+export function minRoomCapacityConstraint(partySize: number): HardConstraint<Hotel> {
+  return {
+    code: "MIN_ROOM_CAPACITY",
+    describe: () => `Room must accommodate ${partySize} traveler(s).`,
+    isSatisfiedBy: (hotel) => hotel.room_capacity >= partySize,
+  };
+}
+
+export function refundableConstraint(): HardConstraint<Hotel> {
+  return {
+    code: "REFUNDABLE_REQUIRED",
+    describe: () => "Hotel must have a refundable cancellation policy.",
+    // cancellation_policy is free text (e.g. "Free cancellation up to 48
+    // hours before check-in" or "Non-refundable"), not an enum — matching
+    // for the literal string "refundable" would reject every real hotel. An
+    // unset policy is treated as not (provably) refundable, same as the
+    // other constraints below defaulting missing data to "fails."
+    isSatisfiedBy: (hotel) =>
+      hotel.cancellation_policy !== null &&
+      !hotel.cancellation_policy.toLowerCase().includes("non-refundable"),
+  };
+}
+
+export function requiredAccessibilityConstraint(
+  requiredAttributes: string[],
+): HardConstraint<Activity> {
+  return {
+    code: "REQUIRED_ACCESSIBILITY",
+    describe: () => `Activity must support: ${requiredAttributes.join(", ")}.`,
+    isSatisfiedBy: (activity) =>
+      requiredAttributes.every((attr) =>
+        (activity.accessibility_attributes ?? []).includes(attr),
+      ),
+  };
+}
+
+export function excludeClosedOnDaysConstraint(closedDays: string[]): HardConstraint<Activity> {
+  const excluded = new Set(closedDays.map((d) => d.toLowerCase()));
+  return {
+    code: "EXCLUDE_CLOSED_DAYS",
+    describe: () => `Activity must not be closed on: ${closedDays.join(", ")}.`,
+    isSatisfiedBy: (activity) =>
+      !(activity.closed_days ?? []).some((day) => excluded.has(day.toLowerCase())),
+  };
+}
+
+export function maxActivityPriceConstraint(maxPriceUsd: number): HardConstraint<Activity> {
+  return {
+    code: "MAX_ACTIVITY_PRICE",
+    describe: () => `Activity price must not exceed $${maxPriceUsd}.`,
+    isSatisfiedBy: (activity) => activity.price_usd <= maxPriceUsd,
+  };
+}

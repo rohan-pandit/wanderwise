@@ -1,0 +1,89 @@
+import { describe, expect, it } from "vitest";
+import { activity, flight, hotel } from "@/src/repositories/fixtures";
+import { assembleCandidateCombinations, type CombinationParams } from "./combinations";
+
+function baseParams(overrides: Partial<CombinationParams> = {}): CombinationParams {
+  return {
+    flights: [flight()],
+    hotels: [hotel()],
+    activities: [],
+    travelers: 2,
+    nights: 5,
+    targetUsd: 3000,
+    ...overrides,
+  };
+}
+
+describe("assembleCandidateCombinations", () => {
+  it("cross-joins every flight/hotel pair", () => {
+    const params = baseParams({
+      flights: [flight({ id: "f1" }), flight({ id: "f2" })],
+      hotels: [hotel({ id: "h1" }), hotel({ id: "h2" })],
+    });
+    const combos = assembleCandidateCombinations(params);
+    expect(combos).toHaveLength(4);
+  });
+
+  it("drops a flight/hotel pair that exceeds the ceiling even with zero activities", () => {
+    const params = baseParams({
+      flights: [flight({ price_usd: 5000 })],
+      ceilingUsd: 1000,
+    });
+    expect(assembleCandidateCombinations(params)).toEqual([]);
+  });
+
+  it("greedily fills in the cheapest activities that still fit under the ceiling", () => {
+    const params = baseParams({
+      flights: [flight({ price_usd: 100, taxes_fees_usd: 0 })],
+      hotels: [hotel({ price_per_night_usd: 100, taxes_fees_usd: 0, id: "h1" })],
+      nights: 1,
+      travelers: 1,
+      targetUsd: 400,
+      ceilingUsd: 400,
+      activities: [
+        activity({ id: "cheap", price_usd: 50 }),
+        activity({ id: "mid", price_usd: 100 }),
+        activity({ id: "expensive", price_usd: 500 }),
+      ],
+    });
+    const [combo] = assembleCandidateCombinations(params);
+    // base cost 200; cheap (250) and mid (350) fit, expensive (850) doesn't
+    expect(combo.activities.map((a) => a.id)).toEqual(["cheap", "mid"]);
+    expect(combo.budget.violations).toEqual([]);
+  });
+
+  it("caps the number of activities included per combination", () => {
+    const params = baseParams({
+      flights: [flight({ price_usd: 0, taxes_fees_usd: 0 })],
+      hotels: [hotel({ price_per_night_usd: 0, taxes_fees_usd: 0 })],
+      nights: 1,
+      targetUsd: 100_000,
+      activities: Array.from({ length: 10 }, (_, i) => activity({ id: `a${i}`, price_usd: 1 })),
+      maxActivities: 3,
+    });
+    const [combo] = assembleCandidateCombinations(params);
+    expect(combo.activities).toHaveLength(3);
+  });
+
+  it("ranks combinations by activity count first, then by lowest total cost", () => {
+    const params = baseParams({
+      flights: [flight({ id: "f1", price_usd: 100, taxes_fees_usd: 0 })],
+      hotels: [hotel({ id: "cheap-hotel", price_per_night_usd: 50, taxes_fees_usd: 0 }), hotel({ id: "pricier-hotel", price_per_night_usd: 200, taxes_fees_usd: 0 })],
+      nights: 1,
+      travelers: 1,
+      targetUsd: 500,
+      ceilingUsd: 500,
+      activities: [activity({ id: "act", price_usd: 50 })],
+    });
+    const combos = assembleCandidateCombinations(params);
+    // Both hotels leave room for the one activity, so both combos include it;
+    // the cheaper hotel combo should sort first on total cost.
+    expect(combos[0].hotel.id).toBe("cheap-hotel");
+    expect(combos.every((c) => c.activities.length === 1)).toBe(true);
+  });
+
+  it("returns an empty list when no flight/hotel pair fits", () => {
+    const params = baseParams({ ceilingUsd: 1 });
+    expect(assembleCandidateCombinations(params)).toEqual([]);
+  });
+});

@@ -66,7 +66,43 @@ export function localDateInTimeZone(isoTimestamp: string, timeZone: string): str
   }).format(new Date(isoTimestamp));
 }
 
-function toEpochDay(isoDate: string): number {
+/** Minutes after local midnight a UTC timestamp falls at in `timeZone`. */
+export function localMinutesOfDay(isoTimestamp: string, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(isoTimestamp));
+  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+  return hour * 60 + minute;
+}
+
+export const WEEKDAYS = [
+  "sunday",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+] as const;
+
+/** Lowercase weekday name (e.g. "monday") for an ISO calendar date, independent of any timezone. */
+export function weekdayOf(isoDate: string): string {
+  // Epoch day 0 (1970-01-01) was a Thursday (index 4).
+  const index = (((toEpochDay(isoDate) + 4) % 7) + 7) % 7;
+  return WEEKDAYS[index];
+}
+
+/**
+ * Days since the Unix epoch for an ISO calendar date. Exposed so callers that
+ * need to compare or offset dates numerically (e.g. converting a date +
+ * minutes-of-day into a single sortable instant) don't have to re-parse ISO
+ * strings themselves.
+ */
+export function toEpochDay(isoDate: string): number {
   const epochMs = Date.parse(`${isoDate}T00:00:00Z`);
   if (Number.isNaN(epochMs)) {
     throw new InvalidDateError(isoDate);
