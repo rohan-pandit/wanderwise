@@ -6,10 +6,10 @@ import {
   maxActivityPriceConstraint,
   maxFlightPriceConstraint,
   minHotelRatingConstraint,
-  minRoomCapacityConstraint,
   noRedEyeConstraint,
   refundableConstraint,
   requiredAccessibilityConstraint,
+  roomCapacityConstraint,
 } from "./constraints";
 
 describe("filterHardConstraints", () => {
@@ -54,8 +54,20 @@ describe("hotel constraints", () => {
     expect(constraint.isSatisfiedBy(hotel({ rating: null }))).toBe(false);
   });
 
-  it("enforces room capacity against party size", () => {
-    const constraint = minRoomCapacityConstraint(3);
+  it("enforces room capacity against a single room group", () => {
+    const constraint = roomCapacityConstraint([{ occupants: 3 }]);
+    expect(constraint.isSatisfiedBy(hotel({ room_capacity: 3 }))).toBe(true);
+    expect(constraint.isSatisfiedBy(hotel({ room_capacity: 2 }))).toBe(false);
+  });
+
+  it("enforces room capacity against the largest of several room groups (parents/kids/friends splitting rooms)", () => {
+    const constraint = roomCapacityConstraint([
+      { occupants: 2, label: "parents" },
+      { occupants: 2, label: "kids" },
+      { occupants: 3, label: "friends" },
+    ]);
+    // The hotel books one room per group, so it only needs to fit the
+    // largest group (3), not the whole party (7).
     expect(constraint.isSatisfiedBy(hotel({ room_capacity: 3 }))).toBe(true);
     expect(constraint.isSatisfiedBy(hotel({ room_capacity: 2 }))).toBe(false);
   });

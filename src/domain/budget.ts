@@ -15,9 +15,11 @@ export interface FlightSelection {
 
 export interface HotelSelection {
   pricePerNightUsd: number;
-  /** Flat taxes/fees for the whole stay, not per night. */
+  /** Taxes/fees per room for the whole stay (not per night); multiplied by `rooms`. */
   taxesFeesUsd: number;
   nights: number;
+  /** Rooms booked at this rate, e.g. one per room group when the party splits across rooms. Defaults to 1. */
+  rooms?: number;
 }
 
 export interface ActivitySelection {
@@ -80,10 +82,13 @@ export function calculateBudget(input: BudgetInput): BudgetBreakdown {
     currency,
   );
 
+  const hotelRooms = input.hotel?.rooms ?? 1;
   const hotelSubtotal = input.hotel
-    ? multiplyMoney(money(input.hotel.pricePerNightUsd, currency), input.hotel.nights)
+    ? multiplyMoney(money(input.hotel.pricePerNightUsd, currency), input.hotel.nights * hotelRooms)
     : zero;
-  const hotelTaxes = input.hotel ? money(input.hotel.taxesFeesUsd, currency) : zero;
+  const hotelTaxes = input.hotel
+    ? multiplyMoney(money(input.hotel.taxesFeesUsd, currency), hotelRooms)
+    : zero;
 
   const unpricedItems: string[] = [];
   const pricedActivities = input.activities.filter((a) => {

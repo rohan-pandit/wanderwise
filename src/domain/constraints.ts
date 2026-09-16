@@ -8,6 +8,7 @@
 import type { Activity } from "@/src/repositories/activities";
 import type { Flight } from "@/src/repositories/flights";
 import type { Hotel } from "@/src/repositories/hotels";
+import { maxRoomOccupancy, type RoomGroup } from "./rooms";
 
 export interface HardConstraint<T> {
   /** Stable machine-readable identifier, used in violation/guardrail logs. */
@@ -77,11 +78,21 @@ export function minHotelRatingConstraint(minRating: number): HardConstraint<Hote
   };
 }
 
-export function minRoomCapacityConstraint(partySize: number): HardConstraint<Hotel> {
+/**
+ * A hotel booking here always books one room *per room group* — so the
+ * hotel's `room_capacity` only needs to fit the single largest group (e.g.
+ * parents in one room, kids in another: the hotel just needs to sleep
+ * whichever group is bigger, not the whole party in one room).
+ */
+export function roomCapacityConstraint(roomGroups: RoomGroup[]): HardConstraint<Hotel> {
+  const required = maxRoomOccupancy(roomGroups);
   return {
-    code: "MIN_ROOM_CAPACITY",
-    describe: () => `Room must accommodate ${partySize} traveler(s).`,
-    isSatisfiedBy: (hotel) => hotel.room_capacity >= partySize,
+    code: "ROOM_CAPACITY",
+    describe: () =>
+      roomGroups.length > 1
+        ? `Each of the ${roomGroups.length} rooms must accommodate its group (largest: ${required}).`
+        : `Room must accommodate ${required} traveler(s).`,
+    isSatisfiedBy: (hotel) => hotel.room_capacity >= required,
   };
 }
 

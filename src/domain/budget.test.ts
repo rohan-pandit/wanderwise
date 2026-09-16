@@ -24,11 +24,24 @@ describe("calculateBudget", () => {
     expect(result.totalEstimate).toEqual(money(1160));
   });
 
-  it("multiplies hotel rate by nights but not by travelers, and keeps hotel taxes flat", () => {
+  it("multiplies hotel rate by nights but not by travelers, defaulting to one room", () => {
     const result = calculateBudget(baseInput({ flights: [], activities: [] }));
-    // 150/night * 5 nights = 750; taxes flat at 20
+    // 150/night * 5 nights * 1 room = 750; taxes flat at 20 for 1 room
     expect(result.subtotal).toEqual(money(750));
     expect(result.taxesAndFees).toEqual(money(20));
+  });
+
+  it("multiplies both hotel rate and taxes by the number of rooms booked", () => {
+    const result = calculateBudget(
+      baseInput({
+        flights: [],
+        activities: [],
+        hotel: { pricePerNightUsd: 150, taxesFeesUsd: 20, nights: 5, rooms: 2 },
+      }),
+    );
+    // 150/night * 5 nights * 2 rooms = 1500; taxes 20 * 2 rooms = 40
+    expect(result.subtotal).toEqual(money(1500));
+    expect(result.taxesAndFees).toEqual(money(40));
   });
 
   it("prices activities by their own party size when given, else by travelers", () => {

@@ -172,6 +172,25 @@ Efficiency review found nothing worth changing at this project's actual scale (s
 
 **Verification:** `npm test` (82/82 passing — 73 from the initial implementation, 9 more added during the review pass for the bugs above), `npx tsc --noEmit` (clean), `npm run lint` (clean), `npm run build` (clean). No DB or LLM calls in any of this phase's code, so nothing needed live-data spot-checking this time.
 
-**Known limitations / assumptions carried forward:** `validateInventoryReferences` assumes `flights.destination`/`hotels.destination`/`activities.destination` and `destinations.name` share one identifier space (city names) since none of them are foreign keys — noted as a risk if a future data-loading path ever populates one table differently than the others. `assembleCandidateCombinations` assumes one room per hotel booking (room-capacity hard-constraint enforcement happens upstream, not here).
+**Known limitations / assumptions carried forward:** `validateInventoryReferences` assumes `flights.destination`/`hotels.destination`/`activities.destination` and `destinations.name` share one identifier space (city names) since none of them are foreign keys — noted as a risk if a future data-loading path ever populates one table differently than the others. (The one-room-per-hotel-booking limitation originally noted here was resolved the same day — see the next entry.)
 
 **Next up:** Phase 3 — session/trip repositories, state-versioning writes, event-history writes, and wiring the new `validateStateTransition` state machine into an actual workflow controller.
+
+---
+
+## 2026-09-16 — Multi-room hotel bookings (parties that split across rooms)
+
+**What I built:** Generalized hotel booking from "always one room for the whole party" to one room per **room group** — so a family wanting the kids in a separate room, or a party that includes friends who want their own room, prices and validates correctly instead of silently assuming everyone shares one room.
+- `src/domain/rooms.ts` (new) — `RoomGroup` (an occupant count plus an optional, calculation-irrelevant `label` like `"kids"`), `totalOccupants()`, `maxRoomOccupancy()`, and `assertRoomGroupsMatchTravelers()` (throws `RoomConfigurationError` if the groups don't add up to the traveler count).
+- `src/domain/constraints.ts` — replaced `minRoomCapacityConstraint(partySize)` with `roomCapacityConstraint(roomGroups)`: since one room is booked per group, the hotel only needs `room_capacity` to cover the *largest* group, not the whole party.
+- `src/domain/budget.ts` — `HotelSelection` gained an optional `rooms` field (default 1); both the nightly rate and the taxes/fees are now multiplied by room count.
+- `src/domain/combinations.ts` — `CombinationParams` now takes `roomGroups` instead of implicitly assuming one room; validates the room-group/traveler invariant up front; and — closing the exact gap flagged as a known limitation above — skips any hotel whose `room_capacity` can't fit the largest room group itself, rather than only trusting that hard-constraint filtering happened upstream. `CandidateCombination` now reports `rooms` booked.
+- 10 new tests across `rooms.test.ts`, `constraints.test.ts`, `budget.test.ts`, and `combinations.test.ts` (92 total, all passing).
+
+**Why:** Asked directly, after discussing the one-room assumption as a known limitation from the Phase 2 build. Deliberately scoped to what the domain model already supports: a room group is an occupant *count*, not named people — there's no traveler-identity concept anywhere else in the schema (`trip_requirements`/`trip_preferences`/`trip_decisions` track fields and decisions, not individual people), so modeling "Alice and Bob in room 2" would be a materially bigger schema change than what was asked for. Flagged that boundary before implementing rather than silently deciding it either way.
+
+**Decisions made:** A hotel booking still books uniform rooms of the same listed room type/rate for every group (the schema has no concept of a hotel offering multiple room types or a rooms-available count) — every room group is assumed to fit in "a room like this one," priced at the same nightly rate. This matches how the `hotels` table already models one row as one bookable room type, so it isn't a new gap introduced here, just an inherited one worth restating now that room count is explicit.
+
+**Verification:** `npm test` (92/92 passing), `npx tsc --noEmit` (clean), `npm run lint` (clean), `npm run build` (clean).
+
+**Next up:** Phase 3, unchanged from the prior entry.

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { activity, flight, hotel } from "@/src/repositories/fixtures";
 import { assembleCandidateCombinations, type CombinationParams } from "./combinations";
+import { money } from "./money";
 
 function baseParams(overrides: Partial<CombinationParams> = {}): CombinationParams {
   return {
@@ -8,6 +9,7 @@ function baseParams(overrides: Partial<CombinationParams> = {}): CombinationPara
     hotels: [hotel()],
     activities: [],
     travelers: 2,
+    roomGroups: [{ occupants: 2 }],
     nights: 5,
     targetUsd: 3000,
     ...overrides,
@@ -38,6 +40,7 @@ describe("assembleCandidateCombinations", () => {
       hotels: [hotel({ price_per_night_usd: 100, taxes_fees_usd: 0, id: "h1" })],
       nights: 1,
       travelers: 1,
+      roomGroups: [{ occupants: 1 }],
       targetUsd: 400,
       ceilingUsd: 400,
       activities: [
@@ -71,6 +74,7 @@ describe("assembleCandidateCombinations", () => {
       hotels: [hotel({ id: "cheap-hotel", price_per_night_usd: 50, taxes_fees_usd: 0 }), hotel({ id: "pricier-hotel", price_per_night_usd: 200, taxes_fees_usd: 0 })],
       nights: 1,
       travelers: 1,
+      roomGroups: [{ occupants: 1 }],
       targetUsd: 500,
       ceilingUsd: 500,
       activities: [activity({ id: "act", price_usd: 50 })],
@@ -85,5 +89,59 @@ describe("assembleCandidateCombinations", () => {
   it("returns an empty list when no flight/hotel pair fits", () => {
     const params = baseParams({ ceilingUsd: 1 });
     expect(assembleCandidateCombinations(params)).toEqual([]);
+  });
+
+  it("books and costs one room per room group (parents and kids in separate rooms)", () => {
+    const params = baseParams({
+      flights: [flight({ price_usd: 0, taxes_fees_usd: 0 })],
+      hotels: [hotel({ price_per_night_usd: 100, taxes_fees_usd: 10, room_capacity: 2 })],
+      nights: 2,
+      travelers: 4,
+      roomGroups: [
+        { occupants: 2, label: "parents" },
+        { occupants: 2, label: "kids" },
+      ],
+      targetUsd: 100_000,
+    });
+    const [combo] = assembleCandidateCombinations(params);
+    expect(combo.rooms).toBe(2);
+    // 100/night * 2 nights * 2 rooms = 400; taxes 10 * 2 rooms = 20
+    expect(combo.budget.subtotal).toEqual(money(400));
+    expect(combo.budget.taxesAndFees).toEqual(money(20));
+  });
+
+  it("only requires the hotel to fit the largest room group, not the whole party (parents/kids/friends splitting three rooms)", () => {
+    const params = baseParams({
+      flights: [flight({ price_usd: 0, taxes_fees_usd: 0 })],
+      hotels: [hotel({ room_capacity: 3 })],
+      travelers: 7,
+      roomGroups: [
+        { occupants: 2, label: "parents" },
+        { occupants: 2, label: "kids" },
+        { occupants: 3, label: "friends" },
+      ],
+      targetUsd: 100_000,
+    });
+    const [combo] = assembleCandidateCombinations(params);
+    expect(combo.rooms).toBe(3);
+  });
+
+  it("skips a hotel whose room capacity can't fit the largest room group", () => {
+    const params = baseParams({
+      hotels: [hotel({ room_capacity: 1 })], // too small for either 2-occupant group below
+      travelers: 4,
+      roomGroups: [
+        { occupants: 2, label: "parents" },
+        { occupants: 2, label: "kids" },
+      ],
+    });
+    expect(assembleCandidateCombinations(params)).toEqual([]);
+  });
+
+  it("throws when room groups don't add up to the traveler count", () => {
+    const params = baseParams({ travelers: 4, roomGroups: [{ occupants: 2 }] });
+    expect(() => assembleCandidateCombinations(params)).toThrow(
+      "Room groups add up to 2 occupant(s), but the party has 4 traveler(s).",
+    );
   });
 });
