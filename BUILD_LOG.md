@@ -244,3 +244,19 @@ Efficiency review found nothing worth changing at this project's actual scale (s
 **Verification:** `npm test` (105/105 passing, no test changes needed — the fix is internal to `getOrCreateActiveWorkflowRun`), `npx tsc --noEmit` (clean), `npm run lint` (clean), `npm run build` (clean). Live-verified against the hosted Supabase project with a throwaway script (not committed): two concurrent inserts for the same trip, confirmed exactly one succeeds and the other fails with `23505`; confirmed the loser's re-fetch finds the winner's row; confirmed a new active run can still be created after the first one completes (the fix doesn't permanently lock a trip out of new runs).
 
 **Next up:** Phase 4, unchanged from the prior entry.
+
+---
+
+## 2026-09-16 — Session close: Phase 4 planning discussion (no code changes)
+
+**What happened:** No implementation this stretch — a planning conversation ahead of starting Phase 4 in a fresh session, plus wrap-up/handoff for this one. Captured here (and pre-loaded into `docs/IMPLEMENTATION_PLAN.md`'s Phase 4 section) so the next session doesn't have to re-derive it:
+
+1. **Clarification-question design** — discussed whether Phase 4 needs a hand-built question-ordering decision tree for the Intake agent's clarification behavior. Concluded no: `PROJECT_BRIEF.md` §12 already models this as a single `request_clarification(missing_fields, reason)` tool call the agent makes per turn from current trip state — ordering/phrasing is agent territory, only the required-fields completeness check should be deterministic. Recorded as a design note on the Phase 4 checklist item, not a locked decision — revisit if scripted reliability turns out to matter more than assumed.
+2. **Model selection (ADR-INDEX Area 1, open item)** — recommended Sonnet 5 for the Intake/Revision Interpreter (extraction/classification/ambiguity-detection needs more judgment than the cheapest tier), Haiku 4.5 as a cheaper alternative to measure later. **Asked the user to confirm via `AskUserQuestion`; the question was dismissed without an answer.** This is genuinely unresolved, not defaulted — flagged prominently on the Phase 4 checklist so the next session asks again before writing model-client code, rather than silently assuming Sonnet 5.
+3. **Cost estimation** — walked through Sonnet 5 API pricing ($2/$10 per 1M input/output tokens) and a rough per-call cost once Phase 4's prompt-caching structure exists (~$0.01/call with an 8K-cached-token system prompt + tool defs), landing around 9,400 Intake-agent calls per $100 of API spend. This is about the *deployed app's* runtime cost (relevant to the brief's own "cost per completed trip" metric, §20) — unrelated to this session's own Claude Code usage-limit conversation, which was a separate tangent about billing mechanics, not a project decision, so it isn't reproduced here.
+
+**Verification:** N/A — no code touched. `git status` confirmed clean before ending the session (everything from the workflow_runs-race-fix entry above was already committed).
+
+**Known limitations carried forward:** unchanged — see `docs/IMPLEMENTATION_PLAN.md` §5 for the full tracked list (identifier-space assumption in `validateInventoryReferences`, `startTrip` not idempotency-keyed, hotel room-type/availability assumption, unreachable `"blocked"` state).
+
+**Next up:** Phase 4 — start with the structured Zod schemas for requirement/preference/decision extraction (pure TypeScript, no model calls, fully unit-testable — the same low-risk-first pattern Phase 2 used). Before writing the agent's model-client code, confirm the model choice (item 2 above) rather than assuming Sonnet 5.

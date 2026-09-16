@@ -48,12 +48,16 @@ Source of truth for *why* is `PROJECT_BRIEF.md`. This doc is the *how* and *in w
 - [x] Workflow telemetry (`workflow_runs`/`workflow_steps` writes) — `src/repositories/workflow-runs.ts`
 
 ### Phase 4 — Intake and revision interpretation
+
+**Not started — this is the next phase.** Nothing below is implemented; the items are pre-loaded with the decisions/discussion from the planning conversation that preceded it, so the next session doesn't have to re-derive them.
+
 - [ ] Structured output schemas (Zod or similar) for requirement/preference/decision extraction
 - [ ] Intake and Revision Interpreter agent
-- [ ] Clarification behavior
+- [ ] Clarification behavior — **design discussed, not yet built:** don't hand-author a question-ordering decision tree. `PROJECT_BRIEF.md` §12 already models this as a single `request_clarification(missing_fields, reason)` tool call the agent makes each turn based on current trip state — the agent decides *what* to ask and *how to phrase it*; only the completeness check (which fields are required before `requirements_ready`) should be deterministic code, not the agent's call. Revisit only if scripted/predictable question ordering turns out to matter more than natural conversation (e.g. for demo reliability) than assumed here.
 - [ ] Revision interpretation
 - [ ] Component evals for extraction/classification accuracy
-- [ ] Decide concrete model per agent (open item from ADR-INDEX Area 1) and set up prompt caching structure (static-first ordering per `PROJECT_BRIEF.md` §6.7) — with a caching-disabled baseline to compare against
+- [ ] **Model selection — proposed, not confirmed.** ADR-INDEX Area 1 flags this as open. Recommendation from planning discussion: **Sonnet 5** (`claude-sonnet-5`) as the default for the Intake/Revision Interpreter, given the extraction/classification/ambiguity-detection task needs more judgment than a cheap model reliably gets right, with **Haiku 4.5** worth measuring as a cheaper alternative once component evals exist to compare them. **Ask the user to confirm (or pick differently) before writing the agent's model-client code** — this was asked once already and the question was dismissed without an answer, so it's still genuinely open, not a default to assume. See `claude-api` skill pricing for cost context: Sonnet 5 is $2/$10 per 1M input/output tokens; with the caching structure below in place, a per-turn call shape (~2K fresh input, ~8K cached-read, ~500 output) comes out to roughly $0.01/call.
+- [ ] Set up prompt caching structure (static-first ordering per `PROJECT_BRIEF.md` §6.7 — stable system instructions, then stable tool definitions, then stable examples/policy text, then dynamic trip-state/user-message content last) — with a caching-disabled baseline to compare against, per §6.7's "do not claim savings without comparative measurements."
 
 ### Phase 5 — Retrieval and curation
 - [ ] Generate embeddings for seed `destinations`/`activities`
