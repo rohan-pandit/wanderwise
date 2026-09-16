@@ -25,3 +25,32 @@ Entry format and rationale in `PROJECT_BRIEF.md` §17.4. Updated per work sessio
 - First attempt to rename the project folder failed (`mv: cannot move ... Device or resource busy`) because the shell's working directory was still inside it; resolved by moving the shell to the parent directory first.
 
 **Next up:** Scaffold the actual Next.js app (Phase 0 remaining items in `docs/IMPLEMENTATION_PLAN.md` §1), wire up local Supabase and apply `0001_initial_schema.sql`, and build the route skeleton (`/`, `/auth/callback`, `/app`, `/app/trips`).
+
+---
+
+## 2026-09-16 — Next.js scaffold, auth flow, route skeleton
+
+**What I built:**
+- Scaffolded the Next.js app (TypeScript, App Router, Tailwind, ESLint) via `create-next-app`, merged into the existing repo without disturbing `PROJECT_BRIEF.md`/`CLAUDE.md`/`BUILD_LOG.md` (kept ours over the generated `README.md`/`CLAUDE.md`; kept the generated `AGENTS.md` and wired `CLAUDE.md` to import it via `@AGENTS.md`, since it's framework-maintained and auto-regenerated).
+- Installed `@supabase/supabase-js`, `@supabase/ssr`, `@anthropic-ai/sdk`, `zod`, and `vitest` (+ `@types/node` bump to satisfy vitest's peer dependency).
+- Built the `src/` domain-layer skeleton (`domain/`, `workflow/`, `agents/`, `tools/`, `repositories/`, `validation/`, `observability/`, `config/`) per `PROJECT_BRIEF.md` §15.
+- Implemented the full magic-link auth flow end to end: landing page with sign-in form (`app/page.tsx`), Supabase browser/server/service-role clients (`src/config/supabase/`), the auth callback route, and a `proxy.ts` (Next.js 16's renamed `middleware.ts`) that refreshes sessions and redirects signed-out requests away from `/app`.
+- Built the route skeleton: `/app` (protected shell + placeholder chat), `/app/trips` (live query against the `trips` table, RLS-scoped), `/app/trips/[tripId]` (placeholder).
+- `supabase init` (created `supabase/config.toml`).
+- Wired up Vitest (`vitest.config.mts`, one sanity test, `npm test` script) and verified `npm run build`, `npm run lint`, and `npm test` all pass clean.
+- Removed the unused, superseded `CURATED_TRAVEL_CONCIERGE_BUILD_BRIEF.md`.
+
+**Why:** Continuing Phase 0 of the build sequence — the architecture decisions from the previous session (single Next.js app, mandatory magic-link auth) needed an actual scaffold to be real rather than just documented.
+
+**Decisions made:**
+- Kept Next.js's own `app/` router directory at repo root (not under `src/`), reserving `src/` for domain/business logic per ADR-000 — avoids mixing routing concerns with orchestration/domain code.
+- Auth is enforced twice — once in `proxy.ts` (fast, avoids rendering protected pages at all) and once again in `app/app/layout.tsx` (defense in depth, per `PROJECT_BRIEF.md` §6.6) — redundant by design, not an oversight.
+- Followed Next.js 16's rename of `middleware.ts` → `proxy.ts` (exported function name must be `proxy`, not `middleware`) rather than leaving the deprecated convention in place.
+
+**What didn't work / dead ends:**
+- `create-next-app` refuses a clean non-empty-directory run interactively; scaffolded into a sibling temp directory (`wanderwise-scaffold`) and merged the needed files in by hand instead, discarding its generated `README.md`/`CLAUDE.md` (boilerplate, superseded by ours).
+- `vitest.config.ts` warned about future ESM/CommonJS incompatibility (`__dirname` usage) under Vite's native config loader; renamed to `.mts` and switched to `import.meta.dirname`.
+- `npx supabase start` failed — Docker Desktop is installed but its daemon isn't running (`failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`). Left this blocked rather than trying to launch a GUI app on the user's behalf; local Supabase (and therefore a working `.env.local`) is blocked until Docker Desktop is started manually.
+- The `middleware-to-proxy` codemod wanted a clean git tree or `--force`; did the one-file rename by hand instead rather than run an automated codemod with `--force` on a repo with lots of new untracked files.
+
+**Next up:** Start Docker Desktop, run `npx supabase start`, populate `.env.local` from the printed keys, confirm `0001_initial_schema.sql` applies cleanly and the magic-link flow works end to end against local Supabase (Inbucket/Mailpit for catching the email). Then Phase 1 — seed data and inventory repositories.

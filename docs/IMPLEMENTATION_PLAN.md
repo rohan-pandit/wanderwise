@@ -17,11 +17,11 @@ Source of truth for *why* is `PROJECT_BRIEF.md`. This doc is the *how* and *in w
 - [x] Create ADR index and the two decided ADRs
 - [x] Propose initial domain model and schema (this doc + migration)
 - [x] Create `BUILD_LOG.md`
-- [ ] Scaffold the actual Next.js app (`create-next-app`, TypeScript, App Router, Tailwind or equivalent)
-- [ ] Configure environment variables (`.env.local`: Supabase URL/keys, Anthropic API key) and confirm `.env*` stays gitignored
-- [ ] Establish local Supabase workflow (Supabase CLI, `supabase start`, apply `0001_initial_schema.sql`)
-- [ ] Set up route skeleton: `/` (landing + magic-link sign-in), `/app` (protected — chat + itinerary), `/app/trips` (history list)
-- [ ] Set up test runner (Vitest) with a trivial passing test, wired into a `npm test` script
+- [x] Scaffold the actual Next.js app (`create-next-app`, TypeScript, App Router, Tailwind)
+- [x] Configure environment variables (`.env.local.example` template committed; real `.env.local` still needs local Supabase keys — blocked, see below)
+- [ ] Establish local Supabase workflow — `supabase init` done (`supabase/config.toml`); `supabase start` is **blocked: Docker Desktop is installed but not running**. Start Docker Desktop, then run `npx supabase start` and copy the printed URL/anon key/service role key into `.env.local`; migration `0001_initial_schema.sql` will apply automatically.
+- [x] Set up route skeleton: `/` (landing + magic-link sign-in), `/auth/callback`, `/app` (protected — chat + itinerary placeholder), `/app/trips` (history list, live query), `/app/trips/[tripId]` (placeholder)
+- [x] Set up test runner (Vitest) with a trivial passing test, wired into `npm test`
 
 ### Phase 1 — Domain model and seeded data
 - [ ] Finalize normalized money/date types (shared TS types for currency amounts, date ranges)

@@ -30,3 +30,10 @@ Thumbs.db
 
 # Supabase local dev
 supabase/.temp/
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# misc
+*.pem
