@@ -1261,6 +1261,19 @@ For each substantial task: (1) state the intended change; (2) identify impacted 
 
 At the end of each work session, report: what changed; files changed; tests run; test results; database migrations added; decisions made; assumptions; known limitations; next recommended task.
 
+## 17.4 Build log entry format
+
+Maintain `BUILD_LOG.md` from day one, updated per work session, not retroactively. This file — alongside this brief and `CLAUDE.md` — is itself part of the portfolio deliverable, not just working notes: it's the artifact that demonstrates process and judgment, not just the finished code. Suggested entry format:
+
+```markdown
+## [Date] — [Phase/Milestone]
+**What I built:** ...
+**Why:** ...
+**Decisions made:** ...
+**What didn't work / dead ends:** ...
+**Next up:** ...
+```
+
 ---
 
 # 18. Initial ADR Backlog
