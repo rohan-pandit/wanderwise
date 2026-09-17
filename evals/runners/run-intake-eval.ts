@@ -19,30 +19,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { AnthropicModelClient } from "../../src/agents/providers/anthropic-model-client";
 import { runIntakeAgent } from "../../src/agents/intake";
 import { AVAILABLE_MODELS, type AvailableModel } from "../../src/config/models";
+import { estimateCostUsd } from "../../src/observability/pricing";
 import { INTAKE_EVAL_CASES } from "../cases/intake";
-
-// $/1M tokens (input, output) — see the `claude-api` skill's pricing table.
-// Cache reads run ~0.1x the input rate, cache writes ~1.25x — PROJECT_BRIEF.md
-// §6.7 requires cache read/write tokens to be measured, not assumed, so cost
-// here is cache-aware rather than treating all input tokens as full price.
-const PRICING_PER_MILLION: Record<AvailableModel, { input: number; output: number }> = {
-  "claude-sonnet-5": { input: 2, output: 10 },
-  "claude-haiku-4-5": { input: 1, output: 5 },
-};
-const CACHE_READ_MULTIPLIER = 0.1;
-const CACHE_WRITE_MULTIPLIER = 1.25;
-
-function estimateCostUsd(
-  model: AvailableModel,
-  usage: { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number },
-): number {
-  const pricing = PRICING_PER_MILLION[model];
-  const inputCost = (usage.inputTokens / 1_000_000) * pricing.input;
-  const outputCost = (usage.outputTokens / 1_000_000) * pricing.output;
-  const cacheReadCost = (usage.cacheReadInputTokens / 1_000_000) * pricing.input * CACHE_READ_MULTIPLIER;
-  const cacheWriteCost = (usage.cacheCreationInputTokens / 1_000_000) * pricing.input * CACHE_WRITE_MULTIPLIER;
-  return inputCost + outputCost + cacheReadCost + cacheWriteCost;
-}
 
 interface CaseOutcome {
   model: AvailableModel;
@@ -78,7 +56,8 @@ async function runCaseForModel(model: AvailableModel, client: Anthropic): Promis
       outputTokens: result.usage.outputTokens,
       cacheReadInputTokens: result.usage.cacheReadInputTokens,
       cacheCreationInputTokens: result.usage.cacheCreationInputTokens,
-      costUsd: estimateCostUsd(model, result.usage),
+      // `model` here is always a real `AvailableModel` (from AVAILABLE_MODELS), so this never actually falls back to null.
+      costUsd: estimateCostUsd(model, result.usage) ?? 0,
     });
   }
 

@@ -47,6 +47,7 @@ import {
 import type { RoomGroup } from "@/src/domain/rooms";
 import { scheduleActivities } from "@/src/domain/scheduling";
 import { deriveHotelStayDates } from "@/src/domain/stay";
+import { estimateCostUsd } from "@/src/observability/pricing";
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
 import { getActivitiesByIds, type MatchedActivity } from "@/src/repositories/activities";
 import { getFlightsByIds, type Flight } from "@/src/repositories/flights";
@@ -289,6 +290,7 @@ export async function proposeActivitiesStep(
       model: modelClient.model,
       usage: curatorResult.usage,
       latencyMs,
+      costUsd: estimateCostUsd(modelClient.model, curatorResult.usage),
       status: curatorResult.curation && !incompleteStopReason ? "success" : "error",
       errorMessage: incompleteStopReason
         ? `stop_reason: ${curatorResult.stopReason}`
@@ -531,6 +533,7 @@ export async function confirmActivitiesStep(
       model: modelClient.model,
       usage: writerResult.usage,
       latencyMs: Date.now() - startedAt,
+      costUsd: estimateCostUsd(modelClient.model, writerResult.usage),
       status: writerResult.itinerary && !incompleteStopReason ? "success" : "error",
       errorMessage: incompleteStopReason
         ? `stop_reason: ${writerResult.stopReason}`

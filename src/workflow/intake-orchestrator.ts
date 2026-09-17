@@ -35,6 +35,7 @@ import {
 } from "@/src/domain/extraction";
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
+import { estimateCostUsd } from "@/src/observability/pricing";
 import { appendMessage } from "@/src/repositories/messages";
 import {
   appendTripPreference,
@@ -379,6 +380,7 @@ export async function processIntakeTurn(
     inputStateVersion: currentState.version,
     usage: agentResult.usage,
     latencyMs,
+    costUsd: estimateCostUsd(modelClient.model, agentResult.usage),
     status: anyToolCallFailed || incompleteStopReason ? "error" : "success",
     errorMessage: incompleteStopReason ? `stop_reason: ${agentResult.stopReason}` : null,
     correlationId,

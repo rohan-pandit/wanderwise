@@ -70,6 +70,24 @@ Entry format and rationale in `PROJECT_BRIEF.md` §17.4. Updated per work sessio
 
 ---
 
+## 2026-09-17 — Phase 8 slice 4: engineering dashboard
+
+**What I built:** `app/internal/analytics/page.tsx` — the §13.3 engineering dashboard: trip finalization rate, total/per-finalized-trip cost, cost/latency/cache-read breakdown by agent, guardrail trigger frequency (which fires most), workflow failure-state breakdown, and eval pass-rate trend across recent `eval_runs`. Uses `createServiceClient` (every source table — `agent_runs`/`tool_calls`/`guardrail_events`/`workflow_steps`/`eval_runs`/`eval_results` — has RLS enabled with no policy for `anon`/`authenticated`, so the RLS-scoped client would just get zero rows). Route-level access is `proxy.ts`'s existing deny-by-default middleware — no separate in-page auth check, matching `app/app/layout.tsx`'s own documented reasoning.
+
+Also fixed a real gap discovered while building this: `agent_runs.cost_usd` was defined in the schema and accepted by `recordAgentRun`, but **no caller ever actually passed it** — `intake-orchestrator.ts` and `activities-step.ts`'s three `recordAgentRun` calls all left it `null`, silently, since nothing enforced it. Extracted `evals/runners/run-intake-eval.ts`'s existing cost-estimation formula into `src/observability/pricing.ts` (the first real file in that previously-empty directory) and wired `estimateCostUsd(model, usage)` into all three call sites plus the eval runner (removing its duplicate copy).
+
+**Why:** Phase 8's "Engineering dashboard" checklist item, plus the §22 "Analytics dashboard access control" open decision it depended on. The cost-wiring fix wasn't optional scope creep — without it, every cost metric on this dashboard would show $0.00 forever no matter how much the app actually spent, which defeats the entire point of a cost dashboard.
+
+**Decisions made:** `/internal/analytics` access stays "any signed-in user," not a separate admin role — resolved the §22 open item this way since this is a single-operator portfolio project with no multi-tenant admin concept anywhere else in the app.
+
+**What didn't work / dead ends:** none — the embedded-resource Supabase query (`eval_results` joined to `eval_runs` for label/timestamp) worked on the first real try against the live DB, resolved via the real Postgres FK even though `database.types.ts`'s hand-maintained `Relationships: []` doesn't declare it (that array is TS-typing-only; PostgREST resolves embeds from the actual schema).
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean. Live-verified in the browser: created a throwaway dev-signin helper (same pattern as Phase 7's live verification — a `/dev-signin` route + one-line `proxy.ts` public-path exception, both removed after use, not committed) to actually load `/internal/analytics` signed in and confirm real data renders. First load showed real guardrail/tool-call/eval-pass-rate numbers but $0.00 everywhere for cost (all prior `agent_runs` rows predate the pricing fix); re-ran `npm run eval:scenarios` once more after the fix and confirmed real per-agent costs, cache-hit-rate savings, and a growing eval pass-rate trend all appeared correctly on refresh. Confirmed via `auth.admin.listUsers` that the harness's own cleanup has been working correctly all along (only the intentional dev-signin user was ever left over, and it's now deleted) — the dashboard's "0/2 trips finalized" is real leftover data from earlier Phase 7 live testing, not eval debris.
+
+**Next up:** Continue Phase 8 — remaining §19 scenarios (needs RLS/JWT or fault-injection infra), the product metrics view, and the cache-hit/cost comparison experiment.
+
+---
+
 ## 2026-09-16 — Planning: brief consolidation, repo setup, first architecture decisions
 
 **What I built:**
