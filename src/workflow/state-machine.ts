@@ -22,7 +22,6 @@ export const WORKFLOW_STATES = [
   "applying_revision",
   "awaiting_confirmation",
   "finalized",
-  "blocked",
   "failed_recoverable",
   "failed_terminal",
   "cancelled",

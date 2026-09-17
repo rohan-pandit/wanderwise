@@ -86,6 +86,10 @@ describe("runCuratorAgent", () => {
     expect(result.referenceCheck).toEqual({ valid: false, unresolvedIds: ["made-up-destination"] });
     expect(result.toolCallLog[0].status).toBe("error");
     expect(result.toolCallLog[0].error).toContain("made-up-destination");
+    // Distinguished from a malformed call so a caller logging Layer 2
+    // (output_validation) guardrail events doesn't double-count this failure,
+    // which is already logged as its own domain_validation guardrail event.
+    expect(result.toolCallLog[0].errorKind).toBe("reference_check_failed");
   });
 
   it("records a malformed tool call instead of throwing", async () => {
@@ -95,6 +99,7 @@ describe("runCuratorAgent", () => {
     const result = await runCuratorAgent(client, baseInput);
     expect(result.curation).toBeNull();
     expect(result.toolCallLog[0].status).toBe("error");
+    expect(result.toolCallLog[0].errorKind).toBe("malformed");
   });
 
   it("flags a duplicate record_curation call instead of overwriting the first valid one", async () => {
@@ -109,7 +114,13 @@ describe("runCuratorAgent", () => {
     expect(result.referenceCheck).toEqual({ valid: true, unresolvedIds: [] });
     const errors = result.toolCallLog.filter((c) => c.status === "error");
     expect(errors).toEqual([
-      { toolName: "record_curation", input: { rankedIds: ["d3"], rationale: "second" }, status: "error", error: "duplicate record_curation call in one turn" },
+      {
+        toolName: "record_curation",
+        input: { rankedIds: ["d3"], rationale: "second" },
+        status: "error",
+        error: "duplicate record_curation call in one turn",
+        errorKind: "malformed",
+      },
     ]);
   });
 
@@ -128,7 +139,9 @@ describe("runCuratorAgent", () => {
   it("records an unknown tool call rather than crashing", async () => {
     const client = new FakeModelClient({ toolCalls: [{ toolName: "search_flights", input: {} }] });
     const result = await runCuratorAgent(client, baseInput);
-    expect(result.toolCallLog).toEqual([{ toolName: "search_flights", input: {}, status: "error", error: "unknown tool" }]);
+    expect(result.toolCallLog).toEqual([
+      { toolName: "search_flights", input: {}, status: "error", error: "unknown tool", errorKind: "malformed" },
+    ]);
   });
 
   it("returns an empty result when the model only replies with text", async () => {

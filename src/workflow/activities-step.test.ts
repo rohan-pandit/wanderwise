@@ -241,6 +241,48 @@ describe("proposeActivitiesStep", () => {
       expect.objectContaining({ guardrailName: "itinerary_feasibility" }),
     );
   });
+
+  it("logs a tool_call_schema_validation output_validation guardrail event for a malformed Curator tool call", async () => {
+    vi.mocked(runCuratorAgent).mockResolvedValue(
+      curationResult({
+        curation: null,
+        toolCallLog: [{ toolName: "record_curation", input: {}, status: "error", error: "unknown tool", errorKind: "malformed" }],
+      }) as never,
+    );
+
+    await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
+
+    expect(recordGuardrailEvent).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ guardrailName: "tool_call_schema_validation", layer: "output_validation", triggered: true }),
+    );
+  });
+
+  it("does not double-count a reference-check failure as a tool_call_schema_validation guardrail trigger", async () => {
+    vi.mocked(runCuratorAgent).mockResolvedValue(
+      curationResult({
+        curation: null,
+        referenceCheck: { valid: false, unresolvedIds: ["ghost"] },
+        toolCallLog: [
+          {
+            toolName: "record_curation",
+            input: {},
+            status: "error",
+            error: "referenced unapproved candidate id(s): ghost",
+            errorKind: "reference_check_failed",
+          },
+        ],
+      }) as never,
+    );
+
+    await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
+
+    expect(recordGuardrailEvent).toHaveBeenCalledWith(supabase, expect.objectContaining({ guardrailName: "curation_reference_check" }));
+    expect(recordGuardrailEvent).not.toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ guardrailName: "tool_call_schema_validation" }),
+    );
+  });
 });
 
 describe("confirmActivitiesStep", () => {

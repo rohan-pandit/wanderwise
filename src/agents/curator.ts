@@ -104,7 +104,7 @@ export async function runCuratorAgent(
 
   for (const call of response.toolCalls) {
     if (call.toolName !== TOOL_NAME) {
-      result.toolCallLog.push({ toolName: call.toolName, input: call.input, status: "error", error: "unknown tool" });
+      result.toolCallLog.push({ toolName: call.toolName, input: call.input, status: "error", error: "unknown tool", errorKind: "malformed" });
       continue;
     }
     if (result.curation) {
@@ -116,12 +116,13 @@ export async function runCuratorAgent(
         input: call.input,
         status: "error",
         error: "duplicate record_curation call in one turn",
+        errorKind: "malformed",
       });
       continue;
     }
     const parsed = CurationOutput.safeParse(call.input);
     if (!parsed.success) {
-      result.toolCallLog.push({ toolName: call.toolName, input: call.input, status: "error", error: parsed.error.message });
+      result.toolCallLog.push({ toolName: call.toolName, input: call.input, status: "error", error: parsed.error.message, errorKind: "malformed" });
       continue;
     }
     const referenceCheck = validateCurationReferences(parsed.data, approvedIds);
@@ -131,6 +132,7 @@ export async function runCuratorAgent(
         input: call.input,
         status: "error",
         error: `referenced unapproved candidate id(s): ${referenceCheck.unresolvedIds.join(", ")}`,
+        errorKind: "reference_check_failed",
       });
       result.referenceCheck = referenceCheck;
       continue;

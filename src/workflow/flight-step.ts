@@ -6,9 +6,16 @@
  * to invalidate, and slice 3 generalizing that same cascade to activities
  * once `activities-step.ts` existed too. The old one-shot pipeline
  * (`search-orchestrator.ts`, `itinerary-orchestrator.ts`) was retired in
- * slice 3 — `flightHardConstraints`/`requirementMap`/
- * `OneWayTripNotSupportedError` moved to `step-shared.ts`, the only pieces
- * of it this module ever depended on.
+ * slice 3 — `flightHardConstraints`/`requirementMap` moved to
+ * `step-shared.ts`, the only pieces of it this module ever depended on.
+ *
+ * `returnDate` became a required field (`REQUIRED_FOR_READY`,
+ * `src/domain/extraction.ts`) once one-way trips were resolved to "ask for a
+ * return date via clarification" rather than a silent default — so
+ * `checkRequirementsComplete` below now rejects a missing `returnDate` the
+ * same way it rejects a missing `destination`, and the dedicated
+ * `OneWayTripNotSupportedError` this module used to throw afterward was
+ * removed as dead code once completeness already guaranteed its presence.
  *
  * Two decisions from this slice's planning session, not assumed:
  * 1. Before a hotel/activities exist to fit a budget against, this proposes
@@ -64,7 +71,7 @@ import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { listActiveTripRequirements, type TripRequirementRow } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { deriveCorrelationId } from "./correlation";
-import { confirmDecisionField, flightHardConstraints, OneWayTripNotSupportedError, requirementMap } from "./step-shared";
+import { confirmDecisionField, flightHardConstraints, requirementMap } from "./step-shared";
 
 const AGENT_NAME = "flight_step";
 const MAX_FLIGHT_CANDIDATES = 3;
@@ -144,10 +151,9 @@ export async function proposeFlightStep(
   const origin = reqs.get("origin") as string;
   const destination = reqs.get("destination") as string;
   const departureDate = reqs.get("departureDate") as string;
-  const returnDate = reqs.get("returnDate") as string | undefined;
-  if (!returnDate) {
-    throw new OneWayTripNotSupportedError(params.tripId);
-  }
+  // Guaranteed present: `returnDate` is in `REQUIRED_FOR_READY`, so the
+  // completeness check above already rejected a missing value.
+  const returnDate = reqs.get("returnDate") as string;
 
   const [run, outboundCandidates, returnCandidates] = await Promise.all([
     getOrCreateActiveWorkflowRun(supabase, params.tripId),

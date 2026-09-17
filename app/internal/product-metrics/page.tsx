@@ -51,7 +51,6 @@ const STAGE_LABELS: Record<WorkflowState, string> = {
   cancelled: "Cancelled",
   failed_recoverable: "Failed (recoverable)",
   failed_terminal: "Failed (terminal)",
-  blocked: "Blocked",
 };
 
 export default async function ProductMetricsPage() {

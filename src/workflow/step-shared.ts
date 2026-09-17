@@ -25,13 +25,6 @@ import {
 } from "@/src/repositories/trip-decisions";
 import type { TripRequirementRow } from "@/src/repositories/trip-requirements";
 
-export class OneWayTripNotSupportedError extends Error {
-  constructor(tripId: string) {
-    super(`Trip ${tripId} has no returnDate — the stepwise chain can't derive a hotel-stay length or checkout date for a one-way trip yet.`);
-    this.name = "OneWayTripNotSupportedError";
-  }
-}
-
 export function requirementMap(rows: TripRequirementRow[]): Map<RequirementFieldName, unknown> {
   const map = new Map<RequirementFieldName, unknown>();
   for (const row of rows) map.set(row.field as RequirementFieldName, row.value);

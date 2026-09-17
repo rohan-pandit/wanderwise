@@ -90,11 +90,9 @@ Real booking would need a new boundary after a trip's decisions are confirmed, t
 
 The full, honestly-tracked list — including which are fixed, which are open, and why — lives in [`docs/IMPLEMENTATION_PLAN.md` §5](docs/IMPLEMENTATION_PLAN.md). The headline ones:
 
-- **The budget-ceiling guardrail isn't enforced at finalize time** — a trip can finalize over budget today (caught by eval, not yet fixed — needs a small product decision first, see above).
 - **10 of the brief's 16 end-to-end scenarios aren't automated yet** (stale inventory, duplicate/idempotent requests, cross-session isolation, cancellation, prompt injection in retrieved inventory text, failure/recovery) — they need real RLS/JWT-authenticated test sessions or fault-injection infrastructure the current direct-call eval harness doesn't provide.
-- **A retry of a full orchestrator turn isn't idempotent** across its non-transition writes (messages, telemetry rows) — no real client retries a failed turn yet, so this hasn't bitten in practice, but it's a known gap, not an assumption.
-- **One-way trips aren't supported** — a deliberate scope boundary (`OneWayTripNotSupportedError`), not a silent failure.
 - **Telemetry retention is a documented policy, not automated code** — every row in this project's database is synthetic demo/eval data, so a real scheduled-deletion job wasn't built yet (see [ADR-007](docs/architecture/ADR-007-observability.md)).
+- **A handful of smaller, lower-priority gaps remain tracked but open** — a naive first-fit activity scheduler (not an optimizer), only the top 5 candidate combinations tried before declaring infeasibility, destination identity via a plain city-name string rather than a foreign key, and a couple of others. None are silent — see the full list for what's open and why.
 
 ## Notable trade-offs and dead ends
 

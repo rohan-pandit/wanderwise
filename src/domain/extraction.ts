@@ -127,6 +127,7 @@ export const REQUIRED_FOR_READY: readonly RequirementFieldName[] = [
   "origin",
   "destination",
   "departureDate",
+  "returnDate",
   "partySize",
   "budgetTotalUsd",
 ];

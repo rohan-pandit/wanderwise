@@ -72,6 +72,20 @@ export interface ToolCallLogEntry {
   /** The validated/parsed output for a successful call. */
   result?: unknown;
   error?: string;
+  /**
+   * Set on an error entry to distinguish *why* it failed, since not every
+   * error belongs to the same guardrail layer. `"malformed"` (unknown tool,
+   * duplicate call, schema validation failure) is a Layer 2
+   * (output_validation) guardrail trigger. `"reference_check_failed"` is a
+   * well-formed call whose *content* failed a domain-level hallucination
+   * check (e.g. `validateCurationReferences`) — already logged as its own
+   * domain_validation guardrail event by the caller, so a caller that also
+   * logs every `status: "error"` entry as Layer 2 must exclude this kind to
+   * avoid double-counting the same failure under two layers. Omitted for
+   * agents (like Intake) that have no such domain-level check to conflict
+   * with — absence means "malformed" for those callers' purposes.
+   */
+  errorKind?: "malformed" | "reference_check_failed";
 }
 
 /** What a `ModelClient` implementation throws on failure — keeps provider-specific exception types (e.g. `Anthropic.APIError`) from leaking through the abstraction. The original error is preserved as `cause`. */

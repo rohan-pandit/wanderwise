@@ -321,6 +321,27 @@ export async function proposeActivitiesStep(
           : null,
       workflowRunId: run.id,
     });
+    // Layer 2 guardrail: a malformed tool call (unknown tool, duplicate call,
+    // schema failure) is an output-validation trigger, same as Intake's.
+    // Excludes "reference_check_failed" entries — those are well-formed calls
+    // already logged above as the domain_validation `curation_reference_check`
+    // event, so counting them here too would double-count one failure under
+    // two layers.
+    await Promise.all(
+      curatorResult.toolCallLog
+        .filter((call) => call.status === "error" && call.errorKind === "malformed")
+        .map((call) =>
+          recordGuardrailEvent(supabase, {
+            tripId: params.tripId,
+            agentName: CURATOR_AGENT_NAME,
+            guardrailName: "tool_call_schema_validation",
+            layer: "output_validation",
+            triggered: true,
+            detail: `${call.toolName}: ${call.error}`,
+            workflowRunId: run.id,
+          }),
+        ),
+    );
     curation = curatorResult.curation;
   }
 

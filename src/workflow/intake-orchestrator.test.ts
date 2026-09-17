@@ -256,6 +256,7 @@ describe("processIntakeTurn", () => {
       requirementRow("origin", "New York"),
       requirementRow("destination", "Lisbon"),
       requirementRow("departureDate", "2026-10-05"),
+      requirementRow("returnDate", "2026-10-12"),
       requirementRow("partySize", 2),
       requirementRow("budgetTotalUsd", 3000),
     ];
@@ -308,6 +309,7 @@ describe("processIntakeTurn", () => {
           { field: "origin", value: "New York", source: "user_explicit", confidence: 1 },
           { field: "destination", value: "Lisbon", source: "user_explicit", confidence: 1 },
           { field: "departureDate", value: "2026-10-05", source: "user_explicit", confidence: 1 },
+          { field: "returnDate", value: "2026-10-12", source: "user_explicit", confidence: 1 },
           { field: "partySize", value: 2, source: "user_explicit", confidence: 1 },
           { field: "budgetTotalUsd", value: 3000, source: "user_explicit", confidence: 1 },
         ],
@@ -327,7 +329,7 @@ describe("processIntakeTurn", () => {
       userMessage: "NY to Lisbon, Oct 5, party of 2, budget 3000",
     });
 
-    expect(appendTripRequirement).toHaveBeenCalledTimes(5);
+    expect(appendTripRequirement).toHaveBeenCalledTimes(6);
     expect(advanceTrip).toHaveBeenCalledWith(
       supabase,
       expect.objectContaining({ event: "requirements_complete" }),
@@ -394,6 +396,7 @@ describe("processIntakeTurn", () => {
       requirementRow("origin", "New York"),
       requirementRow("destination", "Lisbon"),
       requirementRow("departureDate", "2026-10-05"),
+      requirementRow("returnDate", "2026-10-12"),
       requirementRow("partySize", 2),
     ] as never);
     vi.mocked(runIntakeAgent).mockResolvedValue(

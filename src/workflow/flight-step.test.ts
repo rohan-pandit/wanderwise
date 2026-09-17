@@ -22,7 +22,6 @@ import {
 import { appendTripEvent } from "@/src/repositories/trip-events";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
-import { OneWayTripNotSupportedError } from "./step-shared";
 import {
   InvalidFlightSelectionError,
   NoViableFlightCandidatesError,
@@ -112,12 +111,13 @@ describe("proposeFlightStep", () => {
     expect(findFlights).not.toHaveBeenCalled();
   });
 
-  it("throws OneWayTripNotSupportedError when there's no returnDate", async () => {
+  it("throws RequirementsNotReadyError when returnDate is missing (a one-way trip needs a clarification, not a silent default)", async () => {
     vi.mocked(listActiveTripRequirements).mockResolvedValue(
       READY_REQUIREMENTS.filter((r) => r.field !== "returnDate") as never,
     );
 
-    await expect(proposeFlightStep(supabase, { tripId: TRIP_ID })).rejects.toThrow(OneWayTripNotSupportedError);
+    await expect(proposeFlightStep(supabase, { tripId: TRIP_ID })).rejects.toThrow(RequirementsNotReadyError);
+    expect(findFlights).not.toHaveBeenCalled();
   });
 
   it("searches the return leg in the reversed direction", async () => {
