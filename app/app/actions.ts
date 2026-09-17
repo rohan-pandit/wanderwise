@@ -33,14 +33,14 @@ import { VoyageEmbeddingClient } from "@/src/retrieval/providers/voyage-embeddin
 import { createSession } from "@/src/repositories/sessions";
 import { getTrip, type Trip } from "@/src/repositories/trips";
 import { startTrip } from "@/src/workflow/controller";
-import {
-  assembleItinerary,
-  reviseItinerary,
-  type AssembleItineraryResult,
-  type RevisableDecisionField,
-} from "@/src/workflow/itinerary-orchestrator";
 import { processIntakeTurn, type ProcessIntakeTurnResult } from "@/src/workflow/intake-orchestrator";
-import { runSearchAndCuration, type RunSearchAndCurationResult } from "@/src/workflow/search-orchestrator";
+import {
+  runStepwiseChain,
+  runStepwiseRevision,
+  type RunStepwiseChainResult,
+  type StepwiseChainClients,
+} from "@/src/workflow/chain-orchestrator";
+import type { RevisableDecisionField } from "@/src/workflow/step-shared";
 
 /** Shared by every Server Action here past `sendMessage`'s own trip-creation path: authenticate, then load the trip and check ownership explicitly (the RLS-scoped client isn't used past this point — see the module docstring). */
 async function requireOwnedTrip(supabase: SupabaseClient<Database>, tripId: string): Promise<Trip> {
@@ -59,39 +59,13 @@ async function requireOwnedTrip(supabase: SupabaseClient<Database>, tripId: stri
   return trip;
 }
 
-/**
- * Runs `runSearchAndCuration` then `assembleItinerary` back to back — the
- * actual pipeline body both `assembleTripItinerary` (called directly, e.g.
- * for testing/debugging one step) and `sendMessage`'s auto-chain (below)
- * share, so there's exactly one place that composes them.
- */
-async function runAssembleTripItinerary(
-  supabase: SupabaseClient<Database>,
-  tripId: string,
-): Promise<AssembleItineraryResult & { search: RunSearchAndCurationResult }> {
-  const curatorModelClient = new AnthropicModelClient(AGENT_MODELS.curator);
-  const embeddingClient = new VoyageEmbeddingClient();
-  const search = await runSearchAndCuration(supabase, curatorModelClient, embeddingClient, { tripId });
-  const writerModelClient = new AnthropicModelClient(AGENT_MODELS.itineraryWriter);
-  const result = await assembleItinerary(supabase, writerModelClient, {
-    tripId,
-    outboundFlights: search.outboundFlights,
-    returnFlights: search.returnFlights,
-    hotels: search.hotels,
-    activities: search.activities,
-    curation: search.curation,
-  });
-  return { ...result, search };
-}
-
-/** The revision counterpart to `runAssembleTripItinerary` above — shared by `reviseTripDecision` and `sendMessage`'s auto-chain. */
-async function runReviseItinerary(
-  supabase: SupabaseClient<Database>,
-  tripId: string,
-  field: RevisableDecisionField,
-): Promise<AssembleItineraryResult> {
-  const writerModelClient = new AnthropicModelClient(AGENT_MODELS.itineraryWriter);
-  return reviseItinerary(supabase, writerModelClient, { tripId, field });
+/** The real model/embedding clients every stepwise-chain call needs — constructed once per request, not per step. */
+function stepwiseChainClients(): StepwiseChainClients {
+  return {
+    curatorModelClient: new AnthropicModelClient(AGENT_MODELS.curator),
+    writerModelClient: new AnthropicModelClient(AGENT_MODELS.itineraryWriter),
+    embeddingClient: new VoyageEmbeddingClient(),
+  };
 }
 
 export interface SendMessageInput {
@@ -149,18 +123,38 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
   // seconds of real API calls; the chat UI watches `trip_decisions`/
   // `trip_events` via Supabase Realtime to see the rest land live, piece by
   // piece, exactly as each step's write completes.
+  //
+  // `runStepwiseChain`/`runStepwiseRevision` (stepwise chain redesign slice
+  // 3, `docs/IMPLEMENTATION_PLAN.md`) are interim glue: they auto-confirm
+  // each step's top-ranked candidate rather than showing it and waiting for
+  // the user, so the chat UI keeps behaving as it did under the old
+  // one-shot pipeline (retired this slice) until slice 4 replaces this with
+  // real per-step interaction.
+  //
+  // `decisionRevisionRequested` is checked *first*, not `workflowState`.
+  // Caught live (not by unit tests, which mock `processIntakeTurn` and so
+  // never see this): under the old pipeline, `workflowState` genuinely left
+  // `"requirements_ready"` once search began (`advanceTrip` moved it along).
+  // The new stepwise steps deliberately never call `advanceTrip` (slice 1's
+  // decision), so `workflowState` stays `"requirements_ready"` forever after
+  // the first run — checking it first meant a revision turn always
+  // re-entered `runStepwiseChain` (which correctly no-ops once the chain is
+  // already complete) instead of ever reaching `runStepwiseRevision`, so no
+  // chat-requested revision could ever actually apply. `runStepwiseChain`
+  // is safe to call speculatively on any other turn: `getCurrentChainStep`
+  // makes it a harmless no-op once the chain is already fully confirmed.
   const finalTripId = tripId;
-  if (result.workflowState === "requirements_ready") {
-    after(() =>
-      runAssembleTripItinerary(supabase, finalTripId).catch((err) => {
-        console.error(`assembleTripItinerary failed for trip ${finalTripId}:`, err);
-      }),
-    );
-  } else if (result.decisionRevisionRequested) {
+  if (result.decisionRevisionRequested) {
     const field = result.decisionRevisionRequested;
     after(() =>
-      runReviseItinerary(supabase, finalTripId, field).catch((err) => {
-        console.error(`reviseItinerary failed for trip ${finalTripId}:`, err);
+      runStepwiseRevision(supabase, { tripId: finalTripId, field, ...stepwiseChainClients() }).catch((err) => {
+        console.error(`runStepwiseRevision failed for trip ${finalTripId}:`, err);
+      }),
+    );
+  } else if (result.workflowState === "requirements_ready") {
+    after(() =>
+      runStepwiseChain(supabase, { tripId: finalTripId, ...stepwiseChainClients() }).catch((err) => {
+        console.error(`runStepwiseChain failed for trip ${finalTripId}:`, err);
       }),
     );
   }
@@ -168,80 +162,25 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
   return { ...result, tripId, sessionId };
 }
 
-export interface BeginSearchInput {
-  tripId: string;
-}
-
-export interface BeginSearchResult extends RunSearchAndCurationResult {
-  tripId: string;
-}
-
-/**
- * Server Action entry point for the search/curation orchestrator
- * (`src/workflow/search-orchestrator.ts`, Phase 6 continued). No chat UI
- * triggers this yet (Phase 7) — a real UI would call it once
- * `sendMessage`'s result reports `workflowState: "requirements_ready"` — but
- * it makes the wiring reachable through the real authenticated request path,
- * same rationale as `sendMessage` above.
- */
-export async function beginSearch(input: BeginSearchInput): Promise<BeginSearchResult> {
-  const supabase = createServiceClient();
-  await requireOwnedTrip(supabase, input.tripId);
-
-  const modelClient = new AnthropicModelClient(AGENT_MODELS.curator);
-  const embeddingClient = new VoyageEmbeddingClient();
-  const result = await runSearchAndCuration(supabase, modelClient, embeddingClient, { tripId: input.tripId });
-
-  return { ...result, tripId: input.tripId };
-}
-
-export interface AssembleTripItineraryInput {
-  tripId: string;
-}
-
-export interface AssembleTripItineraryResult extends AssembleItineraryResult {
-  tripId: string;
-  search: RunSearchAndCurationResult;
-}
-
-/**
- * Server Action entry point spanning both Phase 6 continued slices: runs
- * `runSearchAndCuration` (slice 1) then feeds its result straight into
- * `assembleItinerary` (slice 2) in one round trip. There's no user-facing
- * checkpoint between `assembling_options` and `presenting_draft` — those
- * intermediate workflow states are implementation-level retry/telemetry
- * granularity, not a point a chat UI would ever pause at — so a caller only
- * ever needs the one call once a trip reaches `requirements_ready`.
- * `beginSearch` above stays separately callable for testing/debugging one
- * slice at a time.
- */
-export async function assembleTripItinerary(input: AssembleTripItineraryInput): Promise<AssembleTripItineraryResult> {
-  const supabase = createServiceClient();
-  await requireOwnedTrip(supabase, input.tripId);
-  const result = await runAssembleTripItinerary(supabase, input.tripId);
-  return { ...result, tripId: input.tripId };
-}
-
 export interface ReviseTripDecisionInput {
   tripId: string;
   field: RevisableDecisionField;
 }
 
-export interface ReviseTripDecisionResult extends AssembleItineraryResult {
+export interface ReviseTripDecisionResult extends RunStepwiseChainResult {
   tripId: string;
 }
 
 /**
  * Server Action entry point for the decision-revision loop
- * (`src/workflow/itinerary-orchestrator.ts`'s `reviseItinerary`, Phase 7).
- * No chat UI calls this directly today — `sendMessage`'s auto-chain above
- * calls it once `processIntakeTurn` signals `decisionRevisionRequested` —
- * but it's exposed as its own action too for testing/debugging a revision
- * in isolation, same rationale as `beginSearch`/`assembleTripItinerary`.
+ * (`src/workflow/chain-orchestrator.ts`'s `runStepwiseRevision`). No chat UI
+ * calls this directly today — `sendMessage`'s auto-chain above calls it once
+ * `processIntakeTurn` signals `decisionRevisionRequested` — but it's exposed
+ * as its own action too for testing/debugging a revision in isolation.
  */
 export async function reviseTripDecision(input: ReviseTripDecisionInput): Promise<ReviseTripDecisionResult> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId);
-  const result = await runReviseItinerary(supabase, input.tripId, input.field);
+  const result = await runStepwiseRevision(supabase, { tripId: input.tripId, field: input.field, ...stepwiseChainClients() });
   return { ...result, tripId: input.tripId };
 }

@@ -17,6 +17,12 @@
  * (which comes from the flight) and each activity's own hours/closed days,
  * never on which hotel was picked — so `confirmHotelStep` has no cascade
  * logic of its own, unlike `flight-step.ts`'s `confirmFlightStep`.
+ *
+ * Slice 3: shared helpers (`hotelHardConstraints`/`requirementMap`) moved to
+ * `step-shared.ts` once the old pipeline that used to own them was retired;
+ * `proposeHotelStep` gained an optional `excludeHotelId` for the interim
+ * chat-revision glue (`chain-orchestrator.ts`) to re-propose without
+ * returning the same already-confirmed hotel.
  */
 import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -32,7 +38,7 @@ import { appendTripEvent } from "@/src/repositories/trip-events";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { deriveCorrelationId } from "./correlation";
-import { hotelHardConstraints, requirementMap } from "./search-orchestrator";
+import { hotelHardConstraints, requirementMap } from "./step-shared";
 
 const AGENT_NAME = "hotel_step";
 const MAX_HOTEL_CANDIDATES = 3;
@@ -88,6 +94,8 @@ export interface ProposeHotelStepParams {
   tripId: string;
   /** Idempotency key for the logged `trip_events` row — see `deriveCorrelationId`. Defaults to a fresh UUID if omitted. */
   correlationId?: string;
+  /** Excludes this hotel — used by a revision re-propose so "show me something else" can't just return the same pick again. */
+  excludeHotelId?: string;
 }
 
 export interface ProposeHotelStepResult {
@@ -143,10 +151,15 @@ export async function proposeHotelStep(
     throw new NoViableHotelCandidatesError(params.tripId, "no hotels passed hard constraints");
   }
 
+  const eligible = params.excludeHotelId ? filtered.passing.filter((h) => h.id !== params.excludeHotelId) : filtered.passing;
+  if (eligible.length === 0) {
+    throw new NoViableHotelCandidatesError(params.tripId, "no other hotel is available once the excluded one is ruled out");
+  }
+
   // `findHotels` already orders by price_per_night_usd ascending and
   // `filterHardConstraints` preserves order — cheapest-first falls out
   // without a separate sort.
-  const topCandidates = filtered.passing.slice(0, MAX_HOTEL_CANDIDATES);
+  const topCandidates = eligible.slice(0, MAX_HOTEL_CANDIDATES);
 
   await appendTripEvent(supabase, {
     tripId: params.tripId,

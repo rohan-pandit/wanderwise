@@ -3,9 +3,12 @@
  * (`docs/IMPLEMENTATION_PLAN.md`'s "STEPWISE CHAIN REDESIGN" section,
  * decided 2026-09-17) — slice 1, with slice 2's flight->hotel cascade rule
  * added to `confirmFlightStep` once `hotel-step.ts` gave it something real
- * to invalidate. The old one-shot pipeline (`search-orchestrator.ts`,
- * `itinerary-orchestrator.ts`) stays live and untouched; nothing is rewired
- * yet.
+ * to invalidate, and slice 3 generalizing that same cascade to activities
+ * once `activities-step.ts` existed too. The old one-shot pipeline
+ * (`search-orchestrator.ts`, `itinerary-orchestrator.ts`) was retired in
+ * slice 3 — `flightHardConstraints`/`requirementMap`/
+ * `OneWayTripNotSupportedError` moved to `step-shared.ts`, the only pieces
+ * of it this module ever depended on.
  *
  * Two decisions from this slice's planning session, not assumed:
  * 1. Before a hotel/activities exist to fit a budget against, this proposes
@@ -58,8 +61,7 @@ import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { listActiveTripRequirements, type TripRequirementRow } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { deriveCorrelationId } from "./correlation";
-import { flightHardConstraints, requirementMap } from "./search-orchestrator";
-import { OneWayTripNotSupportedError } from "./itinerary-orchestrator";
+import { flightHardConstraints, OneWayTripNotSupportedError, requirementMap } from "./step-shared";
 
 const AGENT_NAME = "flight_step";
 const MAX_FLIGHT_CANDIDATES = 3;
@@ -107,6 +109,10 @@ export interface ProposeFlightStepParams {
   tripId: string;
   /** Idempotency key for the logged `trip_events` row — see `deriveCorrelationId`. Defaults to a fresh UUID if omitted. */
   correlationId?: string;
+  /** Excludes any pair whose outbound leg is this ID — used by a revision re-propose so "show me something else" can't just return the same pick again. */
+  excludeOutboundFlightId?: string;
+  /** Excludes any pair whose return leg is this ID. */
+  excludeReturnFlightId?: string;
 }
 
 export interface ProposeFlightStepResult {
@@ -196,13 +202,18 @@ export async function proposeFlightStep(
 
   const candidates: FlightStepCandidate[] = [];
   for (const outboundFlight of outboundFilter.passing) {
+    if (params.excludeOutboundFlightId && outboundFlight.id === params.excludeOutboundFlightId) continue;
     for (const returnFlight of returnFilter.passing) {
+      if (params.excludeReturnFlightId && returnFlight.id === params.excludeReturnFlightId) continue;
       candidates.push({
         outboundFlight,
         returnFlight,
         totalPriceUsd: outboundFlight.price_usd + returnFlight.price_usd,
       });
     }
+  }
+  if (candidates.length === 0) {
+    throw new NoViableFlightCandidatesError(params.tripId, "no other pair is available once the excluded flight(s) are ruled out");
   }
   candidates.sort((a, b) => a.totalPriceUsd - b.totalPriceUsd);
   const topCandidates = candidates.slice(0, MAX_FLIGHT_CANDIDATES);
@@ -309,7 +320,10 @@ export async function confirmFlightStep(
   const priorReturnId = priorDecisions.find((d) => d.field === "returnFlight" && d.status === "confirmed")?.value as
     | string
     | undefined;
-  const priorHotelDecision = priorDecisions.find((d) => d.field === "hotel");
+  const priorCascadableDecisions = {
+    hotel: priorDecisions.find((d) => d.field === "hotel"),
+    activities: priorDecisions.find((d) => d.field === "activities"),
+  } as const;
   let priorStayDates: HotelStayDates | null = null;
   if (priorOutboundId && priorReturnId) {
     const [priorOutboundRows, priorReturnRows] = await Promise.all([
@@ -347,17 +361,21 @@ export async function confirmFlightStep(
 
   const newStayDates = deriveHotelStayDates(outboundFlight, returnFlight);
   const datesChanged = priorStayDates !== null && (priorStayDates.checkIn !== newStayDates.checkIn || priorStayDates.checkOut !== newStayDates.checkOut);
-  if (datesChanged && priorHotelDecision && invalidatedStepsForFlightChange(datesChanged).includes("hotel")) {
-    await retireActiveTripDecisionsForField(supabase, params.tripId, "hotel");
+  const invalidatedSteps = invalidatedStepsForFlightChange(datesChanged);
+  for (const step of ["hotel", "activities"] as const) {
+    if (!invalidatedSteps.includes(step)) continue;
+    const existing = priorCascadableDecisions[step];
+    if (!existing) continue;
+    await retireActiveTripDecisionsForField(supabase, params.tripId, step);
     await appendTripEvent(supabase, {
       tripId: params.tripId,
-      eventType: "hotel_step_invalidated",
+      eventType: `${step}_step_invalidated`,
       payload: {
         reason: "flight_dates_changed",
         previousStayDates: priorStayDates,
         newStayDates,
       } as unknown as Json,
-      correlationId: deriveCorrelationId(correlationId, "event:hotel_step_invalidated"),
+      correlationId: deriveCorrelationId(correlationId, `event:${step}_step_invalidated`),
     });
   }
 

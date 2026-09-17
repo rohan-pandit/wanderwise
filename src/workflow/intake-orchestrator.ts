@@ -54,11 +54,8 @@ import { getTrip } from "@/src/repositories/trips";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { advanceOrThrow } from "./advance";
 import { deriveCorrelationId } from "./correlation";
-import type { RevisableDecisionField } from "./itinerary-orchestrator";
+import { REVISABLE_DECISION_FIELDS, type RevisableDecisionField } from "./step-shared";
 import type { WorkflowEvent, WorkflowState } from "./state-machine";
-
-/** Decision fields `reviseItinerary` (`src/workflow/itinerary-orchestrator.ts`) actually knows how to revise — kept here rather than imported as a value to avoid a cross-module runtime dependency for what's just a literal-string check. */
-const REVISABLE_DECISION_FIELDS: readonly RevisableDecisionField[] = ["outboundFlight", "returnFlight", "hotel"];
 
 export { OrchestrationConflictError, OrchestrationTransitionError } from "./orchestration-errors";
 
@@ -153,14 +150,16 @@ function decideNextEvents(
  * the revision).
  *
  * `revisionType: "decision"` doesn't apply anything itself — actually
- * revising a decision means re-running combination assembly
- * (`reviseItinerary`, `src/workflow/itinerary-orchestrator.ts`), which needs
- * a model client and embedding-adjacent state this orchestrator doesn't own.
- * For a field `reviseItinerary` knows how to handle, this returns a signal
- * (`decisionRevisionRequested`) for the caller (a Server Action) to act on
- * after this turn persists, rather than driving it here. An unrecognized
- * field (e.g. "activities" — which specific activity to swap needs more
- * than a field name to resolve) is logged as unsupported instead.
+ * revising a decision means re-proposing and re-confirming the relevant
+ * chain step (`app/app/actions.ts`'s `runStepwiseRevision`, stepwise chain
+ * redesign slice 3), which needs a model client and embedding-adjacent
+ * state this orchestrator doesn't own. For a field the caller knows how to
+ * handle (`step-shared.ts`'s `REVISABLE_DECISION_FIELDS`), this returns a
+ * signal (`decisionRevisionRequested`) for the caller (a Server Action) to
+ * act on after this turn persists, rather than driving it here. An
+ * unrecognized field (e.g. "activities" — which specific activity to swap
+ * needs more than a field name to resolve) is logged as unsupported
+ * instead.
  */
 async function applyRevisionProposal(
   supabase: SupabaseClient<Database>,
@@ -223,7 +222,7 @@ export interface ProcessIntakeTurnResult {
   ready: boolean;
   requirements: RequirementRecord[];
   preferences: PreferenceRecord[];
-  /** Set when this turn proposed a revision to an already-selected decision (e.g. "switch hotels") — the caller should follow up with `reviseItinerary` (`src/workflow/itinerary-orchestrator.ts`) once this turn's own persistence/transition finishes. */
+  /** Set when this turn proposed a revision to an already-selected decision (e.g. "switch hotels") — the caller should follow up with `runStepwiseRevision` (`app/app/actions.ts`) once this turn's own persistence/transition finishes. */
   decisionRevisionRequested: RevisableDecisionField | null;
 }
 

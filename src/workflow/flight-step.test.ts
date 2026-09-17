@@ -15,7 +15,7 @@ import { appendTripDecision, listActiveTripDecisions, retireActiveTripDecisionsF
 import { appendTripEvent } from "@/src/repositories/trip-events";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
-import { OneWayTripNotSupportedError } from "./itinerary-orchestrator";
+import { OneWayTripNotSupportedError } from "./step-shared";
 import {
   InvalidFlightSelectionError,
   NoViableFlightCandidatesError,
@@ -311,6 +311,29 @@ describe("confirmFlightStep", () => {
           eventType: "hotel_step_invalidated",
           payload: expect.objectContaining({ reason: "flight_dates_changed" }),
         }),
+      );
+    });
+
+    it("also retires an existing confirmed activities decision when the derived stay dates differ", async () => {
+      vi.mocked(listActiveTripDecisions).mockResolvedValue([
+        decisionRow("outboundFlight", "o-old"),
+        decisionRow("returnFlight", "r-old"),
+        decisionRow("hotel", "hotel-1"),
+        decisionRow("activities", "[]"),
+      ] as never);
+      mockFlightsById({
+        "o-old": DIFFERENT_DATES_PRIOR_OUTBOUND,
+        "r-old": DIFFERENT_DATES_PRIOR_RETURN,
+        o1: flight("o1"),
+        r1: returnFlight("r1"),
+      });
+
+      await confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "o1", returnFlightId: "r1" });
+
+      expect(retireActiveTripDecisionsForField).toHaveBeenCalledWith(supabase, TRIP_ID, "activities");
+      expect(appendTripEvent).toHaveBeenCalledWith(
+        supabase,
+        expect.objectContaining({ eventType: "activities_step_invalidated" }),
       );
     });
 
