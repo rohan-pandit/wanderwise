@@ -145,6 +145,26 @@ Three questions were put to the user directly before any code was written, all t
 
 **Slices 1-3 are done** — chain/cascade data model + flight step; hotel step + the flight→hotel cascade rule; activities step + retiring the old one-shot pipeline. Only slice 4 (chat UI rework for real per-step interaction) remains — see "Proposed slicing" below.
 
+### SLICE 4 — START HERE NEXT SESSION (not yet started, no code written)
+
+**Do this before any other open item.** Everything backend-side the redesign needed is built, tested, and live-verified (slices 1-3, see below). Slice 4 is a genuinely different kind of work — frontend/UX, plus making `intake-orchestrator.ts` step-aware — not more backend orchestration, so don't assume the previous slices' patterns transfer directly.
+
+**Real open questions to resolve with the user before writing code** (none of these are decided — don't guess):
+
+1. **Interaction pattern, concretely.** "Show one step at a time, confirm/change per step" is decided at the concept level (see "The decided design" §1 below), but not *how*. Two real options: (a) the itinerary panel shows the current step's candidates as clickable UI (cards, buttons) that drive Server Actions directly — the common path never round-trips through the LLM at all; (b) everything still flows through chat text (confirming is typing "yes" or "the second one"), and the panel stays a passive live display like it is today. These are different architectures, not a styling choice.
+2. **Does `propose_trip_revision`'s target vocabulary change?** Right now it's flat field names (`outboundFlight`/`returnFlight`/`hotel`, `step-shared.ts`'s `RevisableDecisionField`) — a carryover from the old pipeline. Becoming step-aware plausibly means switching to chain step names (`flight`/`hotel`/`activities`, `src/domain/chain.ts`'s `ChainStep`) instead, which touches the Intake agent's tool schema/prompt (`src/agents/intake.ts`), not just orchestration code.
+3. **Revising the *active* (not-yet-confirmed) step vs. an *earlier, already-confirmed* one — does the UX distinguish these?** Right now `chain-orchestrator.ts`'s interim glue treats every revision the same (re-propose, exclude current, auto-confirm). A real UI probably needs to warn before revising an earlier step ("changing your flight may also change your hotel") since that's when the cascade in `flight-step.ts`'s `confirmFlightStep` actually fires. `getCurrentChainStep` (`src/domain/chain.ts`) already tells you which step is active — the Intake agent doesn't currently receive this.
+4. **Is the directional/absolute revision split (design §3 below) actually in scope for this slice?** It was named as "the real fix" for the long-tracked "revision doesn't honor the stated criterion" bug (`docs/IMPLEMENTATION_PLAN.md` §5), confirmed to still hold under the new chain. Building it means: adding a `maxHotelPriceUsd` requirement field (doesn't exist yet — only `minHotelRating` does) and the equivalent for other directional asks, wiring them into `hotelHardConstraints`/`flightHardConstraints`, and having the Intake agent convert "cheaper" into a concrete threshold. This could reasonably be its own slice 5 instead of bundled into the UI rework — ask rather than assume either way.
+5. **What happens to `WorkflowState`/`trips.status` under the finished model?** As built, a trip's `trips.status` never advances past `"requirements_ready"` — all real progress lives in `trip_decisions.status` + `getCurrentChainStep`. `app/app/trips/page.tsx` (trip history list) likely still displays `trips.status` to the user, which would now always say "requirements ready" even for a fully finished trip. Does `presenting_draft`/`awaiting_confirmation`/`finalized` get reached at all, and if so, from where — or does the trip list need to read `getCurrentChainStep` instead of `trips.status`?
+6. **Does `trip_decisions.status = "proposed"` finally get used?** Built in slice 1 (`confirmTripDecisions`, `src/repositories/trip-decisions.ts`) but never called by any step — every step writes straight to `"confirmed"` since propose was always ephemeral/unpersisted. If interaction pattern (Q1) goes with option (a) above, a step's proposed candidates might need to actually persist as `"proposed"` so the panel can render them before the user picks.
+
+**Also on the list, already decided, just not yet built:**
+- Delete `src/workflow/chain-orchestrator.ts` (the interim auto-confirm glue) once real per-step interaction replaces it.
+- Rewrite `chat-panel.tsx`/`itinerary-panel.tsx` for the new interaction pattern (depends on Q1).
+- Make `intake-orchestrator.ts`'s `decisionRevisionRequested` signal step-aware (depends on Q2/Q3).
+
+Once these are resolved (ask via `AskUserQuestion`, don't assume), the smallest coherent next step is probably its own mini design pass (plan mode) before touching code, same as slice 1 got — this slice has more open surface than 1-3 did.
+
 ### Slice 3 outcome, decisions made while building it
 
 The biggest slice: builds the activities step (the chain's last step) *and* retires the old one-shot pipeline (`search-orchestrator.ts`, `itinerary-orchestrator.ts`) in the same pass, per the original plan's own bundling. One real design question was asked and answered directly before writing code:
@@ -173,8 +193,6 @@ Built directly on slice 1's conventions without re-litigating them — the same 
 - Scope call, not a bug: this cascade only acts on the "hotel" step, since the "activities" step (per the new stepwise model) doesn't have a decision writer yet — building at that generalizes to "activities" too is slice 3's job, once there's a real activities-step decision to invalidate.
 
 Verified: `npm test` (303/303 passing, 13 new — `hotel-step.test.ts` plus 4 new cascade tests added to `flight-step.test.ts`), `tsc`/`lint`/`build` all clean. Live-verified against the hosted Supabase project: hotel step correctly refuses to propose before a flight is confirmed; a real hotel search/rank/confirm cycle completed end to end; a same-flight re-confirmation left an already-confirmed hotel decision untouched. **One assertion couldn't be exercised live and was skipped**: the "dates differ → hotel gets invalidated" branch, because the seed data has exactly one Lisbon→New York return-leg flight (confirmed by a direct query) — there's no second real return date to swap in. That branch is still covered by 3 dedicated unit tests with synthetic data (`flight-step.test.ts`'s "flight->hotel cascade" describe block), so it's verified, just not against live data this time.
-
-### Slice 1 outcome, decisions made while building it
 
 ### Slice 1 outcome, decisions made while building it
 
