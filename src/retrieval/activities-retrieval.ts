@@ -38,7 +38,9 @@ import { RetrievalQueryError } from "./errors";
 export const OVERFETCH_FACTOR = 2;
 
 export interface RetrieveActivitiesParams {
+  /** Display name only now — the actual filter is `destinationId` (`docs/IMPLEMENTATION_PLAN.md` §5's destination-identifier-space fix). Still used as the embedding query-text fallback below. */
   destination: string;
+  destinationId: string;
   /** Free-text description of what's being looked for. If omitted, derived from `vibeTags`, then falls back to `destination`. */
   query?: string;
   vibeTags?: string[];
@@ -64,7 +66,7 @@ export async function retrieveActivities(
   const matches = await matchActivities(supabase, {
     queryEmbedding: embeddings[0],
     matchCount: params.excludeClosedOnDays?.length ? params.topK * OVERFETCH_FACTOR : params.topK,
-    destination: params.destination,
+    destinationId: params.destinationId,
     inventoryVersion: params.inventoryVersion,
     minPriceUsd: params.minPriceUsd,
     maxPriceUsd: params.maxPriceUsd,

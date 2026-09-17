@@ -303,7 +303,9 @@ export interface Database {
         Row: {
           id: string;
           origin: string;
+          origin_id: string | null;
           destination: string;
+          destination_id: string | null;
           departure_time: string;
           arrival_time: string;
           departure_time_zone: string | null;
@@ -322,7 +324,9 @@ export interface Database {
         Insert: {
           id?: string;
           origin: string;
+          origin_id?: string | null;
           destination: string;
+          destination_id?: string | null;
           departure_time: string;
           arrival_time: string;
           departure_time_zone?: string | null;
@@ -338,13 +342,27 @@ export interface Database {
           changeable?: boolean;
           inventory_version?: number;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "flights_origin_id_fkey";
+            columns: ["origin_id"];
+            referencedRelation: "destinations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "flights_destination_id_fkey";
+            columns: ["destination_id"];
+            referencedRelation: "destinations";
+            referencedColumns: ["id"];
+          },
+        ];
         Update: Partial<Database["public"]["Tables"]["flights"]["Insert"]>;
       };
       hotels: {
         Row: {
           id: string;
           destination: string;
+          destination_id: string;
           name: string;
           neighborhood: string | null;
           price_per_night_usd: number;
@@ -359,6 +377,7 @@ export interface Database {
         Insert: {
           id?: string;
           destination: string;
+          destination_id: string;
           name: string;
           neighborhood?: string | null;
           price_per_night_usd: number;
@@ -370,13 +389,21 @@ export interface Database {
           vibe_tags?: string[] | null;
           inventory_version?: number;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "hotels_destination_id_fkey";
+            columns: ["destination_id"];
+            referencedRelation: "destinations";
+            referencedColumns: ["id"];
+          },
+        ];
         Update: Partial<Database["public"]["Tables"]["hotels"]["Insert"]>;
       };
       activities: {
         Row: {
           id: string;
           destination: string;
+          destination_id: string;
           name: string;
           description: string | null;
           category: string | null;
@@ -394,6 +421,7 @@ export interface Database {
         Insert: {
           id?: string;
           destination: string;
+          destination_id: string;
           name: string;
           description?: string | null;
           category?: string | null;
@@ -408,7 +436,14 @@ export interface Database {
           inventory_version?: number;
           embedding?: number[] | null;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "activities_destination_id_fkey";
+            columns: ["destination_id"];
+            referencedRelation: "destinations";
+            referencedColumns: ["id"];
+          },
+        ];
         Update: Partial<Database["public"]["Tables"]["activities"]["Insert"]>;
       };
       agent_runs: {
@@ -573,7 +608,7 @@ export interface Database {
         Args: {
           query_embedding: string;
           match_count: number;
-          filter_destination: string;
+          filter_destination_id: string;
           filter_inventory_version: number;
           filter_min_price_usd?: number | null;
           filter_max_price_usd?: number | null;
@@ -583,6 +618,7 @@ export interface Database {
         Returns: {
           id: string;
           destination: string;
+          destination_id: string;
           name: string;
           description: string | null;
           category: string | null;

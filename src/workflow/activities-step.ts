@@ -67,7 +67,7 @@ import type { EmbeddingClient } from "@/src/retrieval/embedding-client";
 import { retrieveActivities } from "@/src/retrieval/activities-retrieval";
 import { deriveCorrelationId } from "./correlation";
 import { FlightStepNotConfirmedError } from "./hotel-step";
-import { requirementMap } from "./step-shared";
+import { requirementMap, resolveTripDestination } from "./step-shared";
 
 const AGENT_NAME = "activities_step";
 const CURATOR_AGENT_NAME = "destination_and_activity_curator";
@@ -257,7 +257,7 @@ export async function proposeActivitiesStep(
     getOrCreateActiveWorkflowRun(supabase, params.tripId),
   ]);
   const reqs = requirementMap(requirementRows);
-  const destination = reqs.get("destination") as string;
+  const destinationRow = await resolveTripDestination(supabase, reqs, params.tripId);
 
   const preferenceQuery =
     preferenceRows
@@ -265,7 +265,8 @@ export async function proposeActivitiesStep(
       .join(", ") || undefined;
 
   const candidateActivities = await retrieveActivities(supabase, embeddingClient, {
-    destination,
+    destination: destinationRow.name,
+    destinationId: destinationRow.id,
     query: preferenceQuery,
     excludeClosedOnDays: reqs.get("excludeClosedOnDays") as string[] | undefined,
     accessibilityNeeds: reqs.get("requiredAccessibility") as string[] | undefined,
@@ -476,8 +477,8 @@ export async function confirmActivitiesStep(
   }
 
   const reqs = requirementMap(requirementRows);
-  const destination = reqs.get("destination") as string;
-  const wrongDestination = activityRows.filter((a) => a.destination !== destination);
+  const destinationRow = await resolveTripDestination(supabase, reqs, params.tripId);
+  const wrongDestination = activityRows.filter((a) => a.destination_id !== destinationRow.id);
   if (wrongDestination.length > 0) {
     throw new InvalidActivitiesSelectionError(
       params.tripId,

@@ -72,17 +72,40 @@ export async function matchDestinations(
   );
 }
 
+/** Thrown by `getDestinationByName` if more than one destination shares a name at the given inventory version — an ambiguous lookup the caller must not silently resolve either way. */
+export class AmbiguousDestinationNameError extends Error {
+  constructor(name: string, inventoryVersion: number) {
+    super(`Multiple destinations named "${name}" exist at inventory version ${inventoryVersion} — ambiguous lookup.`);
+    this.name = "AmbiguousDestinationNameError";
+  }
+}
+
+/**
+ * Exact-match lookup by display name — the seam that resolves a trip's
+ * free-text `destination` requirement to a real `destinations.id` before any
+ * inventory search/guardrail check trusts it (closes the identifier-space
+ * gap `docs/IMPLEMENTATION_PLAN.md` §5 tracked: `flights`/`hotels`/
+ * `activities` matched destination by name alone, with no FK). Uses
+ * `.limit(2)` and an explicit branch rather than `.maybeSingle()`, which
+ * would otherwise throw an opaque, unhandled PostgREST error the moment two
+ * destinations ever shared a name — `AmbiguousDestinationNameError` makes
+ * that failure mode a typed, catchable one instead.
+ */
 export async function getDestinationByName(
   supabase: SupabaseClient<Database>,
   name: string,
   inventoryVersion: number = CURRENT_INVENTORY_VERSION,
 ): Promise<Destination | null> {
-  return unwrapOrThrow(
+  const rows = await unwrapOrThrow(
     supabase
       .from("destinations")
       .select("*")
       .eq("name", name)
       .eq("inventory_version", inventoryVersion)
-      .maybeSingle(),
+      .limit(2),
   );
+  if (rows.length > 1) {
+    throw new AmbiguousDestinationNameError(name, inventoryVersion);
+  }
+  return rows[0] ?? null;
 }

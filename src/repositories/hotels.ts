@@ -6,7 +6,7 @@ import { hasValues, unwrapOrThrow } from "./shared";
 export type Hotel = Database["public"]["Tables"]["hotels"]["Row"];
 
 export interface HotelSearchFilter {
-  destination: string;
+  destinationId: string;
   maxPricePerNightUsd?: number;
   minRating?: number;
   vibeTags?: string[];
@@ -22,7 +22,7 @@ export async function findHotels(
   let query = supabase
     .from("hotels")
     .select("*")
-    .eq("destination", filter.destination)
+    .eq("destination_id", filter.destinationId)
     .eq("inventory_version", filter.inventoryVersion ?? CURRENT_INVENTORY_VERSION);
 
   if (filter.maxPricePerNightUsd !== undefined) {

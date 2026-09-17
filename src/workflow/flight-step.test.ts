@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/config/supabase/database.types";
 
+vi.mock("@/src/repositories/destinations");
 vi.mock("@/src/repositories/flights");
 vi.mock("@/src/repositories/guardrail-events");
 vi.mock("@/src/repositories/trip-decisions");
@@ -9,7 +10,9 @@ vi.mock("@/src/repositories/trip-events");
 vi.mock("@/src/repositories/trip-requirements");
 vi.mock("@/src/repositories/workflow-runs");
 
+import { getDestinationByName } from "@/src/repositories/destinations";
 import { findFlights, getFlightsByIds } from "@/src/repositories/flights";
+import { UnknownDestinationError } from "./step-shared";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import {
   appendTripDecision,
@@ -34,6 +37,8 @@ const supabase = {} as SupabaseClient<Database>;
 
 const TRIP_ID = "trip-1";
 const RUN = { id: "run-1", trip_id: TRIP_ID, status: "running", started_at: "now", completed_at: null };
+const LISBON_ID = "destination-lisbon";
+const LISBON = { id: LISBON_ID, name: "Lisbon", inventory_version: 1 };
 
 function requirementRow(field: string, value: unknown) {
   return {
@@ -62,7 +67,9 @@ function flight(id: string, overrides: Record<string, unknown> = {}) {
   return {
     id,
     origin: "New York",
+    origin_id: null,
     destination: "Lisbon",
+    destination_id: LISBON_ID,
     price_usd: 500,
     is_red_eye: false,
     departure_time: "2026-10-05T23:00:00Z",
@@ -76,7 +83,9 @@ function flight(id: string, overrides: Record<string, unknown> = {}) {
 function returnFlight(id: string, overrides: Record<string, unknown> = {}) {
   return flight(id, {
     origin: "Lisbon",
+    origin_id: LISBON_ID,
     destination: "New York",
+    destination_id: null,
     departure_time: "2026-10-12T14:00:00Z",
     arrival_time: "2026-10-13T02:00:00Z",
     departure_time_zone: "Europe/Lisbon",
@@ -91,6 +100,7 @@ function decisionRow(field: string, value: unknown, status = "confirmed") {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(getDestinationByName).mockResolvedValue(LISBON as never);
   vi.mocked(listActiveTripRequirements).mockResolvedValue(READY_REQUIREMENTS as never);
   vi.mocked(getOrCreateActiveWorkflowRun).mockResolvedValue(RUN as never);
   vi.mocked(recordGuardrailEvent).mockResolvedValue({} as never);
@@ -120,6 +130,13 @@ describe("proposeFlightStep", () => {
     expect(findFlights).not.toHaveBeenCalled();
   });
 
+  it("throws UnknownDestinationError when the trip's destination doesn't resolve to any real destination", async () => {
+    vi.mocked(getDestinationByName).mockResolvedValue(null as never);
+
+    await expect(proposeFlightStep(supabase, { tripId: TRIP_ID })).rejects.toThrow(UnknownDestinationError);
+    expect(findFlights).not.toHaveBeenCalled();
+  });
+
   it("searches the return leg in the reversed direction", async () => {
     vi.mocked(findFlights).mockResolvedValue([flight("f1")] as never);
 
@@ -127,17 +144,17 @@ describe("proposeFlightStep", () => {
 
     expect(findFlights).toHaveBeenCalledWith(
       supabase,
-      expect.objectContaining({ origin: "New York", destination: "Lisbon", departureDate: "2026-10-05" }),
+      expect.objectContaining({ origin: "New York", destinationId: LISBON_ID, departureDate: "2026-10-05" }),
     );
     expect(findFlights).toHaveBeenCalledWith(
       supabase,
-      expect.objectContaining({ origin: "Lisbon", destination: "New York", departureDate: "2026-10-12" }),
+      expect.objectContaining({ originId: LISBON_ID, destination: "New York", departureDate: "2026-10-12" }),
     );
   });
 
   it("returns the top 3 cheapest passing outbound x return pairs, cheapest first, and persists them as proposed", async () => {
     vi.mocked(findFlights).mockImplementation(async (_s, filter) =>
-      (filter.origin === "Lisbon"
+      (filter.originId === LISBON_ID
         ? [returnFlight("r-cheap", { price_usd: 100 }), returnFlight("r-mid", { price_usd: 200 }), returnFlight("r-expensive", { price_usd: 900 })]
         : [flight("o1", { price_usd: 500 })]) as never,
     );
@@ -165,7 +182,7 @@ describe("proposeFlightStep", () => {
 
   it("caps the ranked list at 3 even with more passing pairs", async () => {
     vi.mocked(findFlights).mockImplementation(async (_s, filter) =>
-      (filter.origin === "Lisbon"
+      (filter.originId === LISBON_ID
         ? [1, 2, 3, 4, 5].map((n) => returnFlight(`r${n}`, { price_usd: n * 10 }))
         : [flight("o1")]) as never,
     );
@@ -177,7 +194,7 @@ describe("proposeFlightStep", () => {
   it("excludes a red-eye outbound flight when noRedEye is required, logs the guardrail, and throws NoViableFlightCandidatesError", async () => {
     vi.mocked(listActiveTripRequirements).mockResolvedValue([...READY_REQUIREMENTS, requirementRow("noRedEye", true)] as never);
     vi.mocked(findFlights).mockImplementation(async (_s, filter) =>
-      (filter.origin === "Lisbon" ? [returnFlight("r1")] : [flight("o1", { is_red_eye: true })]) as never,
+      (filter.originId === LISBON_ID ? [returnFlight("r1")] : [flight("o1", { is_red_eye: true })]) as never,
     );
 
     await expect(proposeFlightStep(supabase, { tripId: TRIP_ID })).rejects.toThrow(NoViableFlightCandidatesError);
@@ -189,7 +206,7 @@ describe("proposeFlightStep", () => {
 
   it("logs a flight_step_proposed trip event with the ranked candidate ids", async () => {
     vi.mocked(findFlights).mockImplementation(async (_s, filter) =>
-      (filter.origin === "Lisbon" ? [returnFlight("r1")] : [flight("o1")]) as never,
+      (filter.originId === LISBON_ID ? [returnFlight("r1")] : [flight("o1")]) as never,
     );
 
     await proposeFlightStep(supabase, { tripId: TRIP_ID });
@@ -306,11 +323,25 @@ describe("confirmFlightStep", () => {
 
   it("throws InvalidFlightSelectionError when the outbound flight's route doesn't match the trip", async () => {
     vi.mocked(getFlightsByIds).mockImplementation(async (_s, ids) =>
-      (ids[0] === "wrong-route" ? [flight("wrong-route", { destination: "Paris" })] : [returnFlight("r1")]) as never,
+      (ids[0] === "wrong-route"
+        ? [flight("wrong-route", { destination: "Paris", destination_id: "destination-paris" })]
+        : [returnFlight("r1")]) as never,
     );
 
     await expect(
       confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "wrong-route", returnFlightId: "r1" }),
+    ).rejects.toThrow(InvalidFlightSelectionError);
+  });
+
+  it("throws InvalidFlightSelectionError when the outbound flight shares the trip's destination NAME but belongs to a different destination id (the identifier-space gap docs/IMPLEMENTATION_PLAN.md §5 tracked)", async () => {
+    vi.mocked(getFlightsByIds).mockImplementation(async (_s, ids) =>
+      (ids[0] === "ambiguous-name"
+        ? [flight("ambiguous-name", { destination: "Lisbon", destination_id: "destination-a-different-lisbon" })]
+        : [returnFlight("r1")]) as never,
+    );
+
+    await expect(
+      confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "ambiguous-name", returnFlightId: "r1" }),
     ).rejects.toThrow(InvalidFlightSelectionError);
   });
 

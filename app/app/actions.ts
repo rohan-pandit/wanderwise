@@ -81,6 +81,8 @@ import {
   type ProposedScheduledActivity,
 } from "@/src/workflow/activities-step";
 import type { WorkflowState } from "@/src/workflow/state-machine";
+import { UnknownDestinationError } from "@/src/workflow/step-shared";
+import { AmbiguousDestinationNameError } from "@/src/repositories/destinations";
 
 /** Shared by every Server Action here past `sendMessage`'s own trip-creation path: authenticate, then load the trip and check ownership explicitly (the RLS-scoped client isn't used past this point — see the module docstring). */
 async function requireOwnedTrip(supabase: SupabaseClient<Database>, tripId: string): Promise<Trip> {
@@ -125,6 +127,12 @@ function friendlyStepErrorMessage(err: unknown): string | null {
   }
   if (err instanceof NoViableHotelCandidatesError) {
     return "No hotels match your current requirements — try relaxing the price or rating constraints.";
+  }
+  if (err instanceof UnknownDestinationError) {
+    return "We don't have inventory for that destination yet — try a different one.";
+  }
+  if (err instanceof AmbiguousDestinationNameError) {
+    return "Something went wrong matching your destination — please try again.";
   }
   return null;
 }
@@ -252,8 +260,21 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
     const existingDecisions = await listActiveTripDecisions(supabase, finalTripId);
     if (existingDecisions.length === 0) {
       after(() =>
-        proposeCurrentChainStep(supabase, finalTripId, stepwiseChainClients()).catch((err) => {
+        proposeCurrentChainStep(supabase, finalTripId, stepwiseChainClients()).catch(async (err) => {
           console.error(`proposeCurrentChainStep failed for trip ${finalTripId}:`, err);
+          // Fire-and-forget, same reasoning as the `reviseChainStep` failure
+          // handling above: nothing is waiting on this rejection, so the
+          // failure needs its own signal (a `chain_propose_failed` trip_event,
+          // picked up by the itinerary panel's `needsAttention` Realtime
+          // listener) instead of leaving the UI stuck with no explanation.
+          const step = getCurrentChainStep(await listActiveTripDecisions(supabase, finalTripId));
+          const friendly = friendlyStepErrorMessage(err) ?? "That didn't go through — try again or adjust your requirements.";
+          await appendTripEvent(supabase, {
+            tripId: finalTripId,
+            eventType: "chain_propose_failed",
+            payload: { step, message: friendly },
+            correlationId: deriveCorrelationId(finalTripId, `chain_propose_failed:${step}`),
+          }).catch((logErr) => console.error(`failed to log chain_propose_failed event for trip ${finalTripId}:`, logErr));
         }),
       );
     }

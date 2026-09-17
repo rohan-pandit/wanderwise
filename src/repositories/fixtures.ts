@@ -7,11 +7,16 @@ import type { Activity } from "./activities";
 import type { Flight } from "./flights";
 import type { Hotel } from "./hotels";
 
+/** Fixture `destinations.id` for "Lisbon" — the seeded destination every other fixture in this file is set in. */
+export const LISBON_DESTINATION_ID = "destination-lisbon";
+
 export function flight(overrides: Partial<Flight> = {}): Flight {
   return {
     id: "flight-1",
     origin: "New York",
+    origin_id: null,
     destination: "Lisbon",
+    destination_id: LISBON_DESTINATION_ID,
     departure_time: "2026-10-05T23:00:00Z",
     arrival_time: "2026-10-06T09:00:00Z",
     departure_time_zone: "America/New_York",
@@ -34,6 +39,7 @@ export function hotel(overrides: Partial<Hotel> = {}): Hotel {
   return {
     id: "hotel-1",
     destination: "Lisbon",
+    destination_id: LISBON_DESTINATION_ID,
     name: "Hotel Alfama",
     neighborhood: "Alfama",
     price_per_night_usd: 150,
@@ -52,6 +58,7 @@ export function activity(overrides: Partial<Activity> = {}): Activity {
   return {
     id: "activity-1",
     destination: "Lisbon",
+    destination_id: LISBON_DESTINATION_ID,
     name: "Alfama Walking Tour",
     description: null,
     category: "food",

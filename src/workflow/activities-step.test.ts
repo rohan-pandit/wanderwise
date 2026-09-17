@@ -8,6 +8,7 @@ vi.mock("@/src/agents/curator");
 vi.mock("@/src/agents/itinerary-writer");
 vi.mock("@/src/repositories/activities");
 vi.mock("@/src/repositories/agent-runs");
+vi.mock("@/src/repositories/destinations");
 vi.mock("@/src/repositories/flights");
 vi.mock("@/src/repositories/guardrail-events");
 vi.mock("@/src/repositories/hotels");
@@ -21,6 +22,7 @@ vi.mock("@/src/retrieval/activities-retrieval");
 import { runCuratorAgent } from "@/src/agents/curator";
 import { runItineraryWriterAgent } from "@/src/agents/itinerary-writer";
 import { getActivitiesByIds } from "@/src/repositories/activities";
+import { getDestinationByName } from "@/src/repositories/destinations";
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
 import { getFlightsByIds } from "@/src/repositories/flights";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
@@ -43,6 +45,7 @@ import {
   confirmActivitiesStep,
   proposeActivitiesStep,
 } from "./activities-step";
+import { UnknownDestinationError } from "./step-shared";
 
 const supabase = {} as SupabaseClient<Database>;
 const modelClient = { model: "claude-sonnet-5" } as ModelClient;
@@ -50,6 +53,8 @@ const embeddingClient = {} as EmbeddingClient;
 
 const TRIP_ID = "trip-1";
 const RUN = { id: "run-1", trip_id: TRIP_ID, status: "running", started_at: "now", completed_at: null };
+const LISBON_ID = "destination-lisbon";
+const LISBON = { id: LISBON_ID, name: "Lisbon", inventory_version: 1 };
 const AGENT_RUN = { id: "agent-run-1" };
 const ZERO_USAGE = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
 
@@ -123,6 +128,7 @@ function activity(id: string, overrides: Record<string, unknown> = {}) {
   return {
     id,
     destination: "Lisbon",
+    destination_id: LISBON_ID,
     name: `Activity ${id}`,
     category: "culture",
     price_usd: 20,
@@ -159,6 +165,7 @@ function writerResult(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(getDestinationByName).mockResolvedValue(LISBON as never);
   vi.mocked(listActiveTripDecisions).mockResolvedValue(CONFIRMED_UPSTREAM_DECISIONS as never);
   vi.mocked(listActiveTripRequirements).mockResolvedValue(READY_REQUIREMENTS as never);
   vi.mocked(listActiveTripPreferences).mockResolvedValue([]);
@@ -196,10 +203,23 @@ describe("proposeActivitiesStep", () => {
     );
   });
 
+  it("throws UnknownDestinationError when the trip's destination doesn't resolve to any real destination", async () => {
+    vi.mocked(getDestinationByName).mockResolvedValue(null as never);
+
+    await expect(proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID })).rejects.toThrow(
+      UnknownDestinationError,
+    );
+    expect(retrieveActivities).not.toHaveBeenCalled();
+  });
+
   it("retrieves, curates, and schedules activities into the confirmed flight's derived stay dates", async () => {
     const result = await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
 
-    expect(retrieveActivities).toHaveBeenCalledWith(supabase, embeddingClient, expect.objectContaining({ destination: "Lisbon" }));
+    expect(retrieveActivities).toHaveBeenCalledWith(
+      supabase,
+      embeddingClient,
+      expect.objectContaining({ destination: "Lisbon", destinationId: LISBON_ID }),
+    );
     expect(runCuratorAgent).toHaveBeenCalled();
     expect(result.scheduledActivities.map((a) => a.id)).toEqual(["a1"]);
     expect(result.scheduledActivities[0].date >= "2026-10-06" && result.scheduledActivities[0].date <= "2026-10-12").toBe(true);
@@ -316,11 +336,29 @@ describe("confirmActivitiesStep", () => {
   });
 
   it("throws InvalidActivitiesSelectionError when an activity belongs to a different destination", async () => {
-    vi.mocked(getActivitiesByIds).mockResolvedValue([activity("a1", { destination: "Paris" })] as never);
+    vi.mocked(getActivitiesByIds).mockResolvedValue([activity("a1", { destination: "Paris", destination_id: "destination-paris" })] as never);
 
     await expect(
       confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: SCHEDULED }),
     ).rejects.toThrow(InvalidActivitiesSelectionError);
+  });
+
+  it("throws InvalidActivitiesSelectionError when an activity shares the trip's destination NAME but belongs to a different destination id (the identifier-space gap docs/IMPLEMENTATION_PLAN.md §5 tracked)", async () => {
+    vi.mocked(getActivitiesByIds).mockResolvedValue([
+      activity("a1", { destination: "Lisbon", destination_id: "destination-a-different-lisbon" }),
+    ] as never);
+
+    await expect(
+      confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: SCHEDULED }),
+    ).rejects.toThrow(InvalidActivitiesSelectionError);
+  });
+
+  it("throws UnknownDestinationError when the trip's destination doesn't resolve to any real destination", async () => {
+    vi.mocked(getDestinationByName).mockResolvedValue(null as never);
+
+    await expect(
+      confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: SCHEDULED }),
+    ).rejects.toThrow(UnknownDestinationError);
   });
 
   it("throws InvalidActivitiesSelectionError when the given schedule is no longer feasible (e.g. before the arrival transfer buffer)", async () => {

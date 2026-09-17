@@ -9,7 +9,7 @@
  * Usage: `npm run eval:retrieval`
  */
 import { createServiceClient } from "../../src/config/supabase/service";
-import { matchDestinations } from "../../src/repositories/destinations";
+import { getDestinationByName, matchDestinations } from "../../src/repositories/destinations";
 import { matchActivities } from "../../src/repositories/activities";
 import { excludeClosedOnDaysConstraint, filterHardConstraints } from "../../src/domain/constraints";
 import { OVERFETCH_FACTOR } from "../../src/retrieval/activities-retrieval";
@@ -51,10 +51,12 @@ async function main() {
   for (let i = 0; i < ACTIVITY_RETRIEVAL_CASES.length; i++) {
     const testCase = ACTIVITY_RETRIEVAL_CASES[i];
     const overfetch = testCase.excludeClosedOnDays?.length ? testCase.topK * OVERFETCH_FACTOR : testCase.topK;
+    const destinationRow = await getDestinationByName(supabase, testCase.destination);
+    if (!destinationRow) throw new Error(`eval case "${testCase.name}": unknown destination "${testCase.destination}"`);
     let results = await matchActivities(supabase, {
       queryEmbedding: activityEmbeddings[i],
       matchCount: overfetch,
-      destination: testCase.destination,
+      destinationId: destinationRow.id,
       requiredAccessibility: testCase.accessibilityNeeds,
     });
     if (testCase.excludeClosedOnDays?.length) {

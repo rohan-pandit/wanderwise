@@ -6,7 +6,7 @@ import { hasValues, toVectorLiteral, unwrapOrThrow } from "./shared";
 export type Activity = Database["public"]["Tables"]["activities"]["Row"];
 
 export interface ActivitySearchFilter {
-  destination: string;
+  destinationId: string;
   vibeTags?: string[];
   maxPriceUsd?: number;
   /** Excludes activities closed on this day name, e.g. "monday". */
@@ -26,7 +26,7 @@ export async function findActivities(
   let query = supabase
     .from("activities")
     .select("*")
-    .eq("destination", filter.destination)
+    .eq("destination_id", filter.destinationId)
     .eq("inventory_version", filter.inventoryVersion ?? CURRENT_INVENTORY_VERSION);
 
   if (hasValues(filter.vibeTags)) {
@@ -73,7 +73,7 @@ export async function getActivitiesByIds(
 export interface ActivitySimilarityFilter {
   queryEmbedding: number[];
   matchCount: number;
-  destination: string;
+  destinationId: string;
   inventoryVersion?: number;
   minPriceUsd?: number;
   maxPriceUsd?: number;
@@ -99,7 +99,7 @@ export async function matchActivities(
     supabase.rpc("match_activities", {
       query_embedding: toVectorLiteral(filter.queryEmbedding),
       match_count: filter.matchCount,
-      filter_destination: filter.destination,
+      filter_destination_id: filter.destinationId,
       filter_inventory_version: filter.inventoryVersion ?? CURRENT_INVENTORY_VERSION,
       filter_min_price_usd: filter.minPriceUsd ?? null,
       filter_max_price_usd: filter.maxPriceUsd ?? null,

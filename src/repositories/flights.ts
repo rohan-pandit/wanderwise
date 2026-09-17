@@ -7,8 +7,18 @@ import { unwrapOrThrow } from "./shared";
 export type Flight = Database["public"]["Tables"]["flights"]["Row"];
 
 export interface FlightSearchFilter {
-  origin: string;
-  destination: string;
+  /**
+   * A flight leg's two endpoints aren't both always a seeded `destinations`
+   * row — a traveler's home city ("New York") never is. Callers supply
+   * whichever of `origin`/`originId` (and `destination`/`destinationId`)
+   * actually applies to a given search: the seeded-destination side by id
+   * (closes the identifier-space gap `docs/IMPLEMENTATION_PLAN.md` §5
+   * tracked), the free-text home-city side by name.
+   */
+  origin?: string;
+  originId?: string;
+  destination?: string;
+  destinationId?: string;
   /** ISO date (YYYY-MM-DD) — matches departures on this calendar day, in the flight's own local timezone. */
   departureDate?: string;
   maxPriceUsd?: number;
@@ -31,9 +41,12 @@ export async function findFlights(
   let query = supabase
     .from("flights")
     .select("*")
-    .eq("origin", filter.origin)
-    .eq("destination", filter.destination)
     .eq("inventory_version", filter.inventoryVersion ?? CURRENT_INVENTORY_VERSION);
+
+  if (filter.origin !== undefined) query = query.eq("origin", filter.origin);
+  if (filter.originId !== undefined) query = query.eq("origin_id", filter.originId);
+  if (filter.destination !== undefined) query = query.eq("destination", filter.destination);
+  if (filter.destinationId !== undefined) query = query.eq("destination_id", filter.destinationId);
 
   if (filter.departureDate) {
     // departure_time is a timestamptz, stored and returned normalized to

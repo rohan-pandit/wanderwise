@@ -26,6 +26,7 @@ function activity(overrides: Partial<MatchedActivity> = {}): MatchedActivity {
   return {
     id: "a1",
     destination: "Lisbon",
+    destination_id: "destination-lisbon",
     name: "Fado Night",
     description: null,
     category: null,
@@ -51,21 +52,21 @@ beforeEach(() => {
 describe("retrieveActivities", () => {
   it("falls back to the destination name as the query text when query and vibeTags are omitted", async () => {
     const client = new FakeEmbeddingClient();
-    await retrieveActivities(supabase, client, { destination: "Lisbon", topK: 5 });
+    await retrieveActivities(supabase, client, { destination: "Lisbon", destinationId: "destination-lisbon", topK: 5 });
     expect(client.lastCall).toEqual({ texts: ["Lisbon"], inputType: "query" });
   });
 
   it("throws RetrievalQueryError when destination is empty and nothing else is given", async () => {
     const client = new FakeEmbeddingClient();
-    await expect(retrieveActivities(supabase, client, { destination: "", topK: 5 })).rejects.toThrow(
-      RetrievalQueryError,
-    );
+    await expect(
+      retrieveActivities(supabase, client, { destination: "", destinationId: "destination-lisbon", topK: 5 }),
+    ).rejects.toThrow(RetrievalQueryError);
     expect(matchActivities).not.toHaveBeenCalled();
   });
 
   it("requests exactly topK candidates when no closed-day filter is given", async () => {
     const client = new FakeEmbeddingClient();
-    await retrieveActivities(supabase, client, { destination: "Lisbon", topK: 5 });
+    await retrieveActivities(supabase, client, { destination: "Lisbon", destinationId: "destination-lisbon", topK: 5 });
     expect(matchActivities).toHaveBeenCalledWith(
       supabase,
       expect.objectContaining({ matchCount: 5 }),
@@ -82,6 +83,7 @@ describe("retrieveActivities", () => {
 
     const result = await retrieveActivities(supabase, client, {
       destination: "Lisbon",
+      destinationId: "destination-lisbon",
       excludeClosedOnDays: ["monday"],
       topK: 5,
     });
@@ -103,6 +105,7 @@ describe("retrieveActivities", () => {
 
     const result = await retrieveActivities(supabase, client, {
       destination: "Lisbon",
+      destinationId: "destination-lisbon",
       excludeClosedOnDays: ["monday"],
       topK: 2,
     });
@@ -114,6 +117,7 @@ describe("retrieveActivities", () => {
     const client = new FakeEmbeddingClient();
     await retrieveActivities(supabase, client, {
       destination: "Lisbon",
+      destinationId: "destination-lisbon",
       minPriceUsd: 10,
       maxPriceUsd: 100,
       accessibilityNeeds: ["wheelchair_accessible"],
@@ -124,7 +128,7 @@ describe("retrieveActivities", () => {
     expect(matchActivities).toHaveBeenCalledWith(supabase, {
       queryEmbedding: [0.4, 0.5, 0.6],
       matchCount: 5,
-      destination: "Lisbon",
+      destinationId: "destination-lisbon",
       inventoryVersion: 2,
       minPriceUsd: 10,
       maxPriceUsd: 100,

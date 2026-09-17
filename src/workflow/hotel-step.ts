@@ -43,7 +43,7 @@ import { appendTripEvent } from "@/src/repositories/trip-events";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { deriveCorrelationId } from "./correlation";
-import { confirmDecisionField, hotelHardConstraints, requirementMap } from "./step-shared";
+import { confirmDecisionField, hotelHardConstraints, requirementMap, resolveTripDestination } from "./step-shared";
 
 const AGENT_NAME = "hotel_step";
 const MAX_HOTEL_CANDIDATES = 3;
@@ -128,12 +128,12 @@ export async function proposeHotelStep(
     getOrCreateActiveWorkflowRun(supabase, params.tripId),
   ]);
   const reqs = requirementMap(requirementRows);
-  const destination = reqs.get("destination") as string;
+  const destinationRow = await resolveTripDestination(supabase, reqs, params.tripId);
   const partySize = reqs.get("partySize") as number;
   const roomGroups = (reqs.get("roomGroups") as RoomGroup[] | undefined) ?? [{ occupants: partySize }];
 
   const hotelCandidates = await findHotels(supabase, {
-    destination,
+    destinationId: destinationRow.id,
     minRating: reqs.get("minHotelRating") as number | undefined,
   });
 
@@ -226,11 +226,11 @@ export async function confirmHotelStep(
   }
 
   const reqs = requirementMap(requirementRows);
-  const destination = reqs.get("destination") as string;
-  if (hotel.destination !== destination) {
+  const destinationRow = await resolveTripDestination(supabase, reqs, params.tripId);
+  if (hotel.destination_id !== destinationRow.id) {
     throw new InvalidHotelSelectionError(
       params.tripId,
-      `hotel ${hotel.id} belongs to destination "${hotel.destination}", not the trip's destination "${destination}".`,
+      `hotel ${hotel.id} belongs to destination "${hotel.destination}", not the trip's destination "${destinationRow.name}".`,
     );
   }
 

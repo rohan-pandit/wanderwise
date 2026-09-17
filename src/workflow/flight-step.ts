@@ -71,7 +71,7 @@ import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { listActiveTripRequirements, type TripRequirementRow } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { deriveCorrelationId } from "./correlation";
-import { confirmDecisionField, flightHardConstraints, requirementMap } from "./step-shared";
+import { confirmDecisionField, flightHardConstraints, requirementMap, resolveTripDestination } from "./step-shared";
 
 const AGENT_NAME = "flight_step";
 const MAX_FLIGHT_CANDIDATES = 3;
@@ -149,23 +149,26 @@ export async function proposeFlightStep(
 
   const reqs = requirementMap(requirementRows);
   const origin = reqs.get("origin") as string;
-  const destination = reqs.get("destination") as string;
   const departureDate = reqs.get("departureDate") as string;
   // Guaranteed present: `returnDate` is in `REQUIRED_FOR_READY`, so the
   // completeness check above already rejected a missing value.
   const returnDate = reqs.get("returnDate") as string;
 
-  const [run, outboundCandidates, returnCandidates] = await Promise.all([
+  const [run, destinationRow] = await Promise.all([
     getOrCreateActiveWorkflowRun(supabase, params.tripId),
+    resolveTripDestination(supabase, reqs, params.tripId),
+  ]);
+
+  const [outboundCandidates, returnCandidates] = await Promise.all([
     findFlights(supabase, {
       origin,
-      destination,
+      destinationId: destinationRow.id,
       departureDate,
       maxPriceUsd: reqs.get("maxFlightPriceUsd") as number | undefined,
       excludeRedEye: reqs.get("noRedEye") === true,
     }),
     findFlights(supabase, {
-      origin: destination,
+      originId: destinationRow.id,
       destination: origin,
       departureDate: returnDate,
       maxPriceUsd: reqs.get("maxFlightPriceUsd") as number | undefined,
@@ -310,7 +313,7 @@ export async function confirmFlightStep(
   ]);
   const reqs = requirementMap(requirementRows);
   const origin = reqs.get("origin") as string;
-  const destination = reqs.get("destination") as string;
+  const destinationRow = await resolveTripDestination(supabase, reqs, params.tripId);
 
   const [outboundRows, returnRows] = await Promise.all([
     getFlightsByIds(supabase, [params.outboundFlightId]),
@@ -321,16 +324,20 @@ export async function confirmFlightStep(
   if (!outboundFlight || !returnFlight) {
     throw new InvalidFlightSelectionError(params.tripId, "one or both flight IDs don't resolve to real inventory.");
   }
-  if (outboundFlight.origin !== origin || outboundFlight.destination !== destination) {
+  // `origin` (a traveler's home city) is checked by name — it's never a
+  // seeded destination row. `destination`/`origin_id` are checked by id,
+  // closing the identifier-space gap a plain-string comparison would leave
+  // open (docs/IMPLEMENTATION_PLAN.md §5).
+  if (outboundFlight.origin !== origin || outboundFlight.destination_id !== destinationRow.id) {
     throw new InvalidFlightSelectionError(
       params.tripId,
-      `outbound flight ${outboundFlight.id} (${outboundFlight.origin} -> ${outboundFlight.destination}) doesn't match the trip's route (${origin} -> ${destination}).`,
+      `outbound flight ${outboundFlight.id} (${outboundFlight.origin} -> ${outboundFlight.destination}) doesn't match the trip's route (${origin} -> ${destinationRow.name}).`,
     );
   }
-  if (returnFlight.origin !== destination || returnFlight.destination !== origin) {
+  if (returnFlight.origin_id !== destinationRow.id || returnFlight.destination !== origin) {
     throw new InvalidFlightSelectionError(
       params.tripId,
-      `return flight ${returnFlight.id} (${returnFlight.origin} -> ${returnFlight.destination}) doesn't match the trip's return route (${destination} -> ${origin}).`,
+      `return flight ${returnFlight.id} (${returnFlight.origin} -> ${returnFlight.destination}) doesn't match the trip's return route (${destinationRow.name} -> ${origin}).`,
     );
   }
 

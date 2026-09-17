@@ -13,7 +13,9 @@ import type { ChainStep } from "@/src/domain/chain";
 import type { HardConstraint } from "@/src/domain/constraints";
 import { maxFlightPriceConstraint, maxHotelPriceConstraint, minHotelRatingConstraint, noRedEyeConstraint, refundableConstraint, roomCapacityConstraint } from "@/src/domain/constraints";
 import type { RequirementFieldName } from "@/src/domain/extraction";
+import { CURRENT_INVENTORY_VERSION } from "@/src/domain/inventory";
 import type { RoomGroup } from "@/src/domain/rooms";
+import { getDestinationByName, type Destination } from "@/src/repositories/destinations";
 import type { Flight } from "@/src/repositories/flights";
 import type { Hotel } from "@/src/repositories/hotels";
 import {
@@ -29,6 +31,42 @@ export function requirementMap(rows: TripRequirementRow[]): Map<RequirementField
   const map = new Map<RequirementFieldName, unknown>();
   for (const row of rows) map.set(row.field as RequirementFieldName, row.value);
   return map;
+}
+
+/** A trip's stated `destination` requirement doesn't resolve to any real `destinations` row — inventory we simply don't cover, distinct from "no viable candidates" (docs/IMPLEMENTATION_PLAN.md §5). */
+export class UnknownDestinationError extends Error {
+  constructor(tripId: string, destinationName: string) {
+    super(`Trip ${tripId}'s destination "${destinationName}" doesn't match any known destination.`);
+    this.name = "UnknownDestinationError";
+  }
+}
+
+/**
+ * Resolves a trip's free-text `destination` requirement to its real
+ * `destinations` row once, at the point a step actually needs it — closes
+ * the identifier-space gap `docs/IMPLEMENTATION_PLAN.md` §5 tracked (`flights`/
+ * `hotels`/`activities` used to match `destination` by name alone, with no
+ * shared key against `destinations.name`, which isn't even guaranteed
+ * unique). Deliberately resolved lazily per step call rather than once at
+ * intake time and persisted — intake-time resolution would need new
+ * deterministic workflow-state plumbing to override the Intake agent's own
+ * clarification decision, or exposing the destinations catalog to the model;
+ * lazy resolution closes the same gap with far less surface, and still
+ * surfaces an unresolvable destination in the same chat turn, since
+ * `sendMessage` auto-chains straight into the flight step once
+ * `requirements_ready` is reached.
+ */
+export async function resolveTripDestination(
+  supabase: SupabaseClient<Database>,
+  reqs: Map<RequirementFieldName, unknown>,
+  tripId: string,
+): Promise<Destination> {
+  const destinationName = reqs.get("destination") as string;
+  const destination = await getDestinationByName(supabase, destinationName, CURRENT_INVENTORY_VERSION);
+  if (!destination) {
+    throw new UnknownDestinationError(tripId, destinationName);
+  }
+  return destination;
 }
 
 export function flightHardConstraints(reqs: Map<RequirementFieldName, unknown>): HardConstraint<Flight>[] {

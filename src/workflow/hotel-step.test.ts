@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/config/supabase/database.types";
 
+vi.mock("@/src/repositories/destinations");
 vi.mock("@/src/repositories/flights");
 vi.mock("@/src/repositories/guardrail-events");
 vi.mock("@/src/repositories/hotels");
@@ -10,6 +11,7 @@ vi.mock("@/src/repositories/trip-events");
 vi.mock("@/src/repositories/trip-requirements");
 vi.mock("@/src/repositories/workflow-runs");
 
+import { getDestinationByName } from "@/src/repositories/destinations";
 import { getFlightsByIds } from "@/src/repositories/flights";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { findHotels, getHotelsByIds } from "@/src/repositories/hotels";
@@ -31,11 +33,14 @@ import {
   confirmHotelStep,
   proposeHotelStep,
 } from "./hotel-step";
+import { UnknownDestinationError } from "./step-shared";
 
 const supabase = {} as SupabaseClient<Database>;
 
 const TRIP_ID = "trip-1";
 const RUN = { id: "run-1", trip_id: TRIP_ID, status: "running", started_at: "now", completed_at: null };
+const LISBON_ID = "destination-lisbon";
+const LISBON = { id: LISBON_ID, name: "Lisbon", inventory_version: 1 };
 
 function requirementRow(field: string, value: unknown) {
   return {
@@ -78,6 +83,7 @@ function hotel(id: string, overrides: Record<string, unknown> = {}) {
   return {
     id,
     destination: "Lisbon",
+    destination_id: LISBON_ID,
     price_per_night_usd: 150,
     rating: 4.5,
     room_capacity: 4,
@@ -88,6 +94,7 @@ function hotel(id: string, overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(getDestinationByName).mockResolvedValue(LISBON as never);
   vi.mocked(listActiveTripRequirements).mockResolvedValue(READY_REQUIREMENTS as never);
   vi.mocked(listActiveTripDecisions).mockResolvedValue(CONFIRMED_FLIGHT_DECISIONS as never);
   vi.mocked(getOrCreateActiveWorkflowRun).mockResolvedValue(RUN as never);
@@ -115,7 +122,14 @@ describe("proposeHotelStep", () => {
     const result = await proposeHotelStep(supabase, { tripId: TRIP_ID });
 
     expect(result.hotelStayDates).toEqual({ destinationTimeZone: "Europe/Lisbon", checkIn: "2026-10-06", checkOut: "2026-10-12" });
-    expect(findHotels).toHaveBeenCalledWith(supabase, expect.objectContaining({ destination: "Lisbon" }));
+    expect(findHotels).toHaveBeenCalledWith(supabase, expect.objectContaining({ destinationId: LISBON_ID }));
+  });
+
+  it("throws UnknownDestinationError when the trip's destination doesn't resolve to any real destination", async () => {
+    vi.mocked(getDestinationByName).mockResolvedValue(null as never);
+
+    await expect(proposeHotelStep(supabase, { tripId: TRIP_ID })).rejects.toThrow(UnknownDestinationError);
+    expect(findHotels).not.toHaveBeenCalled();
   });
 
   it("returns the top 3 cheapest passing hotels and persists them as proposed", async () => {
@@ -246,9 +260,17 @@ describe("confirmHotelStep", () => {
   });
 
   it("throws InvalidHotelSelectionError when the hotel belongs to a different destination", async () => {
-    vi.mocked(getHotelsByIds).mockResolvedValue([hotel("wrong-dest", { destination: "Paris" })] as never);
+    vi.mocked(getHotelsByIds).mockResolvedValue([hotel("wrong-dest", { destination: "Paris", destination_id: "destination-paris" })] as never);
 
     await expect(confirmHotelStep(supabase, { tripId: TRIP_ID, hotelId: "wrong-dest" })).rejects.toThrow(InvalidHotelSelectionError);
+  });
+
+  it("throws InvalidHotelSelectionError when the hotel shares the trip's destination NAME but belongs to a different destination id (the identifier-space gap docs/IMPLEMENTATION_PLAN.md §5 tracked)", async () => {
+    vi.mocked(getHotelsByIds).mockResolvedValue([
+      hotel("ambiguous-name", { destination: "Lisbon", destination_id: "destination-a-different-lisbon" }),
+    ] as never);
+
+    await expect(confirmHotelStep(supabase, { tripId: TRIP_ID, hotelId: "ambiguous-name" })).rejects.toThrow(InvalidHotelSelectionError);
   });
 
   it("throws InvalidHotelSelectionError when the hotel no longer passes hard constraints", async () => {
