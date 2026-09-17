@@ -505,6 +505,42 @@ export interface Database {
         Relationships: [];
         Update: Partial<Database["public"]["Tables"]["guardrail_events"]["Insert"]>;
       };
+      eval_runs: {
+        Row: {
+          id: string;
+          run_label: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          run_label?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+        Update: Partial<Database["public"]["Tables"]["eval_runs"]["Insert"]>;
+      };
+      eval_results: {
+        Row: {
+          id: string;
+          eval_run_id: string;
+          test_case_name: string;
+          passed: boolean;
+          score: number | null;
+          details: Json | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          eval_run_id: string;
+          test_case_name: string;
+          passed: boolean;
+          score?: number | null;
+          details?: Json | null;
+          created_at?: string;
+        };
+        Relationships: [];
+        Update: Partial<Database["public"]["Tables"]["eval_results"]["Insert"]>;
+      };
     };
     Views: Record<string, never>;
     Functions: {
