@@ -7,7 +7,11 @@ export type Trip = Database["public"]["Tables"]["trips"]["Row"];
 export interface NewTrip {
   sessionId: string;
   userId: string;
+  /** Idempotency key for trip creation (`startTrip`, `src/workflow/controller.ts`) — see `getTripByCorrelationId`. */
+  correlationId?: string;
 }
+
+export const TRIP_CORRELATION_ID_UNIQUE_VIOLATION = "23505";
 
 export async function createTrip(
   supabase: SupabaseClient<Database>,
@@ -16,7 +20,7 @@ export async function createTrip(
   return unwrapOrThrow(
     supabase
       .from("trips")
-      .insert({ session_id: trip.sessionId, user_id: trip.userId })
+      .insert({ session_id: trip.sessionId, user_id: trip.userId, correlation_id: trip.correlationId ?? null })
       .select()
       .single(),
   );
@@ -28,6 +32,16 @@ export async function getTrip(
 ): Promise<Trip | null> {
   return unwrapOrThrow(
     supabase.from("trips").select("*").eq("id", tripId).maybeSingle(),
+  );
+}
+
+/** Looks up a trip by its creation-time idempotency key (`trips.correlation_id`, `0008_trips_idempotency.sql`'s partial unique index) — the replay/race-recovery half of `startTrip`'s idempotency, mirroring `getOrCreateActiveWorkflowRun`'s check-then-insert-then-refetch-on-conflict pattern. */
+export async function getTripByCorrelationId(
+  supabase: SupabaseClient<Database>,
+  correlationId: string,
+): Promise<Trip | null> {
+  return unwrapOrThrow(
+    supabase.from("trips").select("*").eq("correlation_id", correlationId).maybeSingle(),
   );
 }
 

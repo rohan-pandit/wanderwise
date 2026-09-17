@@ -18,8 +18,8 @@
  * the state append already succeeded): resubmitting the same correlation ID
  * resumes exactly the writes that didn't happen yet, rather than either
  * reapplying the transition or silently accepting whatever mirror state
- * happens to exist. `startTrip` has no such protection — see its own
- * docstring.
+ * happens to exist. `startTrip` takes an optional `correlationId` for the
+ * same reason — see its own docstring.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/config/supabase/database.types";
@@ -31,7 +31,14 @@ import {
   getTripStateAtVersion,
   type TripStateSnapshot,
 } from "@/src/repositories/trip-state";
-import { createTrip, updateTripStatus, type NewTrip, type Trip } from "@/src/repositories/trips";
+import {
+  createTrip,
+  getTripByCorrelationId,
+  TRIP_CORRELATION_ID_UNIQUE_VIOLATION,
+  updateTripStatus,
+  type NewTrip,
+  type Trip,
+} from "@/src/repositories/trips";
 import {
   completeWorkflowRun,
   findWorkflowStepByCorrelationId,
@@ -145,17 +152,62 @@ async function recordTransitionMirrors(
   }
 }
 
+function isTripCorrelationIdConflict(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: unknown }).code === TRIP_CORRELATION_ID_UNIQUE_VIOLATION
+  );
+}
+
+async function currentTripVersion(supabase: SupabaseClient<Database>, tripId: string): Promise<number> {
+  const latest = await getLatestTripState(supabase, tripId);
+  if (!latest) {
+    throw new Error(`No state version found for trip ${tripId} — its genesis write may have failed previously.`);
+  }
+  return latest.version;
+}
+
 /**
- * Creates a trip and writes its genesis state version (`created`). Trip
- * creation itself is not idempotency-keyed — a caller that wants
- * duplicate-request protection on creation should dedupe before calling
- * this (out of scope here; see BUILD_LOG.md).
+ * Creates a trip and writes its genesis state version (`created`).
+ *
+ * Idempotency-keyed via the optional `correlationId` on `newTrip`
+ * (`trips.correlation_id`, `0008_trips_idempotency.sql`'s partial unique
+ * index) — closing a gap tracked since Phase 3 (`docs/IMPLEMENTATION_PLAN.md`
+ * §5): a lost response followed by a client retry with no `tripId` yet
+ * (e.g. `sendMessage`'s new-trip path) used to create a second, orphaned
+ * trip with its own genesis state and workflow run. A caller without a
+ * stable request identity to key on can simply omit `correlationId` and
+ * gets the old, non-idempotent behavior — this is opt-in, not a required
+ * argument, since not every caller (e.g. a script creating trips freely)
+ * wants duplicate-request collapsing.
  */
 export async function startTrip(
   supabase: SupabaseClient<Database>,
   newTrip: NewTrip,
 ): Promise<{ trip: Trip; version: number }> {
-  const trip = await createTrip(supabase, newTrip);
+  if (newTrip.correlationId) {
+    const existing = await getTripByCorrelationId(supabase, newTrip.correlationId);
+    if (existing) return { trip: existing, version: await currentTripVersion(supabase, existing.id) };
+  }
+
+  let trip: Trip;
+  try {
+    trip = await createTrip(supabase, newTrip);
+  } catch (err) {
+    // A genuinely concurrent retry with the same correlationId can lose the
+    // check-then-insert race above — the database itself rejects the loser's
+    // insert (23505), and the loser just re-fetches the winner's trip
+    // instead of erroring, mirroring `getOrCreateActiveWorkflowRun`'s
+    // check-then-insert-then-refetch-on-conflict pattern.
+    if (newTrip.correlationId && isTripCorrelationIdConflict(err)) {
+      const winner = await getTripByCorrelationId(supabase, newTrip.correlationId);
+      if (winner) return { trip: winner, version: await currentTripVersion(supabase, winner.id) };
+    }
+    throw err;
+  }
+
   const initialState: TripStateSnapshot = { workflowState: "created" };
 
   const appended = await appendTripStateVersion(supabase, {

@@ -41,6 +41,7 @@ export interface Database {
           session_id: string;
           user_id: string;
           status: string;
+          correlation_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -48,6 +49,7 @@ export interface Database {
           session_id: string;
           user_id: string;
           status?: string;
+          correlation_id?: string | null;
           created_at?: string;
         };
         Relationships: [];

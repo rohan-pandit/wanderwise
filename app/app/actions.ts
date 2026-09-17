@@ -137,6 +137,15 @@ export interface SendMessageInput {
   /** Omit to start a new trip (and its session) for this message. */
   tripId?: string;
   message: string;
+  /**
+   * Client-generated idempotency key for starting a new trip, required only
+   * when `tripId` is omitted. `ChatPanel` generates one once per compose
+   * attempt and reuses it across retries of that same attempt, so a lost
+   * response followed by a retry (or a network-level resend) resolves to
+   * the same trip instead of creating a second, orphaned one — see
+   * `startTrip`'s docstring (`src/workflow/controller.ts`).
+   */
+  startCorrelationId?: string;
 }
 
 export interface SendMessageResult extends ProcessIntakeTurnResult {
@@ -166,9 +175,13 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
     sessionId = trip.session_id;
   } else {
     const session = await createSession(supabase, user.id);
-    const { trip } = await startTrip(supabase, { sessionId: session.id, userId: user.id });
+    const { trip } = await startTrip(supabase, {
+      sessionId: session.id,
+      userId: user.id,
+      correlationId: input.startCorrelationId,
+    });
     tripId = trip.id;
-    sessionId = session.id;
+    sessionId = trip.session_id;
   }
 
   const modelClient = new AnthropicModelClient(AGENT_MODELS.intake);

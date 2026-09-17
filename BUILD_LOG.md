@@ -976,3 +976,26 @@ Asked the user which of two designs to build, since §9.3 explicitly requires "c
 **Verification:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` (337/337) all clean. Ran the real `npm run eval:scenarios` suite against the live Anthropic/Supabase stack: **10/10 passed**, including `over_budget_request` for the first time (previously the one documented `knownGap` failure) — a real $500-ceiling trip against a real ~$4,954 total was correctly blocked without an override and correctly finalized with one. Also live-verified through the actual browser UI via the standard throwaway dev-signin pattern (removed after use, not committed): built a real over-budget trip end to end, saw the real violation message ("Estimated total $4,953.90 exceeds the $500.00 ceiling by $4,453.90") in the warning banner, clicked "Finalize anyway," and confirmed "Trip finalized" appeared. Deleted the throwaway auth user afterward.
 
 **Next up:** Continuing down the tracked open-items list (`docs/IMPLEMENTATION_PLAN.md` §5) in priority order, per the user's request to go one at a time.
+
+---
+
+## 2026-09-17 — Make `startTrip` idempotency-keyed
+
+**What I built:** Closed the next item on the tracked open-items list — `startTrip` (`src/workflow/controller.ts`) had no idempotency protection, so a lost response followed by a client retry with no `tripId` yet (a double form submit, or a network-level resend) could create a second, orphaned trip with its own genesis state and workflow run. Deliberately left open since Phase 3 until a real client made double-submission an actual risk; the chat UI (Phase 7) now is that client.
+
+- `supabase/migrations/0008_trips_idempotency.sql` — adds a nullable `trips.correlation_id` column plus a partial unique index (`where correlation_id is not null`), the same pattern `trip_state_versions_trip_correlation_unique` (migration 0003) already established. Applied to the hosted project via `supabase db push --db-url` (the user supplied the DB password for this session).
+- `src/repositories/trips.ts` — `NewTrip.correlationId` (optional), `createTrip` persists it, new `getTripByCorrelationId`.
+- `src/workflow/controller.ts`'s `startTrip` — checks for a prior trip by correlation ID before creating one; if a concurrent caller wins the race, catches the loser's `23505` and re-fetches the winner instead of erroring (mirroring `getOrCreateActiveWorkflowRun`'s established check-then-insert-then-refetch-on-conflict pattern). `correlationId` is optional — a caller with no stable request identity to key on (a script, an eval) just gets the old, non-idempotent behavior, unchanged.
+- `app/app/actions.ts`'s `sendMessage` takes an optional `startCorrelationId`, passed through to `startTrip` only on the new-trip path; also fixed a related correctness detail while wiring this — `sessionId` is now read back from the *returned* trip (`trip.session_id`) rather than the locally-created `session.id`, since an idempotent replay's returned trip belongs to the *original* session, not whatever new session this retry just (now orphaned) created.
+- `app/app/_components/chat-panel.tsx` generates a client-side correlation ID lazily (once, via a `useRef`) and reuses it across every send attempt until a trip exists — after that, sends carry a real `tripId` and never touch `startTrip` again.
+- 3 new unit tests in `src/workflow/controller.test.ts` (mocked, matching the file's existing pattern): replay-by-correlation-id, race-loser-refetches-winner, and a non-conflict error still propagates unchanged.
+
+**Why:** Second item on the tracked open-items list (`docs/IMPLEMENTATION_PLAN.md` §5), continuing down it in priority order per the user's request.
+
+**Decisions made:** `correlationId` is opt-in on `NewTrip`/`startTrip`, not a required argument — matches how `advanceTrip`'s idempotency is mandatory (it always has a real caller with a natural key) while `startTrip`'s isn't (some callers, like eval scripts creating throwaway trips, have no meaningful "same logical attempt" concept and shouldn't be forced to invent one).
+
+**What didn't work / dead ends:** None — the fix worked as designed on the first live test.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` (340/340, up from 337) all clean. Applied the migration to the real hosted Supabase project and confirmed the new column/index live via a direct query. Live-verified the actual idempotency guarantee with a throwaway script (not committed, cleaned up after): two genuinely concurrent `startTrip` calls with the same correlation ID against the real hosted DB resolved to exactly one trip row (confirmed both by comparing the returned trip IDs and by counting rows with that correlation ID), and a third, sequential replay call also returned the same trip rather than erroring or creating a new one.
+
+**Next up:** Continuing down the tracked open-items list — a retry of a whole orchestrator turn isn't yet idempotent across its non-transition writes (the item right after this one, same underlying "no real caller yet" reasoning, now also closable for the same reason).

@@ -19,7 +19,7 @@
  * trigger it.
  */
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { sendMessage, type PendingCascadeConfirmation } from "../actions";
 
 export interface ChatMessage {
@@ -43,6 +43,18 @@ export function ChatPanel({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Stable across every send attempt until a trip exists — a lost response
+  // followed by a retry (double-click, network-level resend) reuses this
+  // same key, so `startTrip` (src/workflow/controller.ts) resolves it to
+  // the same trip instead of creating a second, orphaned one. Generated
+  // lazily rather than eagerly on mount, since most sessions resume an
+  // existing trip and never need one.
+  const startCorrelationIdRef = useRef<string | null>(null);
+  function startCorrelationId(): string {
+    if (!startCorrelationIdRef.current) startCorrelationIdRef.current = crypto.randomUUID();
+    return startCorrelationIdRef.current;
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = input.trim();
@@ -54,7 +66,11 @@ export function ChatPanel({
     setError(null);
 
     try {
-      const result = await sendMessage({ tripId, message: trimmed });
+      const result = await sendMessage({
+        tripId,
+        message: trimmed,
+        startCorrelationId: tripId ? undefined : startCorrelationId(),
+      });
       setMessages((prev) => [...prev, { role: "assistant", content: result.assistantMessage }]);
       if (!tripId) {
         setTripId(result.tripId);

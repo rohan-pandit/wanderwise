@@ -7,7 +7,7 @@ vi.mock("@/src/repositories/trip-state");
 vi.mock("@/src/repositories/trip-events");
 vi.mock("@/src/repositories/workflow-runs");
 
-import { createTrip, updateTripStatus } from "@/src/repositories/trips";
+import { createTrip, getTripByCorrelationId, updateTripStatus } from "@/src/repositories/trips";
 import {
   appendTripStateVersion,
   findTripStateVersionByCorrelationId,
@@ -70,6 +70,41 @@ describe("startTrip", () => {
       supabase,
       expect.objectContaining({ fromState: null, toState: "created" }),
     );
+  });
+
+  it("returns the existing trip without creating a new one when a prior trip already used this correlationId", async () => {
+    const existingTrip = { id: "trip-existing", session_id: "s1", user_id: "u1", status: "created", correlation_id: CORR_1, created_at: "now" };
+    vi.mocked(getTripByCorrelationId).mockResolvedValue(existingTrip as never);
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("created", 1) as never);
+
+    const result = await startTrip(supabase, { sessionId: "s1", userId: "u1", correlationId: CORR_1 });
+
+    expect(result).toEqual({ trip: existingTrip, version: 1 });
+    expect(createTrip).not.toHaveBeenCalled();
+    expect(appendTripStateVersion).not.toHaveBeenCalled();
+  });
+
+  it("re-fetches the winning trip instead of erroring when a concurrent call already claimed this correlationId", async () => {
+    const winnerTrip = { id: "trip-winner", session_id: "s1", user_id: "u1", status: "created", correlation_id: CORR_1, created_at: "now" };
+    vi.mocked(getTripByCorrelationId)
+      .mockResolvedValueOnce(null) // no prior trip found before the insert attempt
+      .mockResolvedValueOnce(winnerTrip as never); // re-fetch after losing the race
+    vi.mocked(createTrip).mockRejectedValue({ code: "23505", message: "duplicate key value" });
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("created", 1) as never);
+
+    const result = await startTrip(supabase, { sessionId: "s1", userId: "u1", correlationId: CORR_1 });
+
+    expect(result).toEqual({ trip: winnerTrip, version: 1 });
+    expect(appendTripStateVersion).not.toHaveBeenCalled();
+  });
+
+  it("propagates a createTrip error that isn't a correlation-id conflict", async () => {
+    vi.mocked(getTripByCorrelationId).mockResolvedValue(null);
+    vi.mocked(createTrip).mockRejectedValue({ code: "23503", message: "foreign key violation" });
+
+    await expect(startTrip(supabase, { sessionId: "s1", userId: "u1", correlationId: CORR_1 })).rejects.toMatchObject({
+      code: "23503",
+    });
   });
 });
 
