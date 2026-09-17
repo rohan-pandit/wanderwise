@@ -4,124 +4,6 @@ Entry format and rationale in `PROJECT_BRIEF.md` §17.4. Updated per work sessio
 
 ---
 
-## 2026-09-17 — Close revise-failure gap before Phase 8
-
-**What I built:** Fixed the one open item flagged as worth closing before starting Phase 8 (per `docs/IMPLEMENTATION_PLAN.md` §5): the chat-triggered fire-and-forget revise path (`sendMessage`'s `after()` call to `reviseChainStep` in `app/app/actions.ts`) silently swallowed a "no viable candidates" failure instead of surfacing it to the user. Added a `chain_revision_failed` `trip_events` row (via `appendTripEvent`, no migration needed since `event_type` has no enum constraint) on that failure path, carrying the same friendly message `friendlyStepErrorMessage` already produces for the direct UI paths. `app/app/_components/itinerary-panel.tsx`'s existing `needsAttention` Realtime listener now also handles this event type.
-
-**Why:** Found live 2026-09-17 right after slice 4 shipped, and asked the user fix-now-vs-track per the standing rule — chose fix-now since it's a real honesty-design-rule gap in code just shipped, before committing to Phase 8's direction.
-
-**Decisions made:** Left the rest of `docs/IMPLEMENTATION_PLAN.md` §5's open items (idempotency, naive scheduler, 5-combination cap, one-way trips, etc.) deferred as-is — none touch Phase 8's scope (eval harness, CI, dashboards).
-
-**What didn't work / dead ends:** none.
-
-**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean. Not live-verified through the real chat UI — reproducing a genuine "no viable candidates" revision failure needs the same OTP dev-signin setup slice 4 used; skipped as low-risk since the fix reuses the already-tested `friendlyStepErrorMessage` pattern exactly, just logging a trip_event instead of returning `{error}`.
-
-**Next up:** Phase 8 — evaluation and observability (eval harness, adversarial cases, CI workflow, dashboards).
-
----
-
-## 2026-09-17 — Phase 8 slice 1: end-to-end scenario eval harness
-
-**What I built:** The first Phase 8 item — a real end-to-end scenario eval harness (PROJECT_BRIEF.md §9.6/§19), distinct from the existing component evals (`evals/cases/intake.ts`, `evals/cases/retrieval.ts`) which call one agent function directly. `evals/lib/scenario-harness.ts` creates a throwaway `auth.users` row per scenario (admin-created, torn down at the end of the run — `trips`/`sessions` have a hard FK to `auth.users`, no anonymous state) and gives each scenario a real Supabase service-role client plus the real stepwise-chain model/embedding clients. `evals/cases/scenarios.ts` implements 6 of the 16 `PROJECT_BRIEF.md` §19 scenarios (standard trip, missing information, hard-constraint-vs-cheapest, over-budget, user revision, out-of-scope/prompt-injection) driving the real `intake-orchestrator.ts` -> `flight-step.ts` -> `hotel-step.ts` -> `activities-step.ts` -> finalize chain, with deterministic assertions against persisted state rather than model text. `evals/runners/run-scenario-eval.ts` (`npm run eval:scenarios`) runs them, prints a summary that separates real regressions from already-tracked known gaps, and persists one `eval_runs` + one `eval_results` row per scenario via a new `src/repositories/eval-runs.ts` (plus the `eval_runs`/`eval_results` types this needed adding to the hand-maintained `database.types.ts`, which had never gotten them since nothing used those tables before now).
-
-**Why:** Phase 8's own checklist item 1. An end-to-end scenario suite is the natural next step after the stepwise chain redesign closed out clean (319/319 unit tests) — it's the only way to verify the *whole* chain together against a real backend, which unit tests (mocked Supabase) and component evals (single agent call) structurally can't.
-
-**Decisions made:** Six scenarios chosen for this slice, not all 16 — the other 10 (stale inventory, duplicate/idempotent request, cross-session isolation, cancellation, prompt injection in retrieved *inventory* text, failure/recovery) need different test infrastructure (real RLS/JWT-authenticated sessions, or fault injection into a search call) than this harness's direct-function-call, service-role approach provides; tracked as follow-up rather than forced into this slice's shape. `finalizeTrip`'s exact two-`advanceOrThrow`-call sequence (including its hardcoded `guardrailsPassed: true`) is duplicated in the harness rather than imported, since the real one lives in a `"use server"` file behind a cookie-based auth check this script doesn't have.
-
-**What didn't work / dead ends:** First run of `standard_trip` and `over_budget_request` both failed, but not for the reason they looked like at first — both hit "Event confirmation_requested is not permitted from state requirements_ready" because my harness called `confirmActivitiesStep` (the raw workflow function) directly, missing the `chain_completed` transition that only `app/app/actions.ts`'s `confirmActivitiesCandidate` Server Action fires after it. Fixed by replicating that exact guarded sequence in the harness. Separately, `user_revision`'s "old hotel decision is superseded" assertion failed because it queried via `listActiveTripDecisions`, which by design excludes superseded rows — the assertion needs the unfiltered row set to check a row *became* superseded. And `standard_trip`'s original $3000 budget (reused from `evals/cases/intake.ts`'s extraction-only test message) turned out to be genuinely too low for 2 travelers / 7 nights on this route (~$4,954 real total) — raised to $6000 so "standard_trip" is an actual happy path rather than accidentally exercising the budget-ceiling path too.
-
-**Real finding, not a harness bug:** `over_budget_request` still fails after all three fixes above — correctly. It demonstrates a real, previously-undocumented gap: the §9.1 budget-ceiling guardrail isn't enforced at finalize time (`finalizeTrip` hardcodes `guardrailsPassed: true`). Tracked in `docs/IMPLEMENTATION_PLAN.md` §5; asked the user fix-now-vs-track rather than deciding unilaterally, since §9.3 implies this needs an explicit-override *decision*, not just a bug fix.
-
-**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean. `npm run eval:scenarios` run live against the real hosted Supabase project + real Anthropic/Voyage APIs: 5/6 scenarios pass; the 6th fails exactly as documented above, with zero unexplained regressions. Each throwaway eval user was created and deleted within the run — nothing standing afterward.
-
-**Next up:** Decide the over_budget finalize-guardrail question above. Then continue Phase 8: adversarial eval cases, the remaining 10 §19 scenarios (needs the RLS/JWT and fault-injection infrastructure noted above), CI wiring (a fast deterministic-only `npm run eval:ci` + GitHub Actions workflow — the real-model evals stay manual per §9.6's own "keep the eval suite cheap enough for CI" guidance), the engineering/product dashboards, and the cache-hit/cost comparison.
-
----
-
-## 2026-09-17 — Phase 8 slice 2: CI wiring
-
-**What I built:** `.github/workflows/ci.yml` — a GitHub Actions workflow on every push/PR to `main` running `npm run eval:ci` (new script: `typecheck` (`tsc --noEmit`) + `lint` + `test`, all deterministic and mocked-Supabase, no network calls) and `npm run build`. Placeholder `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY`/`SUPABASE_SERVICE_ROLE_KEY` env vars are set directly in the workflow (not GitHub secrets) — verified locally that `npm run build` succeeds with placeholder values, since nothing in build/typecheck/lint/test makes a real Supabase/Anthropic/Voyage call.
-
-**Why:** Closes the budget-of-two open items this satisfies at once: `PROJECT_BRIEF.md` §22's "CI setup" (deferred to Phase 8 since the build sequence's first session) and Phase 8's own "CI evaluation command + GitHub Actions workflow" checklist item. Kept the decision from `evals/runners/run-scenario-eval.ts`'s Phase 8 slice 1 docstring: real-model evals (`eval:intake`/`eval:retrieval`/`eval:scenarios`) cost real money and stay manual, per §9.6's own guidance that a CI-bound eval suite should stay deterministic, cheap, and fast — `eval:ci` only ever runs the mocked-Supabase domain-logic unit tests already living in `npm test`.
-
-**Decisions made:** No GitHub secrets configured for this workflow — deliberately, since nothing it runs needs real credentials. If a future CI job needs to run a real-model eval against a live Supabase project, that's a distinct, separate workflow/secrets decision, not implied by this one.
-
-**What didn't work / dead ends:** The first real GitHub Actions run (after pushing) failed on `typecheck`: `Cannot find name 'LayoutProps'` in `app/layout.tsx`. That global type is generated by Next.js into `.next/types/` on a `next dev`/`next build` run — it existed locally (from every prior session's own build/dev runs) so `tsc --noEmit` passed locally without ever needing it fresh, but a clean CI checkout has no `.next/` at all. Fixed by making `typecheck` run `next typegen` (generates just the route/layout types, no full build) before `tsc --noEmit`; verified by deleting the local `.next/` directory and re-running `npm run eval:ci` clean, reproducing and then confirming the fix against the same fresh-checkout condition CI hits.
-
-**Verification:** `npm run eval:ci` (new script) passes locally, including from a deleted `.next/` (simulating a fresh CI checkout): typecheck (with `next typegen` first), lint, and `npm test` (319/319) all clean. `npm run build` verified to succeed with the exact placeholder env vars the workflow sets. Pushed to `origin/main`; the corrected workflow's first live run is expected to pass (not yet re-verified against the actual GitHub Actions runner as of this entry — the initial two runs both failed on the now-fixed `typecheck` step).
-
-**Next up:** Continue Phase 8 — remaining items: adversarial eval cases, the remaining §19 scenarios, engineering/product dashboards, and the cache-hit/cost comparison. Order not yet decided.
-
----
-
-## 2026-09-17 — Phase 8 slice 3: adversarial eval cases
-
-**What I built:** `evals/cases/adversarial.ts` — four adversarial cases (PROJECT_BRIEF.md §9.6) on the same real end-to-end harness slice 1 built: `fabricated_inventory_ids` (confirmFlightStep/confirmHotelStep's re-validation rejects made-up UUIDs, not just trusts the caller), `budget_pressure_wording` ("money is no object" framing doesn't change the literally-stated budget number extracted), `contradictory_dates` (self-contradictory dates in one message resolve to the last-stated value or a clarification, mirroring `evals/cases/intake.ts`'s existing budget case but end to end), `cross_session_reference` (a `tripId`/`sessionId` pair that don't belong together is rejected by `intake-orchestrator.ts`'s `SessionTripMismatchError` before any model call — zero API cost). `evals/runners/run-scenario-eval.ts` now runs both `SCENARIO_CASES` and `ADVERSARIAL_CASES` together (one runner, since they share identical harness/reporting/persistence — a second near-duplicate runner would just be drift risk).
-
-**Why:** Phase 8's "Adversarial eval cases" checklist item, building directly on slice 1's harness rather than a separate one.
-
-**Decisions made:** Four of §9.6's eight adversarial categories covered; "attempts to trigger booking" already covered by `scenarios.ts`'s `out_of_scope_request`. Left uncovered: prompt injection *in retrieved inventory text* and malformed/malicious inventory records — both need a seeded adversarial fixture (mutating shared `activities`/`destinations` rows, even temporarily, or a dedicated fixture migration), judged a separate, bigger piece of work rather than squeezed into this slice.
-
-**What didn't work / dead ends:** `fabricated_inventory_ids`'s hotel half initially risked being ambiguous — with no confirmed flight yet, a fabricated hotel ID could fail on either the ID-doesn't-exist check or the `FlightStepNotConfirmedError` precondition depending on check order; the assertion accepts either since both are a clean rejection, not a crash or silent acceptance, which is what the case actually cares about. Also caught a wrong error-class import while writing this (`FlightStepNotConfirmedError` is defined in `hotel-step.ts`, not `flight-step.ts`, despite `activities-step.ts` re-exporting it from there) via `tsc`.
-
-**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean. `npm run eval:scenarios` run live: 9/10 total cases pass (all 4 new adversarial ones clean), the 1 failure is the already-tracked `over_budget_request` known gap from slice 1 — no new regressions.
-
-**Next up:** Continue Phase 8 — remaining §19 scenarios (needs RLS/JWT or fault-injection infra), engineering/product dashboards, cache-hit/cost comparison. Order not yet decided.
-
----
-
-## 2026-09-17 — Phase 8 slice 4: engineering dashboard
-
-**What I built:** `app/internal/analytics/page.tsx` — the §13.3 engineering dashboard: trip finalization rate, total/per-finalized-trip cost, cost/latency/cache-read breakdown by agent, guardrail trigger frequency (which fires most), workflow failure-state breakdown, and eval pass-rate trend across recent `eval_runs`. Uses `createServiceClient` (every source table — `agent_runs`/`tool_calls`/`guardrail_events`/`workflow_steps`/`eval_runs`/`eval_results` — has RLS enabled with no policy for `anon`/`authenticated`, so the RLS-scoped client would just get zero rows). Route-level access is `proxy.ts`'s existing deny-by-default middleware — no separate in-page auth check, matching `app/app/layout.tsx`'s own documented reasoning.
-
-Also fixed a real gap discovered while building this: `agent_runs.cost_usd` was defined in the schema and accepted by `recordAgentRun`, but **no caller ever actually passed it** — `intake-orchestrator.ts` and `activities-step.ts`'s three `recordAgentRun` calls all left it `null`, silently, since nothing enforced it. Extracted `evals/runners/run-intake-eval.ts`'s existing cost-estimation formula into `src/observability/pricing.ts` (the first real file in that previously-empty directory) and wired `estimateCostUsd(model, usage)` into all three call sites plus the eval runner (removing its duplicate copy).
-
-**Why:** Phase 8's "Engineering dashboard" checklist item, plus the §22 "Analytics dashboard access control" open decision it depended on. The cost-wiring fix wasn't optional scope creep — without it, every cost metric on this dashboard would show $0.00 forever no matter how much the app actually spent, which defeats the entire point of a cost dashboard.
-
-**Decisions made:** `/internal/analytics` access stays "any signed-in user," not a separate admin role — resolved the §22 open item this way since this is a single-operator portfolio project with no multi-tenant admin concept anywhere else in the app.
-
-**What didn't work / dead ends:** none — the embedded-resource Supabase query (`eval_results` joined to `eval_runs` for label/timestamp) worked on the first real try against the live DB, resolved via the real Postgres FK even though `database.types.ts`'s hand-maintained `Relationships: []` doesn't declare it (that array is TS-typing-only; PostgREST resolves embeds from the actual schema).
-
-**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean. Live-verified in the browser: created a throwaway dev-signin helper (same pattern as Phase 7's live verification — a `/dev-signin` route + one-line `proxy.ts` public-path exception, both removed after use, not committed) to actually load `/internal/analytics` signed in and confirm real data renders. First load showed real guardrail/tool-call/eval-pass-rate numbers but $0.00 everywhere for cost (all prior `agent_runs` rows predate the pricing fix); re-ran `npm run eval:scenarios` once more after the fix and confirmed real per-agent costs, cache-hit-rate savings, and a growing eval pass-rate trend all appeared correctly on refresh. Confirmed via `auth.admin.listUsers` that the harness's own cleanup has been working correctly all along (only the intentional dev-signin user was ever left over, and it's now deleted) — the dashboard's "0/2 trips finalized" is real leftover data from earlier Phase 7 live testing, not eval debris.
-
-**Next up:** Continue Phase 8 — remaining §19 scenarios (needs RLS/JWT or fault-injection infra), the product metrics view, and the cache-hit/cost comparison experiment.
-
----
-
-## 2026-09-17 — Phase 8 slice 5: product metrics view
-
-**What I built:** `app/internal/product-metrics/page.tsx` — the §13.4 product metrics view: trip-start rate, requirement-completion rate (reusing the real `checkRequirementsComplete` domain function against `trip_requirements` rows, not a reimplementation), draft-generation rate, confirmation rate, revision rate (any `trip_decisions` row ever superseded for a trip), time to first draft / time to finalized (derived from `trip_state_versions`' real append-only history), abandonment stage (current chain step for non-finalized trips, reusing `getCurrentChainStep`), and qualitative feedback shown honestly as "not yet collected" rather than omitted or faked, since no feedback mechanism exists anywhere in the app. Deliberately a separate page from `/internal/analytics`, per §13.4's own explicit rule against letting a high agent-call count read as product success. Cross-linked the two pages to each other.
-
-**Why:** Phase 8's "Product metrics view" checklist item, the last of the dashboard-shaped items.
-
-**Decisions made:** No new tables/columns needed — every metric here derives from data the app was already persisting (`trip_state_versions`, `trip_requirements`, `trip_decisions`, `trips`), unlike slice 4's cost-telemetry gap.
-
-**What didn't work / dead ends:** After deleting the throwaway `/dev-signin` route (created for this slice's own live verification, same pattern as slice 4), `npx tsc --noEmit` failed on a stale `.next/dev/types/validator.ts` still referencing the deleted route — a leftover `next dev` type-cache artifact, not a real error. `npm run typecheck` (which runs `next typegen` first) didn't clear it either; only deleting the whole `.next/` directory did. Not a regression in anything committed — the stale reference was to a file that was never committed in the first place.
-
-**Verification:** `npm run eval:ci` (typecheck + lint + `npm test`, 319/319) all clean after clearing the stale `.next/` cache above. Live-verified both pages in the browser via the same throwaway dev-signin pattern: real numbers rendered correctly on `/internal/product-metrics` (2 real trips, 1 with complete requirements, 0 drafted — consistent with `/internal/analytics`'s "0/2 finalized", since neither of the two pre-existing real trips ever reached a draft), and the cross-links between the two pages work. Dev-signin route and its `proxy.ts` exception removed after use, not committed; the throwaway auth user deleted.
-
-**Next up:** Phase 8's remaining items: the other 10 §19 scenarios (needs RLS/JWT-authenticated sessions or fault-injection infrastructure this project doesn't have yet) and the cache-hit/cost comparison experiment. Phase 8's dashboard-shaped and eval-harness-shaped work is now complete.
-
----
-
-## 2026-09-17 — Phase 8 slice 6: cache-hit / cost comparison (Phase 8 complete)
-
-**What I built:** `evals/runners/run-cache-comparison.ts` (`npm run eval:cache-comparison`) — PROJECT_BRIEF.md §6.7's "prompt caching is an experiment, not an assumption," finally actually measured. Runs the same 6 real Intake-agent calls (`evals/cases/intake.ts`'s `INTAKE_EVAL_CASES` — same agent, so system prompt + tool defs never change across the sequence) twice against the real Anthropic API: once with caching on (the real, always-on production behavior), once forced off via a new `cachingEnabled` constructor flag on `AnthropicModelClient` that exists solely for this comparison (every real call site leaves it at its default `true`). Same model, same inputs, same order — the only variable is the `cache_control` breakpoints.
-
-**Real result (claude-sonnet-5):** caching cut cost by **45.5%** ($0.08585 -> $0.04681) — the first call writes the cache (4,821 tokens), every call after it reads from it instead of resending the system prompt + tools. But it did **not** improve latency (26,680ms -> 29,088ms total across 6 calls — slightly *worse*). This is the actual point of §6.7 treating caching as an experiment rather than a given: the cost win is real and worth keeping, but an assumption that caching would also make responses faster would have been wrong.
-
-**Why:** The last Phase 8 checklist item. With this, all six Phase 8 items (`docs/IMPLEMENTATION_PLAN.md`) are checked off — the phase is complete, modulo the two explicitly-scoped-out pieces (the remaining 10 §19 scenarios, and adversarial prompt-injection-in-inventory-text cases) that both need test infrastructure (RLS/JWT sessions, or a seeded adversarial fixture) this build doesn't have yet.
-
-**Decisions made:** None new — `cachingEnabled` is additive (defaults to `true`, every existing call site unaffected).
-
-**What didn't work / dead ends:** None.
-
-**Verification:** `npx tsc --noEmit`, `npm run lint` clean. Run live against the real Anthropic API — real numbers above, not simulated. `npm test` unaffected (no unit tests exist for `AnthropicModelClient` — it's the thin real-API-boundary file, tested via the real eval runners rather than mocks, consistent with how it's always been).
-
-**Next up:** Phase 8 is complete. Two explicitly deferred items remain tracked but out of this build's scope for now (remaining §19 scenarios needing RLS/JWT infra; inventory-text prompt-injection cases needing a seeded fixture). Natural next step is Phase 9 (portfolio polish) unless the tracked open items (`docs/IMPLEMENTATION_PLAN.md` §5 — especially the budget-ceiling-at-finalize gap slice 1 found) get prioritized first.
-
----
-
 ## 2026-09-16 — Planning: brief consolidation, repo setup, first architecture decisions
 
 **What I built:**
@@ -831,3 +713,142 @@ Two design questions were asked and answered directly before writing any code (n
 **Known limitations / assumptions carried forward:** `docs/IMPLEMENTATION_PLAN.md` §5 updated — all prior open items this slice was meant to close are now checked off; one new open item added (chat-triggered fire-and-forget revise failures aren't surfaced to the user, per bug 3 above).
 
 **Next up:** The stepwise chain redesign is complete. The project resumes wherever Phase 6/7/8/9 makes the most sense next — Phase 8 (evaluation/observability harness) is the next unstarted phase in the original build sequence, but the §5 open-items list (especially the newly-added chat-revision-failure-messaging gap, and the longer-standing idempotency/retry gaps) is also worth a look before committing to a direction.
+
+---
+
+## 2026-09-17 — Close revise-failure gap before Phase 8
+
+**What I built:** Fixed the one open item flagged as worth closing before starting Phase 8 (per `docs/IMPLEMENTATION_PLAN.md` §5): the chat-triggered fire-and-forget revise path (`sendMessage`'s `after()` call to `reviseChainStep` in `app/app/actions.ts`) silently swallowed a "no viable candidates" failure instead of surfacing it to the user. Added a `chain_revision_failed` `trip_events` row (via `appendTripEvent`, no migration needed since `event_type` has no enum constraint) on that failure path, carrying the same friendly message `friendlyStepErrorMessage` already produces for the direct UI paths. `app/app/_components/itinerary-panel.tsx`'s existing `needsAttention` Realtime listener now also handles this event type.
+
+**Why:** Found live 2026-09-17 right after slice 4 shipped, and asked the user fix-now-vs-track per the standing rule — chose fix-now since it's a real honesty-design-rule gap in code just shipped, before committing to Phase 8's direction.
+
+**Decisions made:** Left the rest of `docs/IMPLEMENTATION_PLAN.md` §5's open items (idempotency, naive scheduler, 5-combination cap, one-way trips, etc.) deferred as-is — none touch Phase 8's scope (eval harness, CI, dashboards).
+
+**What didn't work / dead ends:** none.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean. Not live-verified through the real chat UI — reproducing a genuine "no viable candidates" revision failure needs the same OTP dev-signin setup slice 4 used; skipped as low-risk since the fix reuses the already-tested `friendlyStepErrorMessage` pattern exactly, just logging a trip_event instead of returning `{error}`.
+
+**Next up:** Phase 8 — evaluation and observability (eval harness, adversarial cases, CI workflow, dashboards).
+
+---
+
+## 2026-09-17 — Phase 8 slice 1: end-to-end scenario eval harness
+
+**What I built:** The first Phase 8 item — a real end-to-end scenario eval harness (PROJECT_BRIEF.md §9.6/§19), distinct from the existing component evals (`evals/cases/intake.ts`, `evals/cases/retrieval.ts`) which call one agent function directly. `evals/lib/scenario-harness.ts` creates a throwaway `auth.users` row per scenario (admin-created, torn down at the end of the run — `trips`/`sessions` have a hard FK to `auth.users`, no anonymous state) and gives each scenario a real Supabase service-role client plus the real stepwise-chain model/embedding clients. `evals/cases/scenarios.ts` implements 6 of the 16 `PROJECT_BRIEF.md` §19 scenarios (standard trip, missing information, hard-constraint-vs-cheapest, over-budget, user revision, out-of-scope/prompt-injection) driving the real `intake-orchestrator.ts` -> `flight-step.ts` -> `hotel-step.ts` -> `activities-step.ts` -> finalize chain, with deterministic assertions against persisted state rather than model text. `evals/runners/run-scenario-eval.ts` (`npm run eval:scenarios`) runs them, prints a summary that separates real regressions from already-tracked known gaps, and persists one `eval_runs` + one `eval_results` row per scenario via a new `src/repositories/eval-runs.ts` (plus the `eval_runs`/`eval_results` types this needed adding to the hand-maintained `database.types.ts`, which had never gotten them since nothing used those tables before now).
+
+**Why:** Phase 8's own checklist item 1. An end-to-end scenario suite is the natural next step after the stepwise chain redesign closed out clean (319/319 unit tests) — it's the only way to verify the *whole* chain together against a real backend, which unit tests (mocked Supabase) and component evals (single agent call) structurally can't.
+
+**Decisions made:** Six scenarios chosen for this slice, not all 16 — the other 10 (stale inventory, duplicate/idempotent request, cross-session isolation, cancellation, prompt injection in retrieved *inventory* text, failure/recovery) need different test infrastructure (real RLS/JWT-authenticated sessions, or fault injection into a search call) than this harness's direct-function-call, service-role approach provides; tracked as follow-up rather than forced into this slice's shape. `finalizeTrip`'s exact two-`advanceOrThrow`-call sequence (including its hardcoded `guardrailsPassed: true`) is duplicated in the harness rather than imported, since the real one lives in a `"use server"` file behind a cookie-based auth check this script doesn't have.
+
+**What didn't work / dead ends:** First run of `standard_trip` and `over_budget_request` both failed, but not for the reason they looked like at first — both hit "Event confirmation_requested is not permitted from state requirements_ready" because my harness called `confirmActivitiesStep` (the raw workflow function) directly, missing the `chain_completed` transition that only `app/app/actions.ts`'s `confirmActivitiesCandidate` Server Action fires after it. Fixed by replicating that exact guarded sequence in the harness. Separately, `user_revision`'s "old hotel decision is superseded" assertion failed because it queried via `listActiveTripDecisions`, which by design excludes superseded rows — the assertion needs the unfiltered row set to check a row *became* superseded. And `standard_trip`'s original $3000 budget (reused from `evals/cases/intake.ts`'s extraction-only test message) turned out to be genuinely too low for 2 travelers / 7 nights on this route (~$4,954 real total) — raised to $6000 so "standard_trip" is an actual happy path rather than accidentally exercising the budget-ceiling path too.
+
+**Real finding, not a harness bug:** `over_budget_request` still fails after all three fixes above — correctly. It demonstrates a real, previously-undocumented gap: the §9.1 budget-ceiling guardrail isn't enforced at finalize time (`finalizeTrip` hardcodes `guardrailsPassed: true`). Tracked in `docs/IMPLEMENTATION_PLAN.md` §5; asked the user fix-now-vs-track rather than deciding unilaterally, since §9.3 implies this needs an explicit-override *decision*, not just a bug fix.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean. `npm run eval:scenarios` run live against the real hosted Supabase project + real Anthropic/Voyage APIs: 5/6 scenarios pass; the 6th fails exactly as documented above, with zero unexplained regressions. Each throwaway eval user was created and deleted within the run — nothing standing afterward.
+
+**Next up:** Decide the over_budget finalize-guardrail question above. Then continue Phase 8: adversarial eval cases, the remaining 10 §19 scenarios (needs the RLS/JWT and fault-injection infrastructure noted above), CI wiring (a fast deterministic-only `npm run eval:ci` + GitHub Actions workflow — the real-model evals stay manual per §9.6's own "keep the eval suite cheap enough for CI" guidance), the engineering/product dashboards, and the cache-hit/cost comparison.
+
+---
+
+## 2026-09-17 — Phase 8 slice 2: CI wiring
+
+**What I built:** `.github/workflows/ci.yml` — a GitHub Actions workflow on every push/PR to `main` running `npm run eval:ci` (new script: `typecheck` (`tsc --noEmit`) + `lint` + `test`, all deterministic and mocked-Supabase, no network calls) and `npm run build`. Placeholder `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY`/`SUPABASE_SERVICE_ROLE_KEY` env vars are set directly in the workflow (not GitHub secrets) — verified locally that `npm run build` succeeds with placeholder values, since nothing in build/typecheck/lint/test makes a real Supabase/Anthropic/Voyage call.
+
+**Why:** Closes the budget-of-two open items this satisfies at once: `PROJECT_BRIEF.md` §22's "CI setup" (deferred to Phase 8 since the build sequence's first session) and Phase 8's own "CI evaluation command + GitHub Actions workflow" checklist item. Kept the decision from `evals/runners/run-scenario-eval.ts`'s Phase 8 slice 1 docstring: real-model evals (`eval:intake`/`eval:retrieval`/`eval:scenarios`) cost real money and stay manual, per §9.6's own guidance that a CI-bound eval suite should stay deterministic, cheap, and fast — `eval:ci` only ever runs the mocked-Supabase domain-logic unit tests already living in `npm test`.
+
+**Decisions made:** No GitHub secrets configured for this workflow — deliberately, since nothing it runs needs real credentials. If a future CI job needs to run a real-model eval against a live Supabase project, that's a distinct, separate workflow/secrets decision, not implied by this one.
+
+**What didn't work / dead ends:** The first real GitHub Actions run (after pushing) failed on `typecheck`: `Cannot find name 'LayoutProps'` in `app/layout.tsx`. That global type is generated by Next.js into `.next/types/` on a `next dev`/`next build` run — it existed locally (from every prior session's own build/dev runs) so `tsc --noEmit` passed locally without ever needing it fresh, but a clean CI checkout has no `.next/` at all. Fixed by making `typecheck` run `next typegen` (generates just the route/layout types, no full build) before `tsc --noEmit`; verified by deleting the local `.next/` directory and re-running `npm run eval:ci` clean, reproducing and then confirming the fix against the same fresh-checkout condition CI hits.
+
+**Verification:** `npm run eval:ci` (new script) passes locally, including from a deleted `.next/` (simulating a fresh CI checkout): typecheck (with `next typegen` first), lint, and `npm test` (319/319) all clean. `npm run build` verified to succeed with the exact placeholder env vars the workflow sets. Pushed to `origin/main`; the corrected workflow's first live run is expected to pass (not yet re-verified against the actual GitHub Actions runner as of this entry — the initial two runs both failed on the now-fixed `typecheck` step).
+
+**Next up:** Continue Phase 8 — remaining items: adversarial eval cases, the remaining §19 scenarios, engineering/product dashboards, and the cache-hit/cost comparison. Order not yet decided.
+
+---
+
+## 2026-09-17 — Phase 8 slice 3: adversarial eval cases
+
+**What I built:** `evals/cases/adversarial.ts` — four adversarial cases (PROJECT_BRIEF.md §9.6) on the same real end-to-end harness slice 1 built: `fabricated_inventory_ids` (confirmFlightStep/confirmHotelStep's re-validation rejects made-up UUIDs, not just trusts the caller), `budget_pressure_wording` ("money is no object" framing doesn't change the literally-stated budget number extracted), `contradictory_dates` (self-contradictory dates in one message resolve to the last-stated value or a clarification, mirroring `evals/cases/intake.ts`'s existing budget case but end to end), `cross_session_reference` (a `tripId`/`sessionId` pair that don't belong together is rejected by `intake-orchestrator.ts`'s `SessionTripMismatchError` before any model call — zero API cost). `evals/runners/run-scenario-eval.ts` now runs both `SCENARIO_CASES` and `ADVERSARIAL_CASES` together (one runner, since they share identical harness/reporting/persistence — a second near-duplicate runner would just be drift risk).
+
+**Why:** Phase 8's "Adversarial eval cases" checklist item, building directly on slice 1's harness rather than a separate one.
+
+**Decisions made:** Four of §9.6's eight adversarial categories covered; "attempts to trigger booking" already covered by `scenarios.ts`'s `out_of_scope_request`. Left uncovered: prompt injection *in retrieved inventory text* and malformed/malicious inventory records — both need a seeded adversarial fixture (mutating shared `activities`/`destinations` rows, even temporarily, or a dedicated fixture migration), judged a separate, bigger piece of work rather than squeezed into this slice.
+
+**What didn't work / dead ends:** `fabricated_inventory_ids`'s hotel half initially risked being ambiguous — with no confirmed flight yet, a fabricated hotel ID could fail on either the ID-doesn't-exist check or the `FlightStepNotConfirmedError` precondition depending on check order; the assertion accepts either since both are a clean rejection, not a crash or silent acceptance, which is what the case actually cares about. Also caught a wrong error-class import while writing this (`FlightStepNotConfirmedError` is defined in `hotel-step.ts`, not `flight-step.ts`, despite `activities-step.ts` re-exporting it from there) via `tsc`.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean. `npm run eval:scenarios` run live: 9/10 total cases pass (all 4 new adversarial ones clean), the 1 failure is the already-tracked `over_budget_request` known gap from slice 1 — no new regressions.
+
+**Next up:** Continue Phase 8 — remaining §19 scenarios (needs RLS/JWT or fault-injection infra), engineering/product dashboards, cache-hit/cost comparison. Order not yet decided.
+
+---
+
+## 2026-09-17 — Phase 8 slice 4: engineering dashboard
+
+**What I built:** `app/internal/analytics/page.tsx` — the §13.3 engineering dashboard: trip finalization rate, total/per-finalized-trip cost, cost/latency/cache-read breakdown by agent, guardrail trigger frequency (which fires most), workflow failure-state breakdown, and eval pass-rate trend across recent `eval_runs`. Uses `createServiceClient` (every source table — `agent_runs`/`tool_calls`/`guardrail_events`/`workflow_steps`/`eval_runs`/`eval_results` — has RLS enabled with no policy for `anon`/`authenticated`, so the RLS-scoped client would just get zero rows). Route-level access is `proxy.ts`'s existing deny-by-default middleware — no separate in-page auth check, matching `app/app/layout.tsx`'s own documented reasoning.
+
+Also fixed a real gap discovered while building this: `agent_runs.cost_usd` was defined in the schema and accepted by `recordAgentRun`, but **no caller ever actually passed it** — `intake-orchestrator.ts` and `activities-step.ts`'s three `recordAgentRun` calls all left it `null`, silently, since nothing enforced it. Extracted `evals/runners/run-intake-eval.ts`'s existing cost-estimation formula into `src/observability/pricing.ts` (the first real file in that previously-empty directory) and wired `estimateCostUsd(model, usage)` into all three call sites plus the eval runner (removing its duplicate copy).
+
+**Why:** Phase 8's "Engineering dashboard" checklist item, plus the §22 "Analytics dashboard access control" open decision it depended on. The cost-wiring fix wasn't optional scope creep — without it, every cost metric on this dashboard would show $0.00 forever no matter how much the app actually spent, which defeats the entire point of a cost dashboard.
+
+**Decisions made:** `/internal/analytics` access stays "any signed-in user," not a separate admin role — resolved the §22 open item this way since this is a single-operator portfolio project with no multi-tenant admin concept anywhere else in the app.
+
+**What didn't work / dead ends:** none — the embedded-resource Supabase query (`eval_results` joined to `eval_runs` for label/timestamp) worked on the first real try against the live DB, resolved via the real Postgres FK even though `database.types.ts`'s hand-maintained `Relationships: []` doesn't declare it (that array is TS-typing-only; PostgREST resolves embeds from the actual schema).
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean. Live-verified in the browser: created a throwaway dev-signin helper (same pattern as Phase 7's live verification — a `/dev-signin` route + one-line `proxy.ts` public-path exception, both removed after use, not committed) to actually load `/internal/analytics` signed in and confirm real data renders. First load showed real guardrail/tool-call/eval-pass-rate numbers but $0.00 everywhere for cost (all prior `agent_runs` rows predate the pricing fix); re-ran `npm run eval:scenarios` once more after the fix and confirmed real per-agent costs, cache-hit-rate savings, and a growing eval pass-rate trend all appeared correctly on refresh. Confirmed via `auth.admin.listUsers` that the harness's own cleanup has been working correctly all along (only the intentional dev-signin user was ever left over, and it's now deleted) — the dashboard's "0/2 trips finalized" is real leftover data from earlier Phase 7 live testing, not eval debris.
+
+**Next up:** Continue Phase 8 — remaining §19 scenarios (needs RLS/JWT or fault-injection infra), the product metrics view, and the cache-hit/cost comparison experiment.
+
+---
+
+## 2026-09-17 — Phase 8 slice 5: product metrics view
+
+**What I built:** `app/internal/product-metrics/page.tsx` — the §13.4 product metrics view: trip-start rate, requirement-completion rate (reusing the real `checkRequirementsComplete` domain function against `trip_requirements` rows, not a reimplementation), draft-generation rate, confirmation rate, revision rate (any `trip_decisions` row ever superseded for a trip), time to first draft / time to finalized (derived from `trip_state_versions`' real append-only history), abandonment stage (current chain step for non-finalized trips, reusing `getCurrentChainStep`), and qualitative feedback shown honestly as "not yet collected" rather than omitted or faked, since no feedback mechanism exists anywhere in the app. Deliberately a separate page from `/internal/analytics`, per §13.4's own explicit rule against letting a high agent-call count read as product success. Cross-linked the two pages to each other.
+
+**Why:** Phase 8's "Product metrics view" checklist item, the last of the dashboard-shaped items.
+
+**Decisions made:** No new tables/columns needed — every metric here derives from data the app was already persisting (`trip_state_versions`, `trip_requirements`, `trip_decisions`, `trips`), unlike slice 4's cost-telemetry gap.
+
+**What didn't work / dead ends:** After deleting the throwaway `/dev-signin` route (created for this slice's own live verification, same pattern as slice 4), `npx tsc --noEmit` failed on a stale `.next/dev/types/validator.ts` still referencing the deleted route — a leftover `next dev` type-cache artifact, not a real error. `npm run typecheck` (which runs `next typegen` first) didn't clear it either; only deleting the whole `.next/` directory did. Not a regression in anything committed — the stale reference was to a file that was never committed in the first place.
+
+**Verification:** `npm run eval:ci` (typecheck + lint + `npm test`, 319/319) all clean after clearing the stale `.next/` cache above. Live-verified both pages in the browser via the same throwaway dev-signin pattern: real numbers rendered correctly on `/internal/product-metrics` (2 real trips, 1 with complete requirements, 0 drafted — consistent with `/internal/analytics`'s "0/2 finalized", since neither of the two pre-existing real trips ever reached a draft), and the cross-links between the two pages work. Dev-signin route and its `proxy.ts` exception removed after use, not committed; the throwaway auth user deleted.
+
+**Next up:** Phase 8's remaining items: the other 10 §19 scenarios (needs RLS/JWT-authenticated sessions or fault-injection infrastructure this project doesn't have yet) and the cache-hit/cost comparison experiment. Phase 8's dashboard-shaped and eval-harness-shaped work is now complete.
+
+---
+
+## 2026-09-17 — Phase 8 slice 6: cache-hit / cost comparison (Phase 8 complete)
+
+**What I built:** `evals/runners/run-cache-comparison.ts` (`npm run eval:cache-comparison`) — PROJECT_BRIEF.md §6.7's "prompt caching is an experiment, not an assumption," finally actually measured. Runs the same 6 real Intake-agent calls (`evals/cases/intake.ts`'s `INTAKE_EVAL_CASES` — same agent, so system prompt + tool defs never change across the sequence) twice against the real Anthropic API: once with caching on (the real, always-on production behavior), once forced off via a new `cachingEnabled` constructor flag on `AnthropicModelClient` that exists solely for this comparison (every real call site leaves it at its default `true`). Same model, same inputs, same order — the only variable is the `cache_control` breakpoints.
+
+**Real result (claude-sonnet-5):** caching cut cost by **45.5%** ($0.08585 -> $0.04681) — the first call writes the cache (4,821 tokens), every call after it reads from it instead of resending the system prompt + tools. But it did **not** improve latency (26,680ms -> 29,088ms total across 6 calls — slightly *worse*). This is the actual point of §6.7 treating caching as an experiment rather than a given: the cost win is real and worth keeping, but an assumption that caching would also make responses faster would have been wrong.
+
+**Why:** The last Phase 8 checklist item. With this, all six Phase 8 items (`docs/IMPLEMENTATION_PLAN.md`) are checked off — the phase is complete, modulo the two explicitly-scoped-out pieces (the remaining 10 §19 scenarios, and adversarial prompt-injection-in-inventory-text cases) that both need test infrastructure (RLS/JWT sessions, or a seeded adversarial fixture) this build doesn't have yet.
+
+**Decisions made:** None new — `cachingEnabled` is additive (defaults to `true`, every existing call site unaffected).
+
+**What didn't work / dead ends:** None.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint` clean. Run live against the real Anthropic API — real numbers above, not simulated. `npm test` unaffected (no unit tests exist for `AnthropicModelClient` — it's the thin real-API-boundary file, tested via the real eval runners rather than mocks, consistent with how it's always been).
+
+**Next up:** Phase 8 is complete. Two explicitly deferred items remain tracked but out of this build's scope for now (remaining §19 scenarios needing RLS/JWT infra; inventory-text prompt-injection cases needing a seeded fixture). Natural next step is Phase 9 (portfolio polish) unless the tracked open items (`docs/IMPLEMENTATION_PLAN.md` §5 — especially the budget-ceiling-at-finalize gap slice 1 found) get prioritized first.
+
+---
+
+## 2026-09-17 — Session close: pre-Phase-9 documentation audit
+
+**What I built:** No code changes — a documentation-accuracy pass requested before closing this session and starting Phase 9 in a new one. Found and fixed two real problems:
+
+1. **`docs/architecture/ADR-INDEX.md` was significantly stale.** Area 4 (validation/evaluation) and Area 5 (observability) still read "not yet decided — deferred to Phase 8" for six items that Phase 8's six slices this session actually decided and built. Updated all six, plus the ADR-005/006/007 status-table rows, plus the Area 1 prompt-caching line with slice 6's real 45.5%-cost/no-latency-benefit result.
+2. **`BUILD_LOG.md`'s entries from this entire session were in the wrong place.** Every one of today's seven entries (the revise-failure-gap fix plus all six Phase 8 slices) had been inserted right after the file's opening `---`, ahead of every entry from 2026-09-16 onward, instead of appended at the end — breaking the file's chronological, oldest-first convention throughout today's whole session. Moved the block of seven entries to the actual end of the file, verified via a sorted-diff against the previous commit that the fix was a pure reorder (zero lines added, changed, or lost).
+
+Also added two entries to `docs/IMPLEMENTATION_PLAN.md` §5 that a straight Phase-8-checklist read wouldn't have surfaced: a never-decided telemetry retention/redaction policy (`PROJECT_BRIEF.md` §13.2 requires one; `tool_calls.arguments`/`.result` store full payloads indefinitely with no redaction, made more load-bearing by this session's eval-harness rows), and — for historical completeness, matching how every other found-and-fixed-same-session bug in this file is recorded — the cost-telemetry gap slice 4 found and fixed. Sharpened Phase 9's own checklist to name which ADRs are specifically owed (ADR-006, ADR-007) and to flag the retention-policy decision as worth making before any demo recording shows real dashboard data on screen.
+
+**Why:** Requested explicitly — "make sure everything needed for Phase 9 and anything needed to be tracked in the implementation brief is there before I close this out."
+
+**Decisions made:** None new — this was a tracking-accuracy pass, not a design decision.
+
+**What didn't work / dead ends:** The BUILD_LOG misplacement above wasn't caught by any check during the session itself (nothing validates entry order automatically) — only surfaced now because writing this very entry required checking where it should go, which prompted checking where everything else actually was.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean (docs-only changes, but re-verified anyway per the standing discipline of never assuming a change is inert). `git status` clean going into this entry; no other uncommitted work exists.
+
+**Next up:** Phase 9 (portfolio polish) is next: visual design pass, architecture diagram, writing up ADR-006/ADR-007 as standalone files, and the final README/demo pass — the last of which should resolve the telemetry-retention question first if real dashboard data will be shown on screen.

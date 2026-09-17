@@ -9,9 +9,9 @@ Tracks decisions under the five ADR areas defined in `PROJECT_BRIEF.md` §5. Per
 | ADR-002 | Agent roster and responsibilities | 1 | Adopted from `PROJECT_BRIEF.md` §6.2 — no deviation yet |
 | [ADR-003](ADR-003-state-and-data-model.md) | State and data model — identity, auth, RLS | 2 | Decided (identity/auth scope); rest of state model adopted from `PROJECT_BRIEF.md` §7 |
 | ADR-004 | Workflow orchestration and execution | 3 | Custom loop confirmed (`PROJECT_BRIEF.md` §4.3); state machine adopted from §8 — not yet implemented |
-| ADR-005 | Validation, guardrails, and evaluation | 4 | Not yet decided — layered guardrail design adopted from `PROJECT_BRIEF.md` §9 as the starting point |
-| ADR-006 | Evaluation strategy | 4 | Not yet decided — deferred to Phase 4/8 of the build sequence |
-| ADR-007 | Observability | 5 | Not yet decided — deferred to Phase 3/8 |
+| ADR-005 | Validation, guardrails, and evaluation | 4 | Adopted from `PROJECT_BRIEF.md` §9, no deviation — all four layers wired end to end since Phase 6, no standalone ADR needed |
+| ADR-006 | Evaluation strategy | 4 | Decided, Phase 8 (2026-09-17) — real end-to-end/adversarial harness against a real Supabase trip + real Anthropic/Voyage calls, deterministic assertions throughout, no LLM grading introduced. Detailed write-up still owed — Phase 9 checklist item "fill in remaining ADRs" |
+| ADR-007 | Observability | 5 | Decided, Phase 8 (2026-09-17) — engineering + product dashboards, `eval_runs`/`eval_results` persistence, real cost telemetry. Telemetry retention/redaction policy still genuinely undecided (see Area 5 below, `docs/IMPLEMENTATION_PLAN.md` §5). Detailed write-up still owed — Phase 9 checklist item "fill in remaining ADRs" |
 | ADR-008 | Booking boundaries | 1 | Adopted from `PROJECT_BRIEF.md` §6.5 — no deviation, no standalone ADR needed unless one arises |
 
 ## Area 1 — System Boundaries and AI Responsibilities
@@ -23,7 +23,7 @@ Tracks decisions under the five ADR areas defined in `PROJECT_BRIEF.md` §5. Per
 - [x] Model selection (specific Claude model per agent) — resolved 2026-09-16 for the Intake/Revision Interpreter: **Sonnet 5**, confirmed by a component eval run (Sonnet 5 6/6 cases, Haiku 4.5 5/6 — missed a revision-interpretation case) rather than assumed. Model-client interface (`src/agents/model-client.ts`) stays provider/model-agnostic so this can be revisited per-agent as later agents are built.
 - [x] Booking and external-action boundary — adopted from brief §6.5, no deviation.
 - [ ] Security and prompt-injection handling — adopted in principle (brief §6.6). Partially implemented: input-size limits for the Intake agent (Phase 6, `src/workflow/intake-orchestrator.ts`'s Layer 1 guardrail) and retrieved-content delimiting/untrusted-labeling for the Curator/Explanation agents (Phase 5, §10.4 — `<candidate_data>`/`<explanation_data>` blocks, explicit "not instructions" framing in both system prompts). Still open: a deterministic scope classifier (non-travel request detection) and adversarial testing against actual injection attempts (Phase 8). Not yet an ADR.
-- [x] Prompt-caching experiment — measured for the Intake agent (`src/agents/providers/anthropic-model-client.ts`, `PROJECT_BRIEF.md` §6.7 static-first ordering); real cache-read hits confirmed via `npm run eval:intake`. Revisit per-agent as later agents (Curator, Explanation, Writer) are built.
+- [x] Prompt-caching experiment — measured for the Intake agent, twice: real cache-read hits confirmed via `npm run eval:intake` (Phase 4/6), then a real caching-on-vs-forced-off comparison (`evals/runners/run-cache-comparison.ts`, Phase 8 slice 6, 2026-09-17) quantified it — **45.5% cost reduction, no latency benefit** for claude-sonnet-5. Decision: keep caching on (real cost win); don't assume it also helps latency. Not yet measured for the Curator/Writer agents, which also use the same static-system-prompt structure — revisit if their cost profile ever becomes a concern.
 
 ## Area 2 — State and Data Architecture
 
@@ -50,16 +50,16 @@ Tracks decisions under the five ADR areas defined in `PROJECT_BRIEF.md` §5. Per
 - [x] Guardrail layers — adopted from brief §9.1, no deviation; all four layers actually wired end to end for the Intake agent in Phase 6 (`src/workflow/intake-orchestrator.ts`, writing real `guardrail_events` rows), not just adopted in principle.
 - [x] Budget model — adopted from brief §9.3, no deviation.
 - [x] Itinerary feasibility model — adopted from brief §9.2, no deviation.
-- [ ] Deterministic vs. LLM-based grading — adopted in principle (brief §9.6, prefer deterministic); concrete eval harness design is a Phase 8 task.
-- [ ] Evaluation dataset and scenario replay — the 16 scenarios in brief §19 are the starting backlog; harness design not yet decided.
-- [ ] Adversarial testing approach — deferred to Phase 8.
+- [x] Deterministic vs. LLM-based grading — decided, Phase 8, 2026-09-17: every eval assertion (component, end-to-end scenario, adversarial) checks persisted state/structured output deterministically, per §9.6's own preference. No LLM-graded assertions exist anywhere in the suite.
+- [x] Evaluation dataset and scenario replay — decided, Phase 8 slice 1, 2026-09-17: `evals/lib/scenario-harness.ts` + `evals/cases/scenarios.ts` drive the real stepwise chain against a real Supabase trip + real Anthropic/Voyage calls, persisted to `eval_runs`/`eval_results`. 6 of brief §19's 16 scenarios implemented; the other 10 (stale inventory, duplicate/idempotent request, cross-session isolation, cancellation, prompt injection in retrieved inventory text, failure/recovery) need real RLS/JWT-authenticated sessions or fault-injection infrastructure this harness's service-role/direct-function-call approach doesn't provide — tracked in `docs/IMPLEMENTATION_PLAN.md` §5, not silently dropped.
+- [x] Adversarial testing approach — decided, Phase 8 slice 3, 2026-09-17: `evals/cases/adversarial.ts`, run by the same harness. 4 of §9.6's 8 categories covered (fabricated inventory IDs, budget-exceeding wording, contradictory user messages, cross-session references); "attempts to trigger booking" already covered by `scenarios.ts`'s `out_of_scope_request`. Prompt injection *in retrieved inventory text* and malformed/malicious inventory records need a seeded adversarial fixture — tracked, not yet built.
 
 ## Area 5 — Observability and Measurement
 
 - [x] Event taxonomy — adopted from brief §8.5, §13.1, no deviation.
 - [x] Trace and correlation IDs — adopted from brief §13.1, no deviation (schema already includes `correlation_id`/`workflow_run_id` columns); `agent_runs`/`tool_calls`/`guardrail_events` are now actually populated (Phase 6), not just schema-ready.
-- [ ] Telemetry retention and redaction policy — not yet decided, needed before Phase 3 is complete.
-- [ ] Engineering dashboard — deferred to Phase 8.
-- [ ] Product metrics — deferred to Phase 8.
-- [ ] CI evaluation reporting — deferred to Phase 8 (see `PROJECT_BRIEF.md` §22, item 5).
+- [ ] Telemetry retention and redaction policy — **still not decided.** Genuinely open, not just deferred-and-forgotten: `tool_calls.arguments`/`result` store full tool-call JSON (including verbatim user-stated trip details from the Intake agent's `record_extraction`/`propose_trip_revision` calls) indefinitely, with no redaction and no retention/cleanup job. Low urgency for a portfolio demo with synthetic data, but a real gap against §13.2's explicit requirement, and Phase 8's own eval harness made it more load-bearing by adding ~100+ more such rows in a single session. Tracked in `docs/IMPLEMENTATION_PLAN.md` §5. Revisit before Phase 9's demo recording if any stored data would be uncomfortable to show on screen, or before treating this as production-ready.
+- [x] Engineering dashboard — decided and built, Phase 8 slice 4, 2026-09-17: `app/internal/analytics/page.tsx`.
+- [x] Product metrics — decided and built, Phase 8 slice 5, 2026-09-17: `app/internal/product-metrics/page.tsx`, deliberately a separate page per §13.4's own rule.
+- [x] CI evaluation reporting — decided and built, Phase 8 slice 2, 2026-09-17: `.github/workflows/ci.yml` + `npm run eval:ci` (see `PROJECT_BRIEF.md` §22, item 5 — now resolved).
 - [x] Build-log conventions — adopted from brief §17.4 (`BUILD_LOG.md` template), no deviation.
