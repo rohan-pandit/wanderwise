@@ -572,3 +572,26 @@ This is exactly the kind of check unit tests and backend-only spot-checks can't 
 **Known limitations / assumptions carried forward:** the decision-revision criteria gap above (new tracked item), plus everything already tracked. Phase 7 slice 1 is now fully verified — backend and browser both.
 
 **Next up:** Phase 7 slice 2 — assumptions/trade-offs panel, the finalization flow (proposal-hash mechanism), trip history list polish, and, if it comes up naturally, the revision-criteria gap found this session.
+
+---
+
+## 2026-09-17 — Session close: stepwise chain redesign decided (no code written)
+
+**What happened:** No implementation this stretch — a design conversation, prompted directly by the user pushing back on the previous session's "decision revision doesn't honor a specific criterion" finding. Recorded here (and in full in `docs/IMPLEMENTATION_PLAN.md`'s new "STEPWISE CHAIN REDESIGN" section) so the next session doesn't have to re-derive any of it.
+
+**Why this went from "fix the revision bug" to "redesign the assembly flow":** asked how the fix would scale past "cheaper" to the other ~50 words a real user might use ("free," "wheelchair accessible," "non-stop," etc.) across every part of the chain, in any order. Working through that question surfaced that the *foundation* — `runSearchAndCuration`/`assembleItinerary` assembling the entire flight+hotel+activities bundle automatically in one pass, with `reviseItinerary` patching one field afterward — was the actual problem, not the revision logic sitting on top of it. The user then specified directly (not left to my judgment) how the replacement should work.
+
+**Decisions made, all directly from the user, not assumed:**
+1. **One strictly linear chain** (destination/dates → flight → hotel → activities), each step proposed and explicitly confirmed before the next step is even searched — not assembled speculatively all at once. This is also more *correct*, not just better UX: hotel dates depend on the actual confirmed flight's real arrival/departure time, so proposing a hotel before a flight is confirmed is proposing against a guess.
+2. **Cascading invalidation is fact-based, not position-based** — a change only invalidates a later step if it actually alters the specific fact that step depends on (confirmed with the user directly, since it was my inference, not their stated word-for-word rule): a same-dates flight swap doesn't reset the hotel; a hotel swap never resets activities (verified by reading the real scheduling code, not assumed) — only an actual dates/destination change cascades all the way through.
+3. **Revision requests split into two kinds, both routed through the existing requirement-revision mechanism rather than a new one-off vocabulary:** directional/comparative ("cheaper" → the model proposes a concrete threshold relative to the current selection, e.g. `maxHotelPriceUsd: 150`) versus absolute/hard-constraint ("free," "non-stop," "wheelchair accessible" → real pass/fail conditions using the existing `HardConstraint` engine already built for initial search, e.g. `maxActivityPriceConstraint(0)` for "free"). Multi-segment requests ("cheaper hotel and a shorter flight") are handled as sequential single-field revisions in one turn, not a combined instruction.
+
+**A real mistake in my own first draft of this design, caught by the user, not by me:** I initially proposed treating "free" as just the extreme end of "cheaper" (sort ascending, cheapest naturally surfaces). The user pushed back hard and correctly: "free" is an exact threshold (price == 0), not a comparison — a $50 activity does not satisfy "free" no matter how it's sorted, and silently returning the cheapest available option while treating it as a response to "free" would be a real, dangerous-in-spirit-if-not-in-stakes kind of wrong (a plausible-looking number that isn't the number that was asked for). This is why the design above treats "free"/"non-stop"/"wheelchair accessible" as hard constraints (must honestly fail if unsatisfiable) and keeps them structurally separate from "cheaper"/"shorter" (which have no pass/fail line, just a direction).
+
+**What didn't work / dead ends:** None — no code touched this stretch, and the design conversation converged cleanly once the two revision-request categories were correctly separated.
+
+**Verification:** N/A — documentation only. `git status` will show only the `docs/IMPLEMENTATION_PLAN.md` and `BUILD_LOG.md` edits once committed.
+
+**Known limitations / assumptions carried forward:** everything already tracked in `docs/IMPLEMENTATION_PLAN.md` §5, unchanged. The stepwise redesign is fully specified but zero code has been written toward it yet.
+
+**Next up: the stepwise chain redesign, first, before anything else** — see `docs/IMPLEMENTATION_PLAN.md`'s "STEPWISE CHAIN REDESIGN" section for the full design and the proposed 4-slice implementation order (flight step alone; hotel step + cascade rule; activities step + retiring the old one-shot path; chat UI rework). After it's built, fix whatever it breaks in already-shipped code (`search-orchestrator.ts`, `itinerary-orchestrator.ts`, `intake-orchestrator.ts`, the chat UI, and their tests all currently assume the one-shot model being replaced), then resume Phase 6/7/beyond in whatever order makes sense at that point.
