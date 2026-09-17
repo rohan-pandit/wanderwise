@@ -59,7 +59,7 @@ export function ChatPanel({
 
   return (
     <section className="flex min-h-0 flex-1 flex-col">
-      <div className="flex-1 overflow-y-auto px-6 py-6">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
         {messages.length === 0 ? (
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
             Tell me about the trip you&apos;re planning — where from, where to, when, how many people, and your budget.

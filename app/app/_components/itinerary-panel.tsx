@@ -9,11 +9,8 @@
  * tables already have owner-scoped RLS (`supabase/migrations/0001_initial_schema.sql`),
  * so the anon-key browser client only ever receives this user's own rows.
  *
- * Requires `trip_decisions`/`trip_events` to be added to the
- * `supabase_realtime` publication (`supabase/migrations/0007_realtime_trip_updates.sql`)
- * — a DDL change this session couldn't apply directly (no DB credentials on
- * hand); flagged to the user as a manual step (Supabase dashboard ->
- * Database -> Replication, or `supabase db push`).
+ * Requires `trip_decisions`/`trip_events` to be in the `supabase_realtime`
+ * publication (`supabase/migrations/0007_realtime_trip_updates.sql`, applied).
  */
 import { useEffect, useState } from "react";
 import { createClient } from "@/src/config/supabase/client";
@@ -57,19 +54,30 @@ function formatTime(minutes: number): string {
 export function ItineraryPanel({ tripId }: { tripId: string }) {
   const [decisions, setDecisions] = useState<Record<string, DecisionValue>>({});
   const [needsAttention, setNeedsAttention] = useState<string | null>(null);
+  const [initialLoad, setInitialLoad] = useState(true);
 
   useEffect(() => {
     const supabase = createClient();
     let cancelled = false;
 
     (async () => {
-      const { data } = await supabase
+      // `createClient()` returns synchronously, but the session it restores
+      // from cookies hydrates asynchronously — waiting for it first (needed
+      // for the subscription below too, which authenticates the same way)
+      // avoids querying ahead of it as the anon role, which RLS would
+      // otherwise narrow to zero rows with no error to explain why.
+      await supabase.auth.getSession();
+      if (cancelled) return;
+
+      const { data, error } = await supabase
         .from("trip_decisions")
         .select("field, value")
         .eq("trip_id", tripId)
         .neq("status", "superseded");
-      if (!cancelled && data) {
-        setDecisions(Object.fromEntries(data.map((row) => [row.field, row.value as DecisionValue])));
+      if (error) console.error("initial trip_decisions fetch failed:", error);
+      if (!cancelled) {
+        if (data) setDecisions(Object.fromEntries(data.map((row) => [row.field, row.value as DecisionValue])));
+        setInitialLoad(false);
       }
     })();
 
@@ -162,7 +170,9 @@ export function ItineraryPanel({ tripId }: { tripId: string }) {
         <div className="mt-4 whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">{itineraryText}</div>
       ) : (
         <p className="mt-4 text-sm text-zinc-400 dark:text-zinc-600">
-          Once your trip details are complete, your itinerary will fill in here as it comes together.
+          {initialLoad
+            ? "Loading your itinerary…"
+            : "Once your trip details are complete, your itinerary will fill in here as it comes together."}
         </p>
       )}
     </aside>

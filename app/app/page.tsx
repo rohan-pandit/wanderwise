@@ -8,7 +8,7 @@ import { ChatPanel } from "./_components/chat-panel";
 
 export default function AppHome() {
   return (
-    <div className="flex flex-1">
+    <div className="flex min-h-0 flex-1">
       <ChatPanel initialMessages={[]} />
     </div>
   );

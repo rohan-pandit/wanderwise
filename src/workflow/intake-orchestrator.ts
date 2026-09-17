@@ -409,7 +409,15 @@ export async function processIntakeTurn(
     );
   }
 
-  await appendMessage(supabase, { sessionId: params.sessionId, role: "assistant", content: agentResult.assistantMessage });
+  // The model sometimes calls a tool (most often record_extraction) with no
+  // accompanying text at all — a real, observed behavior (not a bug in this
+  // orchestrator), harmless as a bare API response but a visibly broken
+  // empty chat bubble once a real chat UI renders it (Phase 7). Backstopped
+  // here with a deterministic fallback rather than trusted to prompt
+  // engineering alone, same as every other guarantee this orchestrator
+  // makes about model output.
+  const assistantMessage = agentResult.assistantMessage.trim() || "Got it — updating your trip details now.";
+  await appendMessage(supabase, { sessionId: params.sessionId, role: "assistant", content: assistantMessage });
 
   // currentRequirements/currentPreferences were loaded before this turn's
   // retractions — drop anything just superseded so the snapshot below (and
@@ -457,7 +465,7 @@ export async function processIntakeTurn(
 
   return {
     workflowState,
-    assistantMessage: agentResult.assistantMessage,
+    assistantMessage,
     clarification: agentResult.clarification,
     ready: completeness.ready,
     requirements: allRequirements,

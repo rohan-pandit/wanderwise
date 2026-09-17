@@ -594,4 +594,21 @@ describe("processIntakeTurn", () => {
       processIntakeTurn(supabase, modelClient, { tripId: TRIP_ID, sessionId: SESSION_ID, userMessage: "hi" }),
     ).rejects.toThrow("no state history");
   });
+
+  it("substitutes a fallback assistant message when the model only calls tools and returns no text (observed live)", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(emptyAgentResult({ assistantMessage: "" }) as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "budget is 3000",
+    });
+
+    expect(result.assistantMessage).not.toBe("");
+    expect(appendMessage).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ role: "assistant", content: result.assistantMessage }),
+    );
+  });
 });
