@@ -1146,6 +1146,46 @@ Replaced the one-shot overfetch with a widen-and-retry loop: if the post-filter 
 
 ---
 
+## 2026-09-17 — Hotel room availability: `available_rooms` closes half of the room-type gap
+
+**What I built:** Closed the next architectural item, chosen by the user. The tracked item actually bundled two separable gaps: (a) every room group books an identical room type/rate (no room-type variety — can't express "2 doubles + 1 twin"), and (b) nothing checked whether a hotel actually had enough rooms free at all. Asked the user how far to go; chose the availability-only fix over a full room-type catalog, since (b) closes a real correctness gap while (a) is speculative — the tracked item's own text already called it "revisit only if a future phase wants richer room-type preferences," with no concrete requirement driving it.
+
+`supabase/migrations/0012_hotel_available_rooms.sql` adds `hotels.available_rooms int not null default 5` — generous on purpose, since this project's room-group counts are always small (a handful of rooms per party at most), so the backfill doesn't change behavior for any existing flow. A new `roomAvailabilityConstraint` (`src/domain/constraints.ts`) checks `roomGroups.length <= available_rooms`, wired into `hotelHardConstraints` (`step-shared.ts`) right alongside the existing `roomCapacityConstraint` (which only checks *per-room* capacity, not room *count*). Added a scope-boundary docstring to `src/repositories/hotels.ts` documenting the still-open room-type-variety limitation, so it doesn't need rediscovering later.
+
+**Why:** Next item off the tracked architectural backlog (`docs/IMPLEMENTATION_PLAN.md` §5), chosen by the user.
+
+**Decisions made:** Availability-count-only over a full room-type catalog, per the user's explicit choice after seeing the real trade-off (a genuine correctness gap vs. a speculative richness feature with no concrete requirement behind it). Generous default (5) for the backfill rather than trying to guess a "realistic" per-hotel value for seed/demo data.
+
+**What didn't work / dead ends:** None.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` (337/337, up from 335) all clean. New tests in `constraints.test.ts` (the new constraint directly) and `hotel-step.test.ts` (a hotel whose per-room capacity is fine but that doesn't have enough *rooms* free for every room group is correctly rejected, distinguishing this from the existing capacity check). Applied `0012_hotel_available_rooms.sql` to the real hosted Supabase project via `supabase db push --db-url`. Live-verified with a throwaway script (not committed, cleaned up after): a 6-room-group request against real seed hotels (every one defaulted to `available_rooms=5`) was correctly rejected with `NoViableHotelCandidatesError`, while a more modest 3-room-group request still found viable hotel candidates.
+
+**Known limitations / assumptions:** Unchanged from what's tracked in `docs/IMPLEMENTATION_PLAN.md` §5, minus the availability half of this item — the room-type-variety half remains open and tracked, by explicit choice.
+
+**Next recommended task:** One architectural item remains, needing its own scoping conversation: the naive (first-fit, non-optimizing) activity scheduler. The 10 un-automated §19 eval scenarios remain the lowest-priority, biggest-lift item.
+
+---
+
+## 2026-09-17 — Meal-time scheduling bias: the "lightweight heuristics" tier for the activity scheduler
+
+**What I built:** Closed the last remaining architectural item — the naive, first-fit activity scheduler. The user asked what "naive" actually meant before deciding anything; laid out five options at increasing effort (lightweight heuristics on the same first-fit structure / a repair pass after the first placement / a real optimizer with a scored objective / geographic clustering / leave it as-is), noting geographic clustering is blocked on data regardless of algorithm choice (`activities.location` is a free-text neighborhood string, not coordinates). The user chose the smallest tier.
+
+`src/domain/scheduling.ts`'s `SchedulableActivity` gained an optional `preferredWindows: PreferredWindow[]` — a generic list of minute-of-day ranges. `scheduleActivities` tries each window in order (each as its own full forward pass across the date range) before falling back to the existing unconstrained earliest-fit search — still a single deterministic pass per window, no backtracking, no change to the module's actual algorithmic character. The module stays domain-agnostic on purpose: it has no idea what "food" means, just a list of preferred ranges. `activities-step.ts` supplies the domain knowledge — a `category: "food"` activity gets `[LUNCH_WINDOW (11:30-14:00), DINNER_WINDOW (18:00-21:00)]`.
+
+**Why:** Last item on the tracked architectural backlog (`docs/IMPLEMENTATION_PLAN.md` §5).
+
+**Decisions made:** Lightweight-heuristics tier only, per the user's explicit choice after seeing the effort/payoff breakdown for all five options.
+
+**What didn't work / dead ends:** The first version of a new `scheduling.test.ts` case (the "falls back to the unconstrained search" test) used opening hours (`08:00-10:00`) that, combined with the scheduler's existing default 10:00 start-of-day floor, left literally zero fittable minutes — not a bug in the new code, just a bad choice of test numbers that happened to expose how the *pre-existing* default-start floor interacts with a tight opening window. Fixed by picking opening hours (`06:00-11:00`) that leave room after the 10:00 floor.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` (341/341, up from 337) all clean. 4 new tests in `scheduling.test.ts` (placement inside a window, trying windows in order, falling back to the unconstrained search, and the window search still respecting `closedDays`/`openingHours`/per-date transfer buffers). No schema change, so no migration — live-verified anyway with a throwaway script (not committed, cleaned up after) against real seed data: a real Lisbon trip's curated activity set included "Alfama Walking Food Tour" (`category: "food"`), and it landed at 13:50 — inside the lunch window, not wherever the first-fit scan happened to land it.
+
+**Known limitations / assumptions:** `docs/IMPLEMENTATION_PLAN.md` §5 now tracks the remaining, deliberately-not-built tiers (backtracking/repair pass, real optimizer, geographic clustering) as open by explicit choice, not oversight.
+
+**Next recommended task:** The architectural backlog from this session is now fully worked through. What's left: the 10 un-automated §19 eval scenarios (lowest priority, biggest lift — needs new RLS/JWT or fault-injection test infrastructure) and the demo walkthrough recording (a manual step for the user, not something a coding agent can do). Otherwise, the project is in a portfolio-ready state.
+
+---
+
 ## 2026-09-17 — Full §19 eval coverage (16/16): stale-inventory fix, a real cancel-trip feature, RLS-scoped harness sessions
 
 **What I built:** Closed the last item on the open-items list — the 10 un-automated `PROJECT_BRIEF.md` §19 end-to-end scenarios. Used plan mode given the size (two Explore-equivalent research passes done inline, then a written plan approved before implementing). Scoping this properly, not just against the coarse tracked summary, found each remaining scenario needed one of three different things — most were just missing test cases against the existing harness, not new infrastructure as originally framed:
@@ -1205,40 +1245,22 @@ Three real findings came out of the scoping pass and were put to the user direct
 
 ---
 
-## 2026-09-17 — Hotel room availability: `available_rooms` closes half of the room-type gap
+## 2026-09-17 — Planning: flagged the two remaining open items as next session's starting point (no code changes)
 
-**What I built:** Closed the next architectural item, chosen by the user. The tracked item actually bundled two separable gaps: (a) every room group books an identical room type/rate (no room-type variety — can't express "2 doubles + 1 twin"), and (b) nothing checked whether a hotel actually had enough rooms free at all. Asked the user how far to go; chose the availability-only fix over a full room-type catalog, since (b) closes a real correctness gap while (a) is speculative — the tracked item's own text already called it "revisit only if a future phase wants richer room-type preferences," with no concrete requirement driving it.
+**What happened:** No implementation this stretch — the user asked what was still open in `docs/IMPLEMENTATION_PLAN.md` §5 after the previous session closed it out, then asked for both remaining items (hotel room-type variety, the activity scheduler's remaining tiers) to be documented as the explicit starting point for the next session, wanting a deeper understanding of each first rather than just a pointer.
 
-`supabase/migrations/0012_hotel_available_rooms.sql` adds `hotels.available_rooms int not null default 5` — generous on purpose, since this project's room-group counts are always small (a handful of rooms per party at most), so the backfill doesn't change behavior for any existing flow. A new `roomAvailabilityConstraint` (`src/domain/constraints.ts`) checks `roomGroups.length <= available_rooms`, wired into `hotelHardConstraints` (`step-shared.ts`) right alongside the existing `roomCapacityConstraint` (which only checks *per-room* capacity, not room *count*). Added a scope-boundary docstring to `src/repositories/hotels.ts` documenting the still-open room-type-variety limitation, so it doesn't need rediscovering later.
+Explained both in depth (in chat, not reproduced here) and used that explanation to expand §5's own entries for each item with a concrete "what a real fix needs" breakdown, so a fresh session doesn't have to re-derive the scope from scratch:
+- **Hotel room types**: what a `hotel_room_types` table + a per-group room-type assignment problem + reworked budget math would actually require, versus the already-built availability-only fix. Flagged as a real open question for next session whether this is worth building at all for a portfolio project at this scale, or whether documenting the boundary already demonstrates the same judgment more cheaply.
+- **Activity scheduler**: broke the three still-open tiers (a bounded repair/local-search pass; a real scored optimizer with deliberate determinism for testing; geographic clustering, which is blocked on `activities.location` being a free-text string rather than coordinates) out individually with what each would concretely need, rather than leaving them as one vague "make it smarter" bucket.
 
-**Why:** Next item off the tracked architectural backlog (`docs/IMPLEMENTATION_PLAN.md` §5), chosen by the user.
+Also found and fixed a real, unrelated quality issue while back in `BUILD_LOG.md` for this: the "Hotel room availability" and "Meal-time scheduling bias" entries had landed **out of chronological order** in a previous session's edits (inserted after the later "Full §19 eval coverage" and "Session close" entries instead of before them — an Edit-tool `old_string` match landed on the wrong occurrence of near-duplicate "Next recommended task" phrasing). Reordered them correctly; no content was lost or changed, only moved. Worth remembering for future sessions: when appending a new entry, match against something more chronology-unique than a boilerplate closing line, especially once multiple entries share similar phrasing.
 
-**Decisions made:** Availability-count-only over a full room-type catalog, per the user's explicit choice after seeing the real trade-off (a genuine correctness gap vs. a speculative richness feature with no concrete requirement behind it). Generous default (5) for the backfill rather than trying to guess a "realistic" per-hotel value for seed/demo data.
+**Why:** Direct request, ahead of the user starting a fresh session for their own manual testing pass — they wanted these two documented precisely enough to pick back up without re-deriving context, and wanted to understand them well enough to weigh in on scope themselves.
 
-**What didn't work / dead ends:** None.
+**Decisions made:** None yet — both items are explicitly left as open questions for next session, not pre-decided.
 
-**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` (337/337, up from 335) all clean. New tests in `constraints.test.ts` (the new constraint directly) and `hotel-step.test.ts` (a hotel whose per-room capacity is fine but that doesn't have enough *rooms* free for every room group is correctly rejected, distinguishing this from the existing capacity check). Applied `0012_hotel_available_rooms.sql` to the real hosted Supabase project via `supabase db push --db-url`. Live-verified with a throwaway script (not committed, cleaned up after): a 6-room-group request against real seed hotels (every one defaulted to `available_rooms=5`) was correctly rejected with `NoViableHotelCandidatesError`, while a more modest 3-room-group request still found viable hotel candidates.
+**What didn't work / dead ends:** The BUILD_LOG ordering bug described above, caught and fixed this stretch.
 
-**Known limitations / assumptions:** Unchanged from what's tracked in `docs/IMPLEMENTATION_PLAN.md` §5, minus the availability half of this item — the room-type-variety half remains open and tracked, by explicit choice.
+**Verification:** N/A — documentation only, no code touched. `git status` confirms nothing else changed.
 
-**Next recommended task:** One architectural item remains, needing its own scoping conversation: the naive (first-fit, non-optimizing) activity scheduler. The 10 un-automated §19 eval scenarios remain the lowest-priority, biggest-lift item.
-
----
-
-## 2026-09-17 — Meal-time scheduling bias: the "lightweight heuristics" tier for the activity scheduler
-
-**What I built:** Closed the last remaining architectural item — the naive, first-fit activity scheduler. The user asked what "naive" actually meant before deciding anything; laid out five options at increasing effort (lightweight heuristics on the same first-fit structure / a repair pass after the first placement / a real optimizer with a scored objective / geographic clustering / leave it as-is), noting geographic clustering is blocked on data regardless of algorithm choice (`activities.location` is a free-text neighborhood string, not coordinates). The user chose the smallest tier.
-
-`src/domain/scheduling.ts`'s `SchedulableActivity` gained an optional `preferredWindows: PreferredWindow[]` — a generic list of minute-of-day ranges. `scheduleActivities` tries each window in order (each as its own full forward pass across the date range) before falling back to the existing unconstrained earliest-fit search — still a single deterministic pass per window, no backtracking, no change to the module's actual algorithmic character. The module stays domain-agnostic on purpose: it has no idea what "food" means, just a list of preferred ranges. `activities-step.ts` supplies the domain knowledge — a `category: "food"` activity gets `[LUNCH_WINDOW (11:30-14:00), DINNER_WINDOW (18:00-21:00)]`.
-
-**Why:** Last item on the tracked architectural backlog (`docs/IMPLEMENTATION_PLAN.md` §5).
-
-**Decisions made:** Lightweight-heuristics tier only, per the user's explicit choice after seeing the effort/payoff breakdown for all five options.
-
-**What didn't work / dead ends:** The first version of a new `scheduling.test.ts` case (the "falls back to the unconstrained search" test) used opening hours (`08:00-10:00`) that, combined with the scheduler's existing default 10:00 start-of-day floor, left literally zero fittable minutes — not a bug in the new code, just a bad choice of test numbers that happened to expose how the *pre-existing* default-start floor interacts with a tight opening window. Fixed by picking opening hours (`06:00-11:00`) that leave room after the 10:00 floor.
-
-**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` (341/341, up from 337) all clean. 4 new tests in `scheduling.test.ts` (placement inside a window, trying windows in order, falling back to the unconstrained search, and the window search still respecting `closedDays`/`openingHours`/per-date transfer buffers). No schema change, so no migration — live-verified anyway with a throwaway script (not committed, cleaned up after) against real seed data: a real Lisbon trip's curated activity set included "Alfama Walking Food Tour" (`category: "food"`), and it landed at 13:50 — inside the lunch window, not wherever the first-fit scan happened to land it.
-
-**Known limitations / assumptions:** `docs/IMPLEMENTATION_PLAN.md` §5 now tracks the remaining, deliberately-not-built tiers (backtracking/repair pass, real optimizer, geographic clustering) as open by explicit choice, not oversight.
-
-**Next recommended task:** The architectural backlog from this session is now fully worked through. What's left: the 10 un-automated §19 eval scenarios (lowest priority, biggest lift — needs new RLS/JWT or fault-injection test infrastructure) and the demo walkthrough recording (a manual step for the user, not something a coding agent can do). Otherwise, the project is in a portfolio-ready state.
+**Next up:** Whichever of the two the user wants to open with next session — or something else entirely, if their own end-to-end testing pass surfaces something more pressing first.
