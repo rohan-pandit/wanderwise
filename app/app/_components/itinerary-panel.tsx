@@ -45,6 +45,7 @@ import { parseMarkdownLite, type InlineSegment } from "@/src/domain/markdown-lit
 import type { Flight } from "@/src/repositories/flights";
 import type { Hotel } from "@/src/repositories/hotels";
 import {
+  cancelTrip,
   confirmActivitiesCandidate,
   confirmCascadeAndRevise,
   confirmFlightCandidate,
@@ -213,6 +214,8 @@ export function ItineraryPanel({
   const [actionPending, setActionPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [finalized, setFinalized] = useState(initialTripStatus === "finalized");
+  const [cancelled, setCancelled] = useState(initialTripStatus === "cancelled");
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [budgetOverrideViolations, setBudgetOverrideViolations] = useState<{ message: string }[] | null>(null);
 
   const flightSigRef = useRef<string | null>(null);
@@ -467,6 +470,20 @@ export function ItineraryPanel({
     }
   }
 
+  async function handleCancel() {
+    setConfirmingCancel(false);
+    setActionPending(true);
+    setActionError(null);
+    try {
+      await cancelTrip({ tripId });
+      setCancelled(true);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Couldn't cancel this trip — try again.");
+    } finally {
+      setActionPending(false);
+    }
+  }
+
   const itineraryText = (decisions.find((d) => d.field === "itineraryText" && d.status === "confirmed")?.value as string | undefined) ?? null;
   const budget = decisions.find((d) => d.field === "budget" && d.status === "confirmed")?.value as BudgetDecision | undefined;
   const totalEstimate = formatMoney(budget?.totalEstimate);
@@ -482,7 +499,49 @@ export function ItineraryPanel({
 
   return (
     <aside className="flex w-96 flex-shrink-0 flex-col overflow-y-auto border-l border-sand-200 px-6 py-6">
-      <h2 className="font-serif text-lg font-semibold text-navy-900">Your itinerary</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="font-serif text-lg font-semibold text-navy-900">Your itinerary</h2>
+        {!finalized && !cancelled ? (
+          <button
+            type="button"
+            disabled={actionPending}
+            onClick={() => setConfirmingCancel(true)}
+            className="text-xs text-navy-400 underline decoration-dotted hover:text-terracotta-600 disabled:opacity-50"
+          >
+            Cancel trip
+          </button>
+        ) : null}
+      </div>
+
+      {confirmingCancel ? (
+        <div className="mt-4 rounded-lg border border-terracotta-200 bg-terracotta-50 px-3 py-3 text-xs text-terracotta-700">
+          <p>Cancel this trip? Nothing is booked yet, but this can&apos;t be undone — you&apos;ll need to start a new trip to keep planning.</p>
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              disabled={actionPending}
+              onClick={() => void handleCancel()}
+              className="rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 disabled:opacity-50"
+            >
+              Cancel trip
+            </button>
+            <button
+              type="button"
+              disabled={actionPending}
+              onClick={() => setConfirmingCancel(false)}
+              className="rounded-md border border-terracotta-200 px-3 py-1 text-terracotta-700 disabled:opacity-50"
+            >
+              Keep planning
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {cancelled ? (
+        <p className="mt-4 rounded-lg bg-sand-200 px-3 py-2 text-center text-sm font-medium text-navy-700">
+          Trip cancelled
+        </p>
+      ) : null}
 
       {needsAttention ? (
         <p className="mt-4 rounded-lg bg-terracotta-50 px-3 py-2 text-xs text-terracotta-600">

@@ -8,33 +8,42 @@
  * (`trip_decisions`, budget breakdown, feasibility result, workflow state)
  * rather than raw model text.
  *
- * This is a first slice, not full §19 coverage — six scenarios chosen to
- * span distinct categories (happy path, clarification, hard-constraint
- * enforcement, budget, revision, out-of-scope) using flights/hotels that
+ * Full §19 coverage as of 2026-09-17 (16/16 — see `docs/IMPLEMENTATION_PLAN.md`
+ * §5): the original six (happy path, clarification, hard-constraint
+ * enforcement, budget, revision, out-of-scope) plus conflicting hard
+ * constraints, flexible destination (documented non-applicability, not a
+ * bug — see that case's own description), approval invalidation, itinerary
+ * timing conflict, stale inventory, duplicate request, failure/recovery, and
+ * cancellation. Two scenarios needing genuinely different test
+ * infrastructure — prompt injection in retrieved inventory text, and full
+ * RLS/JWT cross-session isolation — live in `adversarial.ts` instead, next
+ * to the existing app-layer cross-session case. Uses flights/hotels that
  * actually exist in `supabase/migrations/0002_seed_data.sql` (New York <->
  * Lisbon, Oct 5-12 2026, party of 2 — the same combination
  * `evals/cases/intake.ts`'s `explicit_multi_field` case already uses).
- * Deliberately not yet covered: stale inventory, duplicate/idempotent
- * request, cross-session isolation, cancellation, prompt injection in
- * retrieved inventory text, failure/recovery — see
- * `docs/IMPLEMENTATION_PLAN.md` §5/Phase 8 for why (mostly: they need
- * different test infrastructure — real RLS/JWT sessions or fault
- * injection — than this harness's service-role, direct-function-call
- * approach provides).
  */
+import { randomUUID } from "node:crypto";
 import { AnthropicModelClient } from "../../src/agents/providers/anthropic-model-client";
 import { AGENT_MODELS } from "../../src/config/models";
 import type { BudgetBreakdown } from "../../src/domain/budget";
 import { listActiveTripDecisions } from "../../src/repositories/trip-decisions";
+import { appendTripRequirement, retireActiveTripRequirementsForField } from "../../src/repositories/trip-requirements";
 import { recordGuardrailEvent } from "../../src/repositories/guardrail-events";
+import { createSession } from "../../src/repositories/sessions";
 import { getLatestTripState } from "../../src/repositories/trip-state";
 import { advanceOrThrow } from "../../src/workflow/advance";
 import { getCurrentChainStep } from "../../src/domain/chain";
 import { deriveCorrelationId } from "../../src/workflow/correlation";
+import { startTrip } from "../../src/workflow/controller";
 import { processIntakeTurn, type ProcessIntakeTurnResult } from "../../src/workflow/intake-orchestrator";
-import { confirmFlightStep, proposeFlightStep, type FlightStepCandidate } from "../../src/workflow/flight-step";
-import { confirmHotelStep, proposeHotelStep } from "../../src/workflow/hotel-step";
-import { confirmActivitiesStep, proposeActivitiesStep } from "../../src/workflow/activities-step";
+import {
+  NoViableFlightCandidatesError,
+  confirmFlightStep,
+  proposeFlightStep,
+  type FlightStepCandidate,
+} from "../../src/workflow/flight-step";
+import { InvalidHotelSelectionError, confirmHotelStep, proposeHotelStep } from "../../src/workflow/hotel-step";
+import { InvalidActivitiesSelectionError, confirmActivitiesStep, proposeActivitiesStep } from "../../src/workflow/activities-step";
 import { reviseChainStep } from "../../src/workflow/step-router";
 import type { ScenarioHarness } from "../lib/scenario-harness";
 
@@ -73,7 +82,7 @@ async function intakeTurn(harness: ScenarioHarness, tripId: string, sessionId: s
   return processIntakeTurn(harness.supabase, modelClient, { tripId, sessionId, userMessage });
 }
 
-async function proposeAndConfirmFlight(harness: ScenarioHarness, tripId: string): Promise<FlightStepCandidate> {
+export async function proposeAndConfirmFlight(harness: ScenarioHarness, tripId: string): Promise<FlightStepCandidate> {
   const { candidates } = await proposeFlightStep(harness.supabase, { tripId });
   if (candidates.length === 0) throw new Error(`no flight candidates for trip ${tripId}`);
   const picked = candidates[0];
@@ -85,7 +94,7 @@ async function proposeAndConfirmFlight(harness: ScenarioHarness, tripId: string)
   return picked;
 }
 
-async function proposeAndConfirmHotel(harness: ScenarioHarness, tripId: string): Promise<string> {
+export async function proposeAndConfirmHotel(harness: ScenarioHarness, tripId: string): Promise<string> {
   const { candidates } = await proposeHotelStep(harness.supabase, { tripId });
   if (candidates.length === 0) throw new Error(`no hotel candidates for trip ${tripId}`);
   const picked = candidates[0];
@@ -304,6 +313,241 @@ export const SCENARIO_CASES: ScenarioCase[] = [
         { pass: turn.requirements.length === 0, detail: `did not fabricate requirements from an off-topic/injection message (found ${turn.requirements.length})` },
         { pass: turn.workflowState !== "finalized" && turn.workflowState !== "presenting_draft", detail: `workflow did not silently advance (state: "${turn.workflowState}")` },
         { pass: turn.assistantMessage.length > 0, detail: "assistant still responded with something (not a blank/dropped turn)" },
+      ];
+    },
+  },
+  {
+    name: "conflicting_hard_constraints",
+    description:
+      "An unreachably low maxFlightPriceUsd combined with a real route — no flight passes hard constraints. The system must say so honestly, not silently relax the constraint or return an empty draft (PROJECT_BRIEF.md §19 #4).",
+    run: async (harness) => {
+      const userId = await harness.createUser();
+      const { tripId, sessionId } = await harness.newTrip(userId);
+      await intakeTurn(harness, tripId, sessionId, STANDARD_TRIP_MESSAGE);
+      await appendTripRequirement(harness.supabase, { tripId, field: "maxFlightPriceUsd", value: 1, source: "user_explicit", confidence: 1 });
+
+      let rejected = false;
+      try {
+        await proposeFlightStep(harness.supabase, { tripId });
+      } catch (err) {
+        rejected = err instanceof NoViableFlightCandidatesError;
+      }
+      return [
+        {
+          pass: rejected,
+          detail: "an unreachable maxFlightPriceUsd correctly throws NoViableFlightCandidatesError rather than silently relaxing the constraint or returning an empty list",
+        },
+      ];
+    },
+  },
+  {
+    name: "flexible_destination",
+    description:
+      'PROJECT_BRIEF.md §19 #6 imagines multiple destinations satisfying qualitative preferences, with the system explaining its selection criteria. Doesn\'t apply to this architecture, deliberately: `destination` is a required `trip_requirements` field the Intake agent must extract explicitly (`REQUIRED_FOR_READY`, `src/domain/extraction.ts`) before a trip can leave `collecting_requirements` — there is no "choose among several candidate destinations" step anywhere in the chain to test. A request naming no destination is handled as missing required information (§19 #2\'s case) instead.',
+    knownGap: "Documented non-applicability, not a bug — see this case's own description. Tracked in docs/IMPLEMENTATION_PLAN.md §5.",
+    run: async (harness) => {
+      const userId = await harness.createUser();
+      const { tripId, sessionId } = await harness.newTrip(userId);
+      const turn = await intakeTurn(harness, tripId, sessionId, "I want somewhere warm and relaxing with good food, for 2 people, budget $4000.");
+      const destinationReq = turn.requirements.find((r) => r.field === "destination");
+      return [
+        {
+          pass: destinationReq === undefined || typeof destinationReq.value === "string",
+          detail: `destination is always a single concrete value or missing (requiring clarification) — never a set of candidates to choose among (got ${JSON.stringify(destinationReq)}, clarification: ${JSON.stringify(turn.clarification)})`,
+        },
+      ];
+    },
+  },
+  {
+    name: "approval_invalidation_after_revision",
+    description:
+      "Re-confirming a flight with different derived stay dates must invalidate the already-confirmed hotel decision (the flight->hotel cascade rule) — PROJECT_BRIEF.md §19 #8: 'a user approves a plan, then changes the dates; previous approval must be invalidated.' Not left as a stale approved hotel sitting alongside the new dates.",
+    run: async (harness) => {
+      const userId = await harness.createUser();
+      const { tripId, sessionId } = await harness.newTrip(userId);
+      await intakeTurn(harness, tripId, sessionId, STANDARD_TRIP_MESSAGE); // returnDate 2026-10-12
+      await proposeAndConfirmFlight(harness, tripId);
+      const originalHotelId = await proposeAndConfirmHotel(harness, tripId);
+
+      // Revise returnDate to a date only a different real seeded return
+      // flight matches (supabase/migrations/0010_second_lisbon_return_flight.sql),
+      // so re-confirming the flight produces genuinely different derived stay dates.
+      await retireActiveTripRequirementsForField(harness.supabase, tripId, "returnDate");
+      await appendTripRequirement(harness.supabase, { tripId, field: "returnDate", value: "2026-10-19", source: "user_explicit", confidence: 1 });
+      const { candidates } = await proposeFlightStep(harness.supabase, { tripId });
+      const newPick = candidates.find((c) => c.returnFlight.departure_time.startsWith("2026-10-19"));
+      if (!newPick) throw new Error("expected the seeded 2026-10-19 return flight to show up as a candidate");
+      await confirmFlightStep(harness.supabase, {
+        tripId,
+        outboundFlightId: newPick.outboundFlight.id,
+        returnFlightId: newPick.returnFlight.id,
+      });
+
+      const { data: allHotelDecisions } = await harness.supabase.from("trip_decisions").select("*").eq("trip_id", tripId).eq("field", "hotel");
+      const oldHotelSuperseded = (allHotelDecisions ?? []).some((d) => d.value === originalHotelId && d.status === "superseded");
+      const stepAfterCascade = getCurrentChainStep(await listActiveTripDecisions(harness.supabase, tripId));
+
+      return [
+        { pass: oldHotelSuperseded, detail: "the previously-confirmed hotel decision was superseded, not left as a stale approval alongside the new flight dates" },
+        { pass: stepAfterCascade === "hotel", detail: `chain correctly dropped back to the hotel step after the cascade (got "${stepAfterCascade}")` },
+      ];
+    },
+  },
+  {
+    name: "itinerary_timing_conflict",
+    description:
+      "Two activities scheduled to overlap on the same day — confirmActivitiesStep's own independent feasibility re-validation must reject the plan, not silently accept it (PROJECT_BRIEF.md §19 #9). Constructs the conflict by hand (bypassing the normal non-overlapping scheduler) since the point is proving the *validator* rejects a bad schedule, not that the scheduler avoids producing one.",
+    run: async (harness) => {
+      const userId = await harness.createUser();
+      const { tripId, sessionId } = await harness.newTrip(userId);
+      await intakeTurn(harness, tripId, sessionId, STANDARD_TRIP_MESSAGE);
+      await proposeAndConfirmFlight(harness, tripId);
+      await proposeAndConfirmHotel(harness, tripId);
+      const proposed = await proposeActivitiesStep(harness.supabase, harness.clients.curatorModelClient, harness.clients.embeddingClient, { tripId });
+      if (proposed.scheduledActivities.length < 2) {
+        throw new Error(`need at least 2 curated activities to construct a conflict, got ${proposed.scheduledActivities.length}`);
+      }
+
+      const [a, b] = proposed.scheduledActivities;
+      const overlapping = [
+        { id: a.id, date: a.date, startMinutes: a.startMinutes, durationMinutes: a.durationMinutes },
+        { id: b.id, date: a.date, startMinutes: a.startMinutes + 10, durationMinutes: Math.max(b.durationMinutes, 60) },
+      ];
+
+      let rejected = false;
+      try {
+        await confirmActivitiesStep(harness.supabase, harness.clients.writerModelClient, { tripId, scheduledActivities: overlapping });
+      } catch (err) {
+        rejected = err instanceof InvalidActivitiesSelectionError;
+      }
+      return [{ pass: rejected, detail: "confirmActivitiesStep's independent feasibility re-check rejected an overlapping hand-built schedule" }];
+    },
+  },
+  {
+    name: "stale_inventory",
+    description:
+      "A stale-inventory-version candidate ID must be rejected at confirm time, not silently accepted, even if it somehow reached a confirm call directly (PROJECT_BRIEF.md §19 #10) — propose-time search already filters correctly; this exercises the confirm-time defense-in-depth re-check added this session (docs/IMPLEMENTATION_PLAN.md §5).",
+    run: async (harness) => {
+      const userId = await harness.createUser();
+      const { tripId, sessionId } = await harness.newTrip(userId);
+      await intakeTurn(harness, tripId, sessionId, STANDARD_TRIP_MESSAGE);
+      await proposeAndConfirmFlight(harness, tripId);
+
+      const { data: staleHotel, error } = await harness.supabase
+        .from("hotels")
+        .select("id")
+        .eq("destination", "Lisbon")
+        .eq("inventory_version", 0)
+        .limit(1)
+        .maybeSingle();
+      if (error || !staleHotel) throw new Error(`expected a seeded stale-inventory-version Lisbon hotel (found none): ${error?.message}`);
+
+      let rejected = false;
+      try {
+        await confirmHotelStep(harness.supabase, { tripId, hotelId: staleHotel.id });
+      } catch (err) {
+        rejected = err instanceof InvalidHotelSelectionError;
+      }
+      return [{ pass: rejected, detail: "a stale-inventory-version hotel id was rejected by confirmHotelStep's re-validation, not silently accepted" }];
+    },
+  },
+  {
+    name: "duplicate_request",
+    description:
+      "The same workflow command (starting a trip) submitted twice with the same idempotency key must not produce a duplicate state change — no second, orphaned trip (PROJECT_BRIEF.md §19 #11). Proves `startTrip`'s existing correlationId-based idempotency (`src/workflow/controller.ts`) end to end, not just at the unit level.",
+    run: async (harness) => {
+      const userId = await harness.createUser();
+      const session = await createSession(harness.supabase, userId);
+      const correlationId = randomUUID();
+
+      const first = await startTrip(harness.supabase, { sessionId: session.id, userId, correlationId });
+      const second = await startTrip(harness.supabase, { sessionId: session.id, userId, correlationId });
+      const { data: tripsWithThisCorrelationId } = await harness.supabase.from("trips").select("id").eq("correlation_id", correlationId);
+
+      return [
+        {
+          pass: first.trip.id === second.trip.id,
+          detail: `two startTrip calls with the same correlationId returned the same trip (${first.trip.id} vs ${second.trip.id})`,
+        },
+        {
+          pass: (tripsWithThisCorrelationId ?? []).length === 1,
+          detail: `exactly one trip row exists for this correlationId (found ${tripsWithThisCorrelationId?.length})`,
+        },
+      ];
+    },
+  },
+  {
+    name: "failure_and_recovery",
+    description:
+      "A model-call failure mid-turn (e.g. a transient API error) must not corrupt persisted state or wedge the trip — a retry with a working client should succeed cleanly (PROJECT_BRIEF.md §19 #12). Fault-injected via a small wrapping ModelClient (throws once, then delegates to a real one) rather than new shared test infrastructure — reuses the same ModelClient interface Phase 4 designed for exactly this kind of substitution.",
+    run: async (harness) => {
+      const userId = await harness.createUser();
+      const { tripId, sessionId } = await harness.newTrip(userId);
+
+      const real = new AnthropicModelClient(AGENT_MODELS.intake);
+      let calls = 0;
+      const flaky = {
+        model: real.model,
+        complete: async (request: Parameters<typeof real.complete>[0]) => {
+          calls += 1;
+          if (calls === 1) throw new Error("simulated transient API failure");
+          return real.complete(request);
+        },
+      };
+
+      let firstAttemptFailed = false;
+      try {
+        await processIntakeTurn(harness.supabase, flaky, { tripId, sessionId, userMessage: STANDARD_TRIP_MESSAGE });
+      } catch {
+        firstAttemptFailed = true;
+      }
+
+      const stateAfterFailure = await getLatestTripState(harness.supabase, tripId);
+      const secondAttempt = await processIntakeTurn(harness.supabase, flaky, { tripId, sessionId, userMessage: STANDARD_TRIP_MESSAGE });
+
+      return [
+        { pass: firstAttemptFailed, detail: "the simulated API failure actually propagated (sanity check on the fault injection itself)" },
+        { pass: stateAfterFailure?.state.workflowState !== undefined, detail: "trip state after the failed attempt is still well-formed and readable, not corrupted" },
+        { pass: secondAttempt.assistantMessage.length > 0, detail: "a retry with a working client succeeded cleanly after the earlier failure" },
+      ];
+    },
+  },
+  {
+    name: "cancellation",
+    description:
+      "Cancelling a trip mid-chain must mark it cancelled and terminal — pending work isn't silently continued (PROJECT_BRIEF.md §19 #13). Exercises the real `cancel` state-machine transition via the same `advanceOrThrow` helper `app/app/actions.ts`'s new `cancelTrip` Server Action uses — built this session specifically to make this scenario reachable, since nothing in the app fired this event before.",
+    run: async (harness) => {
+      const userId = await harness.createUser();
+      const { tripId, sessionId } = await harness.newTrip(userId);
+      await intakeTurn(harness, tripId, sessionId, STANDARD_TRIP_MESSAGE);
+      await proposeAndConfirmFlight(harness, tripId);
+
+      const cancelled = await advanceOrThrow(harness.supabase, {
+        tripId,
+        event: "cancel",
+        actor: "user",
+        correlationId: deriveCorrelationId(tripId, "cancel"),
+        agentName: "eval_cancel_trip",
+      });
+      const { data: trip } = await harness.supabase.from("trips").select("status").eq("id", tripId).single();
+
+      let secondCancelRejected = false;
+      try {
+        await advanceOrThrow(harness.supabase, {
+          tripId,
+          event: "cancel",
+          actor: "user",
+          correlationId: deriveCorrelationId(tripId, "cancel-again"),
+          agentName: "eval_cancel_trip",
+        });
+      } catch {
+        secondCancelRejected = true;
+      }
+
+      return [
+        { pass: cancelled === "cancelled", detail: `advanceOrThrow("cancel") resolved to "cancelled" (got "${cancelled}")` },
+        { pass: trip?.status === "cancelled", detail: `trips.status is "cancelled" (got "${trip?.status}")` },
+        { pass: secondCancelRejected, detail: "a second cancel attempt is refused — cancelled is a genuine terminal state, not something that can be re-entered" },
       ];
     },
   },

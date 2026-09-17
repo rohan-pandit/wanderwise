@@ -233,6 +233,15 @@ export async function confirmHotelStep(
       `hotel ${hotel.id} belongs to destination "${hotel.destination}", not the trip's destination "${destinationRow.name}".`,
     );
   }
+  // Defense in depth against a stale-inventory-version ID reaching confirm
+  // directly (propose-time search already filters by version — this closes
+  // the same gap for a caller that skips propose, docs/IMPLEMENTATION_PLAN.md §5).
+  if (hotel.inventory_version !== destinationRow.inventory_version) {
+    throw new InvalidHotelSelectionError(
+      params.tripId,
+      `hotel ${hotel.id} is stale inventory version v${hotel.inventory_version} — current is v${destinationRow.inventory_version}.`,
+    );
+  }
 
   const partySize = reqs.get("partySize") as number;
   const roomGroups = (reqs.get("roomGroups") as RoomGroup[] | undefined) ?? [{ occupants: partySize }];

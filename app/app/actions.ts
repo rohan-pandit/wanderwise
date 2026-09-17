@@ -81,11 +81,26 @@ import {
   type ProposedScheduledActivity,
 } from "@/src/workflow/activities-step";
 import type { WorkflowState } from "@/src/workflow/state-machine";
-import { UnknownDestinationError } from "@/src/workflow/step-shared";
+import { TripCancelledError, UnknownDestinationError } from "@/src/workflow/step-shared";
 import { AmbiguousDestinationNameError } from "@/src/repositories/destinations";
 
-/** Shared by every Server Action here past `sendMessage`'s own trip-creation path: authenticate, then load the trip and check ownership explicitly (the RLS-scoped client isn't used past this point — see the module docstring). */
-async function requireOwnedTrip(supabase: SupabaseClient<Database>, tripId: string): Promise<Trip> {
+/**
+ * Shared by every Server Action here past `sendMessage`'s own trip-creation
+ * path: authenticate, then load the trip and check ownership explicitly (the
+ * RLS-scoped client isn't used past this point — see the module docstring).
+ * Also refuses a cancelled trip by default (`cancelTrip`, below) — a
+ * cancelled trip is terminal (`state-machine.ts`'s `TERMINAL_STATES`), so no
+ * other action here should be able to keep mutating it. `cancelTrip` itself
+ * is the one caller that opts out via `allowCancelled`, since attempting to
+ * cancel an already-cancelled trip needs to reach `advanceOrThrow`'s own
+ * terminal-state rejection (a clearer, typed error) rather than being
+ * intercepted here first.
+ */
+async function requireOwnedTrip(
+  supabase: SupabaseClient<Database>,
+  tripId: string,
+  options: { allowCancelled?: boolean } = {},
+): Promise<Trip> {
   const authClient = await createClient();
   const {
     data: { user },
@@ -97,6 +112,9 @@ async function requireOwnedTrip(supabase: SupabaseClient<Database>, tripId: stri
   const trip = await getTrip(supabase, tripId);
   if (!trip || trip.user_id !== user.id) {
     throw new Error(`Trip ${tripId} not found.`);
+  }
+  if (trip.status === "cancelled" && !options.allowCancelled) {
+    throw new TripCancelledError(tripId);
   }
   return trip;
 }
@@ -134,6 +152,9 @@ function friendlyStepErrorMessage(err: unknown): string | null {
   if (err instanceof AmbiguousDestinationNameError) {
     return "Something went wrong matching your destination — please try again.";
   }
+  if (err instanceof TripCancelledError) {
+    return "This trip has been cancelled — start a new one to keep planning.";
+  }
   return null;
 }
 
@@ -170,7 +191,17 @@ export interface SendMessageResult extends ProcessIntakeTurnResult {
   sessionId: string;
 }
 
-export async function sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
+/**
+ * Only `TripCancelledError` gets the `{error}` treatment here — an honest,
+ * expected outcome of a real user action (clicking "Cancel trip" in one tab,
+ * then continuing to type in another) that deserves a clear message, not a
+ * thrown exception. Live-verified this surfaces as React/Next's generic
+ * obfuscated production error otherwise (same class of gap
+ * `friendlyStepErrorMessage` already exists to prevent for the other
+ * actions) — "Trip not found"/auth failures stay thrown, unchanged, since
+ * those aren't reachable through normal use the way a cancelled trip is.
+ */
+export async function sendMessage(input: SendMessageInput): Promise<SendMessageResult | StepActionError> {
   const authClient = await createClient();
   const {
     data: { user },
@@ -188,6 +219,9 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
     const trip = await getTrip(supabase, tripId);
     if (!trip || trip.user_id !== user.id) {
       throw new Error(`Trip ${tripId} not found.`);
+    }
+    if (trip.status === "cancelled") {
+      return { error: "This trip has been cancelled — start a new one to keep planning." };
     }
     sessionId = trip.session_id;
   } else {
@@ -528,6 +562,41 @@ export async function finalizeTrip(
     guardrailsPassed: true,
     correlationId: deriveCorrelationId(input.tripId, "user_confirmed"),
     agentName: "finalize_trip",
+  });
+
+  return { tripId: input.tripId, workflowState };
+}
+
+export interface CancelTripInput {
+  tripId: string;
+}
+
+export interface CancelTripResult {
+  tripId: string;
+  workflowState: WorkflowState;
+}
+
+/**
+ * Marks a trip cancelled (PROJECT_BRIEF.md §19 #13) — for a user who wants
+ * to abandon a trip that's still being planned (nothing is ever booked in
+ * this app, in any version, so there's no reservation to actually cancel;
+ * this is about the *planning session* itself, which could otherwise sit
+ * indefinitely in whatever partial state it was left in, indistinguishable
+ * from "still active" in the trip history list). Reuses `state-machine.ts`'s
+ * existing `cancel` event, legal from any non-terminal state — no new
+ * workflow-state plumbing needed, just a real caller for a transition that
+ * was previously only reachable from unit tests.
+ */
+export async function cancelTrip(input: CancelTripInput): Promise<CancelTripResult> {
+  const supabase = createServiceClient();
+  await requireOwnedTrip(supabase, input.tripId, { allowCancelled: true });
+
+  const workflowState = await advanceOrThrow(supabase, {
+    tripId: input.tripId,
+    event: "cancel",
+    actor: "user",
+    correlationId: deriveCorrelationId(input.tripId, "cancel"),
+    agentName: "cancel_trip",
   });
 
   return { tripId: input.tripId, workflowState };

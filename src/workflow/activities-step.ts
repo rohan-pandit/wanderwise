@@ -498,6 +498,16 @@ export async function confirmActivitiesStep(
       `activities belong to a different destination: ${wrongDestination.map((a) => a.id).join(", ")}`,
     );
   }
+  // Defense in depth against a stale-inventory-version ID reaching confirm
+  // directly (propose-time retrieval already filters by version — this
+  // closes the same gap for a caller that skips propose, docs/IMPLEMENTATION_PLAN.md §5).
+  const staleActivities = activityRows.filter((a) => a.inventory_version !== destinationRow.inventory_version);
+  if (staleActivities.length > 0) {
+    throw new InvalidActivitiesSelectionError(
+      params.tripId,
+      `stale inventory version: ${staleActivities.map((a) => `${a.id} (v${a.inventory_version})`).join(", ")} — current is v${destinationRow.inventory_version}.`,
+    );
+  }
 
   const scheduledActivities: ScheduledActivity[] = params.scheduledActivities.map((a) => {
     const activity = activityById.get(a.id)!;

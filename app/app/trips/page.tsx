@@ -12,6 +12,7 @@ const CHAIN_STEP_LABELS: Record<ReturnType<typeof getCurrentChainStep>, string> 
 /** `trips.status` never advances past "requirements_ready" under the stepwise chain redesign — steps only ever write `trip_decisions`/`finalizeTrip` writes `finalized`. So progress for an in-flight trip is read from `trip_decisions` instead. */
 function describeProgress(status: string, decisions: ChainDecision[]): string {
   if (status === "finalized") return "Finalized";
+  if (status === "cancelled") return "Cancelled";
   return CHAIN_STEP_LABELS[getCurrentChainStep(decisions)];
 }
 

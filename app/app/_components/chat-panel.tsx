@@ -72,6 +72,10 @@ export function ChatPanel({
         startCorrelationId: tripId ? undefined : startCorrelationId(),
         turnCorrelationId: crypto.randomUUID(),
       });
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
       setMessages((prev) => [...prev, { role: "assistant", content: result.assistantMessage }]);
       if (!tripId) {
         setTripId(result.tripId);

@@ -135,6 +135,7 @@ function activity(id: string, overrides: Record<string, unknown> = {}) {
     duration_minutes: 90,
     opening_hours: null,
     closed_days: [],
+    inventory_version: 1,
     ...overrides,
   };
 }
@@ -347,6 +348,14 @@ describe("confirmActivitiesStep", () => {
     vi.mocked(getActivitiesByIds).mockResolvedValue([
       activity("a1", { destination: "Lisbon", destination_id: "destination-a-different-lisbon" }),
     ] as never);
+
+    await expect(
+      confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: SCHEDULED }),
+    ).rejects.toThrow(InvalidActivitiesSelectionError);
+  });
+
+  it("throws InvalidActivitiesSelectionError when an activity is a stale inventory version (docs/IMPLEMENTATION_PLAN.md §5 defense-in-depth)", async () => {
+    vi.mocked(getActivitiesByIds).mockResolvedValue([activity("a1", { inventory_version: 0 })] as never);
 
     await expect(
       confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: SCHEDULED }),

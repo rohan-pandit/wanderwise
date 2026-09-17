@@ -340,6 +340,16 @@ export async function confirmFlightStep(
       `return flight ${returnFlight.id} (${returnFlight.origin} -> ${returnFlight.destination}) doesn't match the trip's return route (${destinationRow.name} -> ${origin}).`,
     );
   }
+  // Defense in depth against a stale-inventory-version ID reaching confirm
+  // directly (propose-time search already filters by version — this closes
+  // the same gap for a caller that skips propose, docs/IMPLEMENTATION_PLAN.md §5).
+  const staleFlights = [outboundFlight, returnFlight].filter((f) => f.inventory_version !== destinationRow.inventory_version);
+  if (staleFlights.length > 0) {
+    throw new InvalidFlightSelectionError(
+      params.tripId,
+      `stale inventory version: ${staleFlights.map((f) => `${f.id} (v${f.inventory_version})`).join(", ")} — current is v${destinationRow.inventory_version}.`,
+    );
+  }
 
   const constraints = flightHardConstraints(reqs);
   const failing = filterHardConstraints([outboundFlight, returnFlight], constraints).rejected;

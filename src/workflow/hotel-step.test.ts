@@ -89,6 +89,7 @@ function hotel(id: string, overrides: Record<string, unknown> = {}) {
     room_capacity: 4,
     available_rooms: 5,
     cancellation_policy: "Free cancellation up to 48 hours before check-in",
+    inventory_version: 1,
     ...overrides,
   };
 }
@@ -289,6 +290,12 @@ describe("confirmHotelStep", () => {
     ] as never);
 
     await expect(confirmHotelStep(supabase, { tripId: TRIP_ID, hotelId: "ambiguous-name" })).rejects.toThrow(InvalidHotelSelectionError);
+  });
+
+  it("throws InvalidHotelSelectionError when the hotel is a stale inventory version (docs/IMPLEMENTATION_PLAN.md §5 defense-in-depth)", async () => {
+    vi.mocked(getHotelsByIds).mockResolvedValue([hotel("stale", { inventory_version: 0 })] as never);
+
+    await expect(confirmHotelStep(supabase, { tripId: TRIP_ID, hotelId: "stale" })).rejects.toThrow(InvalidHotelSelectionError);
   });
 
   it("throws InvalidHotelSelectionError when the hotel no longer passes hard constraints", async () => {

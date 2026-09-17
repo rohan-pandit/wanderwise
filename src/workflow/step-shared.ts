@@ -41,6 +41,14 @@ export function requirementMap(rows: TripRequirementRow[]): Map<RequirementField
   return map;
 }
 
+/** A cancelled trip (`state-machine.ts`'s `cancel` event/`cancelled` terminal state) is terminal — no further action should be able to mutate it. Lives here (not `app/app/actions.ts`, a `"use server"` file that can only export async functions) so every Server Action can import and throw it. */
+export class TripCancelledError extends Error {
+  constructor(tripId: string) {
+    super(`Trip ${tripId} has been cancelled — no further changes can be made to it.`);
+    this.name = "TripCancelledError";
+  }
+}
+
 /** A trip's stated `destination` requirement doesn't resolve to any real `destinations` row — inventory we simply don't cover, distinct from "no viable candidates" (docs/IMPLEMENTATION_PLAN.md §5). */
 export class UnknownDestinationError extends Error {
   constructor(tripId: string, destinationName: string) {

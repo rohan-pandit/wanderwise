@@ -21,7 +21,7 @@
  * 2026-09-16/17) — created and torn down within one run, nothing standing.
  */
 import { randomUUID } from "node:crypto";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import { createClient as createSupabaseClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "../../src/config/supabase/database.types";
 import { createServiceClient } from "../../src/config/supabase/service";
 import { AnthropicModelClient } from "../../src/agents/providers/anthropic-model-client";
@@ -46,6 +46,20 @@ export interface ScenarioHarness {
   createUser(): Promise<string>;
   /** A fresh session + trip owned by `userId`. */
   newTrip(userId: string): Promise<{ tripId: string; sessionId: string }>;
+  /**
+   * A real, RLS-scoped client authenticated as `userId` — the anon key, not
+   * the service role, so Postgres RLS policies actually apply exactly as
+   * they would for that signed-in user in the real app. Every other harness
+   * method uses the service-role client (bypasses RLS by design, ownership
+   * checked explicitly instead — see `app/app/actions.ts`'s own
+   * `requireOwnedTrip`), which can't prove RLS itself denies cross-user
+   * access; this is for the one adversarial case that needs to (§19 #16).
+   * Generates a real magic-link token via the admin API and verifies it —
+   * the same mechanic every prior session's throwaway `/dev-signin` browser
+   * routes used (see `BUILD_LOG.md`), just returning a plain client instead
+   * of setting browser cookies.
+   */
+  signInAs(userId: string): Promise<SupabaseClient<Database>>;
   /** Deletes every user this harness created this run — cascades their sessions/trips/everything downstream. Always call, even on failure. */
   cleanup(): Promise<void>;
 }
@@ -53,6 +67,7 @@ export interface ScenarioHarness {
 export function createScenarioHarness(): ScenarioHarness {
   const supabase = createServiceClient();
   const createdUserIds: string[] = [];
+  const emailByUserId = new Map<string, string>();
 
   return {
     supabase,
@@ -65,6 +80,7 @@ export function createScenarioHarness(): ScenarioHarness {
         throw error ?? new Error("admin.createUser returned no user");
       }
       createdUserIds.push(data.user.id);
+      emailByUserId.set(data.user.id, email);
       return data.user.id;
     },
 
@@ -72,6 +88,28 @@ export function createScenarioHarness(): ScenarioHarness {
       const session = await createSession(supabase, userId);
       const { trip } = await startTrip(supabase, { sessionId: session.id, userId });
       return { tripId: trip.id, sessionId: session.id };
+    },
+
+    async signInAs(userId: string) {
+      const email = emailByUserId.get(userId);
+      if (!email) throw new Error(`signInAs: ${userId} wasn't created by this harness's createUser().`);
+
+      const { data, error } = await supabase.auth.admin.generateLink({ type: "magiclink", email });
+      if (error || !data.properties?.hashed_token) {
+        throw error ?? new Error("generateLink returned no hashed_token");
+      }
+
+      const rlsClient = createSupabaseClient<Database>(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      );
+      const { error: verifyError } = await rlsClient.auth.verifyOtp({
+        type: "email",
+        token_hash: data.properties.hashed_token,
+      });
+      if (verifyError) throw verifyError;
+
+      return rlsClient;
     },
 
     async cleanup() {

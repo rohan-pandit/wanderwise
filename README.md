@@ -90,9 +90,9 @@ Real booking would need a new boundary after a trip's decisions are confirmed, t
 
 The full, honestly-tracked list — including which are fixed, which are open, and why — lives in [`docs/IMPLEMENTATION_PLAN.md` §5](docs/IMPLEMENTATION_PLAN.md). The headline ones:
 
-- **10 of the brief's 16 end-to-end scenarios aren't automated yet** (stale inventory, duplicate/idempotent requests, cross-session isolation, cancellation, prompt injection in retrieved inventory text, failure/recovery) — they need real RLS/JWT-authenticated test sessions or fault-injection infrastructure the current direct-call eval harness doesn't provide.
 - **Telemetry retention is a documented policy, not automated code** — every row in this project's database is synthetic demo/eval data, so a real scheduled-deletion job wasn't built yet (see [ADR-007](docs/architecture/ADR-007-observability.md)).
-- **A handful of smaller, lower-priority gaps remain tracked but open** — a naive first-fit activity scheduler (not an optimizer), only the top 5 candidate combinations tried before declaring infeasibility, destination identity via a plain city-name string rather than a foreign key, and a couple of others. None are silent — see the full list for what's open and why.
+- **Hotels model one room type per property** — availability (enough *rooms* free) is checked, but not room-type variety (can't express "2 doubles + 1 twin"); a deliberate scope call, not an oversight, made when asked directly.
+- **The activity scheduler stays a single deterministic forward pass** — meal-time bias exists, but no backtracking, no real optimizer, and no geographic clustering (blocked on data — activity locations are free-text neighborhood strings, not coordinates). None are silent — see the full list for what's open and why.
 
 ## Notable trade-offs and dead ends
 

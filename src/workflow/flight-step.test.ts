@@ -76,6 +76,7 @@ function flight(id: string, overrides: Record<string, unknown> = {}) {
     arrival_time: "2026-10-06T09:00:00Z",
     departure_time_zone: "America/New_York",
     arrival_time_zone: "Europe/Lisbon",
+    inventory_version: 1,
     ...overrides,
   };
 }
@@ -342,6 +343,16 @@ describe("confirmFlightStep", () => {
 
     await expect(
       confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "ambiguous-name", returnFlightId: "r1" }),
+    ).rejects.toThrow(InvalidFlightSelectionError);
+  });
+
+  it("throws InvalidFlightSelectionError when a flight is a stale inventory version (docs/IMPLEMENTATION_PLAN.md §5 defense-in-depth)", async () => {
+    vi.mocked(getFlightsByIds).mockImplementation(async (_s, ids) =>
+      (ids[0] === "stale" ? [flight("stale", { inventory_version: 0 })] : [returnFlight("r1")]) as never,
+    );
+
+    await expect(
+      confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "stale", returnFlightId: "r1" }),
     ).rejects.toThrow(InvalidFlightSelectionError);
   });
 
