@@ -409,3 +409,27 @@ Before writing any Phase 5 code, surfaced a decision that had never actually bee
 **Known limitations / assumptions carried forward:** the `retrieveActivities` overfetch-heuristic gap above; Voyage's account-level 3 RPM/10K TPM rate limit until a payment method is added (flagged to the user, not yet resolved); the Curator/Explanation agents are unit-tested against a fake `ModelClient` but not yet wired into the workflow controller or exercised by a live spot-check the way Phase 6's Intake-agent wiring was — that's the natural next step once search/decision flows exist to feed them real candidate sets, not this phase's job.
 
 **Next up:** Either more backend (search_flights/search_hotels tools, budget/candidate-combination wiring into the orchestrator — extending Phase 6's pattern to the Curator agent) or Phase 7 (the chat UI) — worth an explicit discussion at the start of the next session, same fork as after Phase 4 and Phase 6.
+
+---
+
+## 2026-09-16 — Session close: documentation pass ahead of continuing Phase 6
+
+**What happened:** User chose to continue with the backend-first fork (extending Phase 6's orchestration pattern to search/curation/combination) rather than Phase 7, and asked for a documentation pass before ending the session — a fresh session will pick up the actual implementation, approaching this session's context limit.
+
+Audited the codebase against what `docs/IMPLEMENTATION_PLAN.md`'s Phase 6 section claimed, since that section's checklist was fully checked off but scoped explicitly to "the one agent that exists so far" (the Intake agent) — confirmed by grep, not assumption, that Phase 5's Curator/Explanation agents and Phase 2's budget/combination/feasibility engines are still completely unwired: nothing in `src/workflow/`, `src/agents/`, or `app/` calls `calculateBudget`, `assembleCandidateCombinations`, `validateItineraryFeasibility`, `validateInventoryReferences`, `findFlights`, or `findHotels`, and nothing outside their own test files calls `runCuratorAgent`/`runExplanationAgent`. The workflow state machine already models the transitions this remaining work needs to drive (`requirements_ready` → `searching_inventory` → `validating_candidates` → `assembling_options` → `validating_itinerary` → `presenting_draft`) but none of them are exercised by any code yet.
+
+**What I did:** Added a new "Phase 6, continued" subsection to `docs/IMPLEMENTATION_PLAN.md` documenting this gap precisely, with an explicit "start here" list of open questions the next session should resolve *before* writing code (mirroring the same pattern used ahead of Phase 4) rather than silently assuming answers:
+1. Whether `search_flights`/`search_hotels` should be deterministic pre-fetch (consistent with Phase 5's `retrieve_destinations`/`retrieve_activities` precedent) or live model-driven tool calls (as `PROJECT_BRIEF.md` §12 literally lists them).
+2. Whether this belongs in a new orchestrator module or an extension of `intake-orchestrator.ts`.
+3. Whether `trip_decisions` (no repository exists yet) needs the same append/retire shape as `trip_requirements`/`trip_preferences`, or different semantics given §7.6's approval-invalidation-on-revision model.
+4. Whether to slice this remaining work further rather than wiring the whole search→curate→combine→feasibility→decide→present chain in one pass — flagged explicitly since every prior phase this session stayed deliberately narrow, and this remaining scope is at least as large as Phase 6's original Intake-wiring work.
+
+**Decisions made:** None — this was a documentation-only pass, deliberately. No architecture decisions were made about the four open questions above; they're recorded as open, not resolved, so the next session asks rather than assumes.
+
+**What didn't work / dead ends:** None — no code touched this entry.
+
+**Verification:** N/A — documentation only. `git status` clean before this entry; will show only the `docs/IMPLEMENTATION_PLAN.md` and `BUILD_LOG.md` edits once committed.
+
+**Known limitations / assumptions carried forward:** unchanged from the Phase 5 entry above, plus the four open questions just recorded.
+
+**Next up:** Resolve the four open questions in "Phase 6, continued" (`docs/IMPLEMENTATION_PLAN.md`), then implement in whatever slice that discussion settles on — likely starting with `search_flights`/`search_hotels` and the Curator agent's real orchestrator wiring, since that's the more self-contained first slice regardless of how the other questions resolve.
