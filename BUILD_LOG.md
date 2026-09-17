@@ -104,6 +104,24 @@ Also fixed a real gap discovered while building this: `agent_runs.cost_usd` was 
 
 ---
 
+## 2026-09-17 — Phase 8 slice 6: cache-hit / cost comparison (Phase 8 complete)
+
+**What I built:** `evals/runners/run-cache-comparison.ts` (`npm run eval:cache-comparison`) — PROJECT_BRIEF.md §6.7's "prompt caching is an experiment, not an assumption," finally actually measured. Runs the same 6 real Intake-agent calls (`evals/cases/intake.ts`'s `INTAKE_EVAL_CASES` — same agent, so system prompt + tool defs never change across the sequence) twice against the real Anthropic API: once with caching on (the real, always-on production behavior), once forced off via a new `cachingEnabled` constructor flag on `AnthropicModelClient` that exists solely for this comparison (every real call site leaves it at its default `true`). Same model, same inputs, same order — the only variable is the `cache_control` breakpoints.
+
+**Real result (claude-sonnet-5):** caching cut cost by **45.5%** ($0.08585 -> $0.04681) — the first call writes the cache (4,821 tokens), every call after it reads from it instead of resending the system prompt + tools. But it did **not** improve latency (26,680ms -> 29,088ms total across 6 calls — slightly *worse*). This is the actual point of §6.7 treating caching as an experiment rather than a given: the cost win is real and worth keeping, but an assumption that caching would also make responses faster would have been wrong.
+
+**Why:** The last Phase 8 checklist item. With this, all six Phase 8 items (`docs/IMPLEMENTATION_PLAN.md`) are checked off — the phase is complete, modulo the two explicitly-scoped-out pieces (the remaining 10 §19 scenarios, and adversarial prompt-injection-in-inventory-text cases) that both need test infrastructure (RLS/JWT sessions, or a seeded adversarial fixture) this build doesn't have yet.
+
+**Decisions made:** None new — `cachingEnabled` is additive (defaults to `true`, every existing call site unaffected).
+
+**What didn't work / dead ends:** None.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint` clean. Run live against the real Anthropic API — real numbers above, not simulated. `npm test` unaffected (no unit tests exist for `AnthropicModelClient` — it's the thin real-API-boundary file, tested via the real eval runners rather than mocks, consistent with how it's always been).
+
+**Next up:** Phase 8 is complete. Two explicitly deferred items remain tracked but out of this build's scope for now (remaining §19 scenarios needing RLS/JWT infra; inventory-text prompt-injection cases needing a seeded fixture). Natural next step is Phase 9 (portfolio polish) unless the tracked open items (`docs/IMPLEMENTATION_PLAN.md` §5 — especially the budget-ceiling-at-finalize gap slice 1 found) get prioritized first.
+
+---
+
 ## 2026-09-16 — Planning: brief consolidation, repo setup, first architecture decisions
 
 **What I built:**

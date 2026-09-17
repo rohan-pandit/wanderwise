@@ -13,7 +13,8 @@
     "eval:intake": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-intake-eval.ts",
     "generate-embeddings": "node --env-file=.env.local --conditions=react-server --import tsx scripts/generate-embeddings.ts",
     "eval:retrieval": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-retrieval-eval.ts",
-    "eval:scenarios": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-scenario-eval.ts"
+    "eval:scenarios": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-scenario-eval.ts",
+    "eval:cache-comparison": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-cache-comparison.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",

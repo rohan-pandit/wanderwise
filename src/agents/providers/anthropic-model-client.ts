@@ -21,14 +21,23 @@ import {
  * tool definitions are static per agent and cached; the dynamic trip-state
  * slice and user message are passed in `messages` last, after the cache
  * breakpoint, so cache hits don't require them to match.
+ *
+ * `cachingEnabled` defaults to `true` (every real call site relies on this)
+ * — the only reason it exists is `evals/runners/run-cache-comparison.ts`,
+ * which needs a true apples-to-apples "caching off" baseline (identical
+ * requests, just without the `cache_control` breakpoints) to measure §6.7's
+ * "prompt caching is an experiment, not an assumption" for real, rather
+ * than assuming the cache-read token count alone proves a cost benefit.
  */
 export class AnthropicModelClient implements ModelClient {
   private readonly client: Anthropic;
   readonly model: string;
+  private readonly cachingEnabled: boolean;
 
-  constructor(model: string, client: Anthropic = new Anthropic()) {
+  constructor(model: string, client: Anthropic = new Anthropic(), cachingEnabled = true) {
     this.model = model;
     this.client = client;
+    this.cachingEnabled = cachingEnabled;
   }
 
   async complete(request: ModelCompletionRequest): Promise<ModelCompletionResult> {
@@ -41,7 +50,7 @@ export class AnthropicModelClient implements ModelClient {
           {
             type: "text",
             text: request.system,
-            cache_control: { type: "ephemeral" },
+            ...(this.cachingEnabled ? { cache_control: { type: "ephemeral" as const } } : {}),
           },
         ],
         tools: request.tools.map((tool, index) => ({
@@ -49,7 +58,7 @@ export class AnthropicModelClient implements ModelClient {
           description: tool.description,
           input_schema: tool.inputSchema as Anthropic.Tool.InputSchema,
           // Cache breakpoint after the last (stable) tool definition.
-          ...(index === request.tools.length - 1
+          ...(this.cachingEnabled && index === request.tools.length - 1
             ? { cache_control: { type: "ephemeral" as const } }
             : {}),
         })),
