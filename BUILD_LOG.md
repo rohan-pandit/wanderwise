@@ -343,3 +343,28 @@ Efficiency review found nothing worth changing at this project's actual scale (s
 **Known limitations / assumptions carried forward:** the two tracked idempotency gaps above (`startTrip`, and now `processIntakeTurn`'s non-transition writes); `revisionType: "decision"` revisions are detected but not applicable until Phase 5/7 create actual decisions; the Intake agent still sometimes returns an empty `assistantMessage` when it only calls tools (observed live, not a bug — model behavior, not orchestrator wiring — worth revisiting once Phase 7's chat UI makes empty assistant turns visibly awkward).
 
 **Next up:** Phase 5 — retrieval and curation, unchanged from the prior entry's description. The chat UI (Phase 7) is now the only thing standing between this backend wiring and an actually demoable product surface, which may be worth weighing against Phase 5 at the start of the next session.
+
+---
+
+## 2026-09-16 — Session open: embedding provider decided (Voyage AI), no code yet
+
+**What happened:** Asked which phase to do next; user chose Phase 5 (retrieval/curation) over Phase 7 (chat UI), reasoning that finishing the backend before testing the frontend is a deliberate, acceptable sequencing choice — noted the real tradeoff (nothing demoable in a browser until Phase 7 either way) but didn't push back further once the user weighed it and decided.
+
+Before writing any Phase 5 code, surfaced a decision that had never actually been made anywhere in the docs: Anthropic has no embeddings API, so RAG (`PROJECT_BRIEF.md` §10) needs a second provider, and the schema already commits to `vector(1536)` (`supabase/migrations/0001_initial_schema.sql`) with no embedding model picked to match it. Asked the user to choose between Voyage AI and OpenAI `text-embedding-3-small` before any code was written, rather than defaulting silently — same pattern as Phase 4's model-selection question.
+
+**Decision: Voyage AI**, reached through discussion rather than a single up-or-down pick:
+
+1. **First pass — at this project's actual scale (6 destinations, 27 activities), neither option is a clean win.** Voyage AI: Anthropic acquired Voyage AI in 2025, so it's genuinely part of the same vendor relationship now, not just a "recommended partner" — the stronger narrative fit for a portfolio piece about Claude agentic engineering; Voyage's models also benchmark well specifically for retrieval. Against that: no Voyage model natively outputs 1536 dims (they use Matryoshka-truncated 256/512/1024/2048), so picking Voyage means a migration narrowing the `embedding` columns — cheap right now since they're still empty, but a real extra step OpenAI's `text-embedding-3-small` doesn't need (1536 dims natively, matches the schema as committed, very cheap, extremely well-trodden). Corrected an asymmetry in how the question was first framed: *both* options need a new API key and dependency — that's not actually a differentiator, since Anthropic offers no embeddings at all either way.
+2. **User asked what the recommendation would be at genuinely large (production) scale**, not this project's toy dataset. That reframing changes the answer, not just the confidence behind it: at real volume, embedding dimension becomes an infrastructure cost (pgvector index size/build time/query latency all scale with it), so Voyage's flexible/smaller Matryoshka dimensions turn from "a migration nuisance" into a genuine lever OpenAI's fixed 1536 (or 3072 for `text-embedding-3-large`) doesn't offer; retrieval-quality benchmark gaps that don't matter on 27 activities start to matter once corpus size creates near-duplicate/confusable content; production RAG typically needs a second-stage reranker, and Voyage ships a first-party one built to pair with its own embeddings (OpenAI has none, so picking OpenAI likely means a *third* vendor for reranking anyway); and vendor consolidation (one Anthropic relationship covering generation + embeddings) matters more at enterprise scale than at hobby-project scale. Flagged the one honest caveat: raw per-token pricing wasn't actually pulled for either provider, so a real production decision should verify current numbers rather than trust this reasoning alone.
+3. **User chose Voyage AI**, explicitly citing the case made in step 2 as the basis, and asked for it to be recorded here rather than just left in chat.
+
+**Decisions made:**
+- Embedding provider: **Voyage AI**, for the reasons above — recorded in `docs/IMPLEMENTATION_PLAN.md`'s Phase 5 section, including the migration consequence (narrowing `embedding vector(1536)` to whichever Matryoshka dimension is chosen, most likely 1024, before any embeddings are generated).
+
+**What didn't work / dead ends:** None — no code touched this entry.
+
+**Verification:** N/A — documentation only, `git status` will show only the two doc edits (this entry, `docs/IMPLEMENTATION_PLAN.md`'s Phase 5 section) once committed.
+
+**Known limitations / assumptions carried forward:** unchanged from the previous entry. The exact Matryoshka output dimension for Voyage (1024 assumed above) and the specific model (`voyage-3-large` vs. `voyage-3.5`/`voyage-3.5-lite`) aren't locked yet — confirm against Voyage's current API docs when the migration is actually written, not before.
+
+**Next up:** Start Phase 5 implementation: the embedding-column migration, then embedding generation for seed `destinations`/`activities`, then metadata-filtered retrieval functions, then the Curator and Trip Explanation agents.

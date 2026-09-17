@@ -58,7 +58,11 @@ Source of truth for *why* is `PROJECT_BRIEF.md`. This doc is the *how* and *in w
 - [x] Set up prompt caching structure — `src/agents/providers/anthropic-model-client.ts`: system prompt cached (`cache_control` on the system block), tool definitions cached (breakpoint after the last tool), dynamic trip-state slice + user message passed last in `messages`, after the cache boundary (`PROJECT_BRIEF.md` §6.7 ordering). Measured via the eval run above (cache-read tokens logged per call), not assumed — a dedicated caching-disabled baseline mode wasn't built separately since the per-case cache-read counts in the eval output already make the on/off contrast visible (call 1 writes the cache, calls 2–6 read it); revisit if a more rigorous A/B comparison is needed later.
 
 ### Phase 5 — Retrieval and curation
-- [ ] Generate embeddings for seed `destinations`/`activities`
+
+**Embedding provider — decided 2026-09-16: Voyage AI.** Discussed against OpenAI `text-embedding-3-small` before any code was written (see `BUILD_LOG.md` for the full pros/cons). Anthropic doesn't offer embeddings itself, so some second provider is unavoidable either way; the two weren't a clean win for either side at this project's actual scale (6 destinations, 27 activities) — the deciding factors were narrative fit (Anthropic acquired Voyage AI in 2025, so it's now part of the same vendor relationship rather than a genuinely separate one) and that the schema-migration cost is cheap right now since the `embedding` columns are still empty. **Implementation consequence:** `supabase/migrations/0001_initial_schema.sql`'s `embedding vector(1536)` columns (`destinations`, `activities`) don't match any Voyage model's native output — Voyage's flexible-dimension models support Matryoshka truncation to specific values (256/512/1024/2048, to be confirmed against current API docs when implementing), not 1536. Needs a new migration narrowing the column to whichever supported dimension is chosen (1024 is the likely pick — a reasonable quality/index-size tradeoff) before any embeddings are generated.
+
+- [ ] Migration: narrow `destinations.embedding`/`activities.embedding` from `vector(1536)` to the chosen Voyage output dimension
+- [ ] Generate embeddings for seed `destinations`/`activities` (Voyage AI)
 - [ ] Metadata-filtered retrieval functions
 - [ ] Destination/Activity Curator agent
 - [ ] Trip Explanation Agent
