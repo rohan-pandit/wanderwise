@@ -138,7 +138,12 @@ export default async function AnalyticsPage() {
   return (
     <div className="mx-auto flex max-w-5xl flex-1 flex-col gap-8 px-6 py-8">
       <div>
-        <h1 className="text-lg font-semibold text-black dark:text-zinc-50">Engineering dashboard</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-lg font-semibold text-black dark:text-zinc-50">Engineering dashboard</h1>
+          <a href="/internal/product-metrics" className="text-sm text-zinc-500 underline hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100">
+            Product metrics →
+          </a>
+        </div>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
           PROJECT_BRIEF.md §13.3 — workflow health, cost, latency, cache, and guardrail activity across every trip.
         </p>

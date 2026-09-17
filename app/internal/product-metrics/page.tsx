@@ -1,0 +1,218 @@
+/**
+ * Product metrics view (PROJECT_BRIEF.md §13.4), Phase 8 — deliberately a
+ * separate page from `/internal/analytics` (the engineering dashboard),
+ * per §13.4's own rule: "keep product outcomes separate from engineering
+ * metrics — do not interpret a high number of agent calls as product
+ * success." Sharing a page would make that boundary a caption, not a fact.
+ *
+ * Reads `trips`/`trip_state_versions`/`trip_requirements`/`trip_decisions`
+ * via the service-role client — same reasoning as `/internal/analytics`
+ * for `trips` (it's RLS-scoped to the *querying* user; an aggregate product
+ * view needs every user's trips) and for the others (RLS-locked-out
+ * internal tables). Route access is `proxy.ts`'s deny-by-default
+ * middleware, same bar as every other route (see that page's docstring for
+ * why this project doesn't need a separate admin role).
+ *
+ * No qualitative user feedback exists anywhere in this app yet (no
+ * feedback-collection mechanism was ever built) — shown honestly as "not
+ * yet collected" rather than omitted or faked.
+ */
+import { createServiceClient } from "@/src/config/supabase/service";
+import { checkRequirementsComplete } from "@/src/domain/extraction";
+import type { RequirementRecord, RequirementFieldName } from "@/src/domain/extraction";
+import { getCurrentChainStep, type ChainDecision } from "@/src/domain/chain";
+import type { WorkflowState } from "@/src/workflow/state-machine";
+
+function pct(numerator: number, denominator: number): string {
+  if (denominator === 0) return "—";
+  return `${((numerator / denominator) * 100).toFixed(1)}%`;
+}
+
+function duration(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  return `${(ms / 60_000).toFixed(1)}min`;
+}
+
+const STAGE_LABELS: Record<WorkflowState, string> = {
+  created: "Just started",
+  collecting_requirements: "Collecting requirements",
+  awaiting_clarification: "Awaiting clarification",
+  requirements_ready: "Requirements ready (chain not complete)",
+  searching_inventory: "Searching inventory (legacy one-shot state)",
+  validating_candidates: "Validating candidates (legacy one-shot state)",
+  assembling_options: "Assembling options (legacy one-shot state)",
+  validating_itinerary: "Validating itinerary (legacy one-shot state)",
+  presenting_draft: "Draft presented, not yet confirmed",
+  awaiting_confirmation: "Awaiting confirmation",
+  awaiting_user_revision: "Awaiting user revision",
+  applying_revision: "Applying revision",
+  stale: "Stale (inventory changed)",
+  finalized: "Finalized",
+  cancelled: "Cancelled",
+  failed_recoverable: "Failed (recoverable)",
+  failed_terminal: "Failed (terminal)",
+  blocked: "Blocked",
+};
+
+export default async function ProductMetricsPage() {
+  const supabase = createServiceClient();
+
+  const [tripsRes, stateVersionsRes, requirementsRes, decisionsRes] = await Promise.all([
+    supabase.from("trips").select("id, session_id, status, created_at"),
+    supabase.from("trip_state_versions").select("trip_id, version, state, created_at").order("version", { ascending: true }),
+    supabase.from("trip_requirements").select("trip_id, field, status"),
+    supabase.from("trip_decisions").select("trip_id, field, status"),
+  ]);
+
+  const trips = tripsRes.data ?? [];
+  const stateVersions = stateVersionsRes.data ?? [];
+  const requirementRows = requirementsRes.data ?? [];
+  const decisionRows = decisionsRes.data ?? [];
+
+  const totalTrips = trips.length;
+  const totalSessions = new Set(trips.map((t) => t.session_id)).size;
+
+  // --- Requirement completion, using the same deterministic check the real intake flow uses ---
+  const requirementsByTrip = new Map<string, { field: RequirementFieldName; status: RequirementRecord["status"] }[]>();
+  for (const r of requirementRows) {
+    const list = requirementsByTrip.get(r.trip_id) ?? [];
+    list.push({ field: r.field as RequirementFieldName, status: r.status as RequirementRecord["status"] });
+    requirementsByTrip.set(r.trip_id, list);
+  }
+  const tripsWithCompleteRequirements = trips.filter((t) => {
+    const records = (requirementsByTrip.get(t.id) ?? []) as RequirementRecord[];
+    return checkRequirementsComplete(records).ready;
+  }).length;
+
+  // --- Decisions per trip: draft generation, revision, finalization signals ---
+  const decisionsByTrip = new Map<string, { field: string; status: string }[]>();
+  for (const d of decisionRows) {
+    const list = decisionsByTrip.get(d.trip_id) ?? [];
+    list.push({ field: d.field, status: d.status });
+    decisionsByTrip.set(d.trip_id, list);
+  }
+  const tripsWithDraft = trips.filter((t) => (decisionsByTrip.get(t.id) ?? []).some((d) => d.field === "itineraryText" && d.status === "confirmed")).length;
+  const tripsWithAnyRevision = trips.filter((t) => (decisionsByTrip.get(t.id) ?? []).some((d) => d.status === "superseded")).length;
+  const finalizedTrips = trips.filter((t) => t.status === "finalized").length;
+
+  // --- State-version timing: time to first draft, time to finalized, current stage per trip ---
+  const versionsByTrip = new Map<string, { workflowState: WorkflowState; createdAt: string }[]>();
+  for (const v of stateVersions) {
+    const state = v.state as { workflowState: WorkflowState };
+    const list = versionsByTrip.get(v.trip_id) ?? [];
+    list.push({ workflowState: state.workflowState, createdAt: v.created_at });
+    versionsByTrip.set(v.trip_id, list);
+  }
+
+  const timesToFirstDraftMs: number[] = [];
+  const timesToFinalizedMs: number[] = [];
+  const currentStageByTrip = new Map<string, WorkflowState>();
+  for (const [tripId, versions] of versionsByTrip) {
+    const genesis = versions[0];
+    if (!genesis) continue;
+    const genesisMs = new Date(genesis.createdAt).getTime();
+    const firstDraft = versions.find((v) => v.workflowState === "presenting_draft");
+    if (firstDraft) timesToFirstDraftMs.push(new Date(firstDraft.createdAt).getTime() - genesisMs);
+    const finalized = versions.find((v) => v.workflowState === "finalized");
+    if (finalized) timesToFinalizedMs.push(new Date(finalized.createdAt).getTime() - genesisMs);
+    currentStageByTrip.set(tripId, versions[versions.length - 1].workflowState);
+  }
+  const avg = (values: number[]) => (values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null);
+  const avgTimeToFirstDraft = avg(timesToFirstDraftMs);
+  const avgTimeToFinalized = avg(timesToFinalizedMs);
+
+  // --- Abandonment stage: for non-finalized trips, where did they stop? Prefer the chain step (more granular than raw workflowState once the stepwise chain is active) over the raw state, falling back to the raw state for trips that never got requirements-ready. ---
+  const abandonedTrips = trips.filter((t) => t.status !== "finalized");
+  const abandonmentCounts = new Map<string, number>();
+  for (const t of abandonedTrips) {
+    const decisions = (decisionsByTrip.get(t.id) ?? []) as ChainDecision[];
+    const chainStep = getCurrentChainStep(decisions);
+    const rawState = currentStageByTrip.get(t.id) ?? "created";
+    const label = rawState === "requirements_ready" || rawState === "created" || rawState === "collecting_requirements" || rawState === "awaiting_clarification"
+      ? STAGE_LABELS[rawState]
+      : chainStep !== "complete"
+        ? `Chain step: ${chainStep}`
+        : STAGE_LABELS[rawState];
+    abandonmentCounts.set(label, (abandonmentCounts.get(label) ?? 0) + 1);
+  }
+  const abandonmentRows = [...abandonmentCounts.entries()].sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div className="mx-auto flex max-w-5xl flex-1 flex-col gap-8 px-6 py-8">
+      <div>
+        <div className="flex items-center justify-between">
+          <h1 className="text-lg font-semibold text-black dark:text-zinc-50">Product metrics</h1>
+          <a href="/internal/analytics" className="text-sm text-zinc-500 underline hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100">
+            ← Engineering dashboard
+          </a>
+        </div>
+        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+          PROJECT_BRIEF.md §13.4 — product outcomes, kept separate from the engineering dashboard so a high agent-call count is never mistaken for product success.
+        </p>
+      </div>
+
+      <section className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <StatCard label="Trip-start rate" value={pct(totalTrips, totalSessions)} sub={`${totalTrips} trips / ${totalSessions} sessions`} />
+        <StatCard label="Requirement completion" value={pct(tripsWithCompleteRequirements, totalTrips)} sub={`${tripsWithCompleteRequirements} / ${totalTrips} trips`} />
+        <StatCard label="Draft-generation rate" value={pct(tripsWithDraft, totalTrips)} sub={`${tripsWithDraft} / ${totalTrips} trips`} />
+        <StatCard label="Confirmation rate" value={pct(finalizedTrips, tripsWithDraft)} sub={`${finalizedTrips} finalized / ${tripsWithDraft} drafted`} />
+      </section>
+
+      <section className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <StatCard label="Revision rate" value={pct(tripsWithAnyRevision, totalTrips)} sub={`${tripsWithAnyRevision} / ${totalTrips} trips had a decision revised`} />
+        <StatCard label="Time to first draft" value={avgTimeToFirstDraft !== null ? duration(avgTimeToFirstDraft) : "—"} sub={`avg over ${timesToFirstDraftMs.length} trip(s)`} />
+        <StatCard label="Time to finalized" value={avgTimeToFinalized !== null ? duration(avgTimeToFinalized) : "—"} sub={`avg over ${timesToFinalizedMs.length} trip(s)`} />
+        <StatCard label="Overall completion" value={pct(finalizedTrips, totalTrips)} sub={`${finalizedTrips} / ${totalTrips} trips ever finalized`} />
+      </section>
+
+      <section>
+        <h2 className="text-sm font-semibold text-black dark:text-zinc-50">Abandonment stage</h2>
+        <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">Where non-finalized trips currently sit.</p>
+        <div className="mt-2 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+          <table className="w-full text-left text-sm">
+            <thead className="border-b border-zinc-200 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+              <tr>
+                <th className="px-3 py-2 font-medium">Stage</th>
+                <th className="px-3 py-2 font-medium">Trips</th>
+                <th className="px-3 py-2 font-medium">Share of non-finalized</th>
+              </tr>
+            </thead>
+            <tbody>
+              {abandonmentRows.map(([label, count]) => (
+                <tr key={label} className="border-b border-zinc-100 last:border-0 dark:border-zinc-900">
+                  <td className="px-3 py-2 text-black dark:text-zinc-50">{label}</td>
+                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{count}</td>
+                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{pct(count, abandonedTrips.length)}</td>
+                </tr>
+              ))}
+              {abandonedTrips.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="px-3 py-4 text-center text-zinc-500 dark:text-zinc-400">
+                    Every trip either just started or is finalized.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-sm font-semibold text-black dark:text-zinc-50">Qualitative feedback</h2>
+        <p className="mt-2 rounded-lg border border-dashed border-zinc-300 px-4 py-3 text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+          Not yet collected — no feedback-collection mechanism exists in the app yet (no post-trip survey, thumbs up/down, or free-text field). Shown here rather than omitted, per §13.4&apos;s own list.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+function StatCard({ label, value, sub }: { label: string; value: string; sub: string }) {
+  return (
+    <div className="rounded-lg border border-zinc-200 px-4 py-3 dark:border-zinc-800">
+      <div className="text-xs text-zinc-500 dark:text-zinc-400">{label}</div>
+      <div className="mt-1 text-xl font-semibold text-black dark:text-zinc-50">{value}</div>
+      <div className="mt-0.5 text-xs text-zinc-400 dark:text-zinc-500">{sub}</div>
+    </div>
+  );
+}

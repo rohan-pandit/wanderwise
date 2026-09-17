@@ -88,6 +88,22 @@ Also fixed a real gap discovered while building this: `agent_runs.cost_usd` was 
 
 ---
 
+## 2026-09-17 — Phase 8 slice 5: product metrics view
+
+**What I built:** `app/internal/product-metrics/page.tsx` — the §13.4 product metrics view: trip-start rate, requirement-completion rate (reusing the real `checkRequirementsComplete` domain function against `trip_requirements` rows, not a reimplementation), draft-generation rate, confirmation rate, revision rate (any `trip_decisions` row ever superseded for a trip), time to first draft / time to finalized (derived from `trip_state_versions`' real append-only history), abandonment stage (current chain step for non-finalized trips, reusing `getCurrentChainStep`), and qualitative feedback shown honestly as "not yet collected" rather than omitted or faked, since no feedback mechanism exists anywhere in the app. Deliberately a separate page from `/internal/analytics`, per §13.4's own explicit rule against letting a high agent-call count read as product success. Cross-linked the two pages to each other.
+
+**Why:** Phase 8's "Product metrics view" checklist item, the last of the dashboard-shaped items.
+
+**Decisions made:** No new tables/columns needed — every metric here derives from data the app was already persisting (`trip_state_versions`, `trip_requirements`, `trip_decisions`, `trips`), unlike slice 4's cost-telemetry gap.
+
+**What didn't work / dead ends:** After deleting the throwaway `/dev-signin` route (created for this slice's own live verification, same pattern as slice 4), `npx tsc --noEmit` failed on a stale `.next/dev/types/validator.ts` still referencing the deleted route — a leftover `next dev` type-cache artifact, not a real error. `npm run typecheck` (which runs `next typegen` first) didn't clear it either; only deleting the whole `.next/` directory did. Not a regression in anything committed — the stale reference was to a file that was never committed in the first place.
+
+**Verification:** `npm run eval:ci` (typecheck + lint + `npm test`, 319/319) all clean after clearing the stale `.next/` cache above. Live-verified both pages in the browser via the same throwaway dev-signin pattern: real numbers rendered correctly on `/internal/product-metrics` (2 real trips, 1 with complete requirements, 0 drafted — consistent with `/internal/analytics`'s "0/2 finalized", since neither of the two pre-existing real trips ever reached a draft), and the cross-links between the two pages work. Dev-signin route and its `proxy.ts` exception removed after use, not committed; the throwaway auth user deleted.
+
+**Next up:** Phase 8's remaining items: the other 10 §19 scenarios (needs RLS/JWT-authenticated sessions or fault-injection infrastructure this project doesn't have yet) and the cache-hit/cost comparison experiment. Phase 8's dashboard-shaped and eval-harness-shaped work is now complete.
+
+---
+
 ## 2026-09-16 — Planning: brief consolidation, repo setup, first architecture decisions
 
 **What I built:**
