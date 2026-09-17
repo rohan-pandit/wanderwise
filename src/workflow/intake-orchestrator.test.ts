@@ -18,7 +18,7 @@ vi.mock("./controller");
 import { runIntakeAgent } from "@/src/agents/intake";
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
-import { appendMessage } from "@/src/repositories/messages";
+import { appendMessage, findMessageByCorrelationId } from "@/src/repositories/messages";
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
 import {
   appendTripPreference,
@@ -34,6 +34,7 @@ import { getLatestTripState } from "@/src/repositories/trip-state";
 import { getTrip } from "@/src/repositories/trips";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { advanceTrip } from "./controller";
+import { deriveCorrelationId } from "./correlation";
 import {
   InputGuardrailRejectedError,
   OrchestrationConflictError,
@@ -93,6 +94,7 @@ beforeEach(() => {
   vi.mocked(recordToolCalls).mockResolvedValue([]);
   vi.mocked(recordGuardrailEvent).mockResolvedValue({} as never);
   vi.mocked(appendMessage).mockResolvedValue({} as never);
+  vi.mocked(findMessageByCorrelationId).mockResolvedValue(null);
   vi.mocked(listActiveTripRequirements).mockResolvedValue([]);
   vi.mocked(listActiveTripPreferences).mockResolvedValue([]);
   vi.mocked(listActiveTripDecisions).mockResolvedValue([]);
@@ -152,6 +154,56 @@ describe("processIntakeTurn", () => {
     );
     expect(runIntakeAgent).toHaveBeenCalledOnce();
     expect(result.workflowState).toBe("collecting_requirements");
+  });
+
+  it("writes both the user and assistant chat messages with per-role derived correlation IDs when neither exists yet", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 1) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(emptyAgentResult({ assistantMessage: "sure thing" }) as never);
+
+    await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "hi",
+      correlationId: "11111111-1111-1111-1111-111111111111",
+    });
+
+    expect(appendMessage).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ role: "user", content: "hi", correlationId: expect.any(String) }),
+    );
+    expect(appendMessage).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ role: "assistant", content: "sure thing", correlationId: expect.any(String) }),
+    );
+    // The two roles must derive to distinct IDs — otherwise the assistant
+    // write would look like a duplicate of the user write (or vice versa).
+    const userCall = vi.mocked(appendMessage).mock.calls.find((c) => (c[1] as { role: string }).role === "user");
+    const assistantCall = vi.mocked(appendMessage).mock.calls.find((c) => (c[1] as { role: string }).role === "assistant");
+    expect((userCall?.[1] as { correlationId: string }).correlationId).not.toBe(
+      (assistantCall?.[1] as { correlationId: string }).correlationId,
+    );
+  });
+
+  it("skips re-appending a chat message whose correlation ID was already written by a prior attempt, without skipping the other role", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 1) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(emptyAgentResult() as never);
+    // Simulate a retry: the user message from attempt 1 already exists;
+    // the assistant message doesn't (attempt 1 crashed before writing it).
+    const baseCorrelationId = "22222222-2222-2222-2222-222222222222";
+    const userMessageCorrelationId = deriveCorrelationId(baseCorrelationId, "message:user");
+    vi.mocked(findMessageByCorrelationId).mockImplementation(async (_s, _session, correlationId) =>
+      correlationId === userMessageCorrelationId ? ({ id: "existing" } as never) : null,
+    );
+
+    await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "hi",
+      correlationId: baseCorrelationId,
+    });
+
+    const roleCalls = vi.mocked(appendMessage).mock.calls.map((c) => (c[1] as { role: string }).role);
+    expect(roleCalls).toEqual(["assistant"]);
   });
 
   it("throws OrchestrationTransitionError if start_intake is unexpectedly rejected", async () => {

@@ -8,6 +8,8 @@ export interface NewMessage {
   sessionId: string;
   role: "user" | "assistant" | "system";
   content: string;
+  /** Idempotency key (`processIntakeTurn`'s per-role derived correlation ID, `src/workflow/intake-orchestrator.ts`) — see `findMessageByCorrelationId`. */
+  correlationId?: string;
 }
 
 /**
@@ -22,9 +24,30 @@ export async function appendMessage(
   return unwrapOrThrow(
     supabase
       .from("messages")
-      .insert({ session_id: message.sessionId, role: message.role, content: message.content })
+      .insert({
+        session_id: message.sessionId,
+        role: message.role,
+        content: message.content,
+        correlation_id: message.correlationId ?? null,
+      })
       .select()
       .single(),
+  );
+}
+
+/** Looks up a message by its per-role correlation ID (`messages.correlation_id`, `0009_messages_correlation_id.sql`) — a retried turn checks this before re-appending, so the same chat bubble isn't shown twice. Best-effort, no DB uniqueness constraint (matching `trip_events`/`workflow_steps`' existing correlation_id columns) — this is chat history for UI continuity, not the strictly-consistent source of truth. */
+export async function findMessageByCorrelationId(
+  supabase: SupabaseClient<Database>,
+  sessionId: string,
+  correlationId: string,
+): Promise<Message | null> {
+  return unwrapOrThrow(
+    supabase
+      .from("messages")
+      .select("*")
+      .eq("session_id", sessionId)
+      .eq("correlation_id", correlationId)
+      .maybeSingle(),
   );
 }
 

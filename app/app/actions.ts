@@ -146,6 +146,15 @@ export interface SendMessageInput {
    * `startTrip`'s docstring (`src/workflow/controller.ts`).
    */
   startCorrelationId?: string;
+  /**
+   * Client-generated idempotency key for this turn's chat-message writes
+   * (`processIntakeTurn`'s `appendMessageOnce`, `src/workflow/intake-orchestrator.ts`)
+   * — a fresh one per send attempt, so a retried turn doesn't show the same
+   * chat bubble twice. Doesn't prevent the LLM call itself from re-running
+   * on a genuine retry (a real, separately-costed event, left to record as
+   * such rather than hidden from the cost/observability dashboards).
+   */
+  turnCorrelationId?: string;
 }
 
 export interface SendMessageResult extends ProcessIntakeTurnResult {
@@ -189,6 +198,7 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
     tripId,
     sessionId,
     userMessage: input.message,
+    correlationId: input.turnCorrelationId,
   });
 
   // Auto-chain into whatever's next, scheduled via `after()` so this

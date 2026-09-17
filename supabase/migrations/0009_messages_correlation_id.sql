@@ -1,0 +1,21 @@
+-- ============================================================
+-- Idempotency key for chat message writes (processIntakeTurn,
+-- src/workflow/intake-orchestrator.ts).
+--
+-- Tracked as an open gap since Phase 6's review (IMPLEMENTATION_PLAN.md
+-- §5): a retried turn (same correlationId, e.g. after a mid-turn crash)
+-- re-appended both the user's and the assistant's message, showing the
+-- same chat bubble twice. Scoped narrowly to messages -- a retry's second
+-- real LLM call is left alone (agent_runs/tool_calls/guardrail_events
+-- intentionally still record it, since it's a real, separately-costed
+-- event the observability dashboards should actually reflect).
+--
+-- No unique index, matching `trip_events`/`workflow_steps`'s existing
+-- correlation_id columns: messages are a best-effort mirror here (chat
+-- history for UI continuity, not the strictly-consistent source of truth
+-- trip_state_versions is), so an application-level check-before-write is
+-- enough -- the same standard this codebase already applies to those
+-- other mirror tables.
+-- ============================================================
+
+alter table messages add column correlation_id uuid;

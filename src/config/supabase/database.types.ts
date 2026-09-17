@@ -61,6 +61,7 @@ export interface Database {
           session_id: string;
           role: "user" | "assistant" | "system";
           content: string;
+          correlation_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -68,6 +69,7 @@ export interface Database {
           session_id: string;
           role: "user" | "assistant" | "system";
           content: string;
+          correlation_id?: string | null;
           created_at?: string;
         };
         Relationships: [];

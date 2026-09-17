@@ -70,6 +70,7 @@ export function ChatPanel({
         tripId,
         message: trimmed,
         startCorrelationId: tripId ? undefined : startCorrelationId(),
+        turnCorrelationId: crypto.randomUUID(),
       });
       setMessages((prev) => [...prev, { role: "assistant", content: result.assistantMessage }]);
       if (!tripId) {

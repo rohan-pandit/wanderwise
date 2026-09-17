@@ -36,7 +36,7 @@ import {
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { estimateCostUsd } from "@/src/observability/pricing";
-import { appendMessage } from "@/src/repositories/messages";
+import { appendMessage, findMessageByCorrelationId, type NewMessage } from "@/src/repositories/messages";
 import {
   appendTripPreference,
   listActiveTripPreferences,
@@ -267,6 +267,25 @@ export interface ProcessIntakeTurnResult {
   pendingCascadeConfirmation: PendingCascadeConfirmation | null;
 }
 
+/**
+ * Appends a chat message unless one with this correlation ID was already
+ * written by a prior attempt at the same turn — closes the gap where a
+ * retried turn (same `correlationId`, e.g. after a mid-turn crash) showed
+ * the same chat bubble twice (`docs/IMPLEMENTATION_PLAN.md` §5). Scoped to
+ * just the message write: the LLM call itself is still allowed to re-run
+ * on retry (a real, separately-costed event `agent_runs`/`tool_calls`/
+ * `guardrail_events` intentionally still record as such, rather than
+ * silently hiding a retry's real cost from the observability dashboards).
+ */
+async function appendMessageOnce(
+  supabase: SupabaseClient<Database>,
+  message: NewMessage & { correlationId: string },
+): Promise<void> {
+  const existing = await findMessageByCorrelationId(supabase, message.sessionId, message.correlationId);
+  if (existing) return;
+  await appendMessage(supabase, message);
+}
+
 export async function processIntakeTurn(
   supabase: SupabaseClient<Database>,
   modelClient: ModelClient,
@@ -304,7 +323,12 @@ export async function processIntakeTurn(
   }
 
   const [, currentState] = await Promise.all([
-    appendMessage(supabase, { sessionId: params.sessionId, role: "user", content: trimmed }),
+    appendMessageOnce(supabase, {
+      sessionId: params.sessionId,
+      role: "user",
+      content: trimmed,
+      correlationId: deriveCorrelationId(correlationId, "message:user"),
+    }),
     getLatestTripState(supabase, params.tripId),
   ]);
   if (!currentState) {
@@ -473,7 +497,12 @@ export async function processIntakeTurn(
   // engineering alone, same as every other guarantee this orchestrator
   // makes about model output.
   const assistantMessage = agentResult.assistantMessage.trim() || "Got it — updating your trip details now.";
-  await appendMessage(supabase, { sessionId: params.sessionId, role: "assistant", content: assistantMessage });
+  await appendMessageOnce(supabase, {
+    sessionId: params.sessionId,
+    role: "assistant",
+    content: assistantMessage,
+    correlationId: deriveCorrelationId(correlationId, "message:assistant"),
+  });
 
   // currentRequirements/currentPreferences were loaded before this turn's
   // retractions — drop anything just superseded so the snapshot below (and
