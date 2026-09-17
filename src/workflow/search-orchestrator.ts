@@ -20,17 +20,20 @@
  *    Phase 5) to rank the activity candidates against stated preferences.
  *
  * Stops at `assembling_options` with a ranked candidate set. Combining
- * flights+hotels+activities into a priced, feasible itinerary
- * (`assembleCandidateCombinations`/`calculateBudget`/
- * `validateItineraryFeasibility`, all Phase 2, still unwired) and persisting
- * selections to `trip_decisions` (repository not built yet) are the next
- * slice, not this one — see docs/IMPLEMENTATION_PLAN.md.
+ * flights+hotels+activities into a priced, feasible itinerary and persisting
+ * selections to `trip_decisions` is `src/workflow/itinerary-orchestrator.ts`
+ * (slice 2) — see docs/IMPLEMENTATION_PLAN.md.
  *
  * Destinations are not searched here: `destination` is a required
  * `trip_requirements` field (`REQUIRED_FOR_READY`), so by the time a trip
  * reaches `requirements_ready` it's already fixed — the "flexible
  * destination" case `retrieve_destinations`/Curator-for-destinations exists
  * for isn't reachable in this project's current required-field model.
+ *
+ * `flights` is a one-way table (`supabase/migrations/0001_initial_schema.sql`),
+ * so a round trip needs a second, reversed-direction search for the return
+ * leg — `returnDate` is optional (`REQUIRED_FOR_READY` doesn't require it),
+ * so a one-way trip simply skips it (`returnFlights` comes back empty).
  */
 import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -125,7 +128,9 @@ export interface RunSearchAndCurationParams {
 
 export interface RunSearchAndCurationResult {
   workflowState: WorkflowState;
-  flights: Flight[];
+  outboundFlights: Flight[];
+  /** Empty when the trip has no `returnDate` (one-way). */
+  returnFlights: Flight[];
   hotels: Hotel[];
   activities: MatchedActivity[];
   /** Null if there were no activity candidates to curate, or the agent's call didn't validate. */
@@ -167,6 +172,7 @@ export async function runSearchAndCuration(
   const origin = reqs.get("origin") as string;
   const destination = reqs.get("destination") as string;
   const departureDate = reqs.get("departureDate") as string;
+  const returnDate = reqs.get("returnDate") as string | undefined;
   const partySize = reqs.get("partySize") as number;
   const roomGroups = (reqs.get("roomGroups") as RoomGroup[] | undefined) ?? [{ occupants: partySize }];
 
@@ -184,7 +190,7 @@ export async function runSearchAndCuration(
   // in this slice.
   const preferenceQuery = flattenPreferenceText(preferenceRows.map((p) => p.value)).join(", ") || undefined;
 
-  const [flightCandidates, hotelCandidates, activityCandidates] = await Promise.all([
+  const [outboundCandidates, returnCandidates, hotelCandidates, activityCandidates] = await Promise.all([
     findFlights(supabase, {
       origin,
       destination,
@@ -192,6 +198,15 @@ export async function runSearchAndCuration(
       maxPriceUsd: reqs.get("maxFlightPriceUsd") as number | undefined,
       excludeRedEye: reqs.get("noRedEye") === true,
     }),
+    returnDate
+      ? findFlights(supabase, {
+          origin: destination,
+          destination: origin,
+          departureDate: returnDate,
+          maxPriceUsd: reqs.get("maxFlightPriceUsd") as number | undefined,
+          excludeRedEye: reqs.get("noRedEye") === true,
+        })
+      : Promise.resolve([] as Flight[]),
     findHotels(supabase, {
       destination,
       minRating: reqs.get("minHotelRating") as number | undefined,
@@ -206,21 +221,35 @@ export async function runSearchAndCuration(
     }),
   ]);
 
-  const flightFilter = filterHardConstraints(flightCandidates, flightHardConstraints(reqs));
+  const outboundFilter = filterHardConstraints(outboundCandidates, flightHardConstraints(reqs));
+  const returnFilter = filterHardConstraints(returnCandidates, flightHardConstraints(reqs));
   const hotelFilter = filterHardConstraints(hotelCandidates, hotelHardConstraints(reqs, roomGroups));
 
   await Promise.all([
     recordGuardrailEvent(supabase, {
       tripId: params.tripId,
       agentName: AGENT_NAME,
-      guardrailName: "flight_hard_constraints",
+      guardrailName: "outbound_flight_hard_constraints",
       layer: "domain_validation",
-      triggered: flightFilter.rejected.length > 0,
-      detail: flightFilter.rejected.length
-        ? `${flightFilter.rejected.length} of ${flightCandidates.length} flight(s) rejected: ${[...new Set(flightFilter.rejected.map((r) => r.code))].join(", ")}`
+      triggered: outboundFilter.rejected.length > 0,
+      detail: outboundFilter.rejected.length
+        ? `${outboundFilter.rejected.length} of ${outboundCandidates.length} outbound flight(s) rejected: ${[...new Set(outboundFilter.rejected.map((r) => r.code))].join(", ")}`
         : null,
       workflowRunId: run.id,
     }),
+    returnDate
+      ? recordGuardrailEvent(supabase, {
+          tripId: params.tripId,
+          agentName: AGENT_NAME,
+          guardrailName: "return_flight_hard_constraints",
+          layer: "domain_validation",
+          triggered: returnFilter.rejected.length > 0,
+          detail: returnFilter.rejected.length
+            ? `${returnFilter.rejected.length} of ${returnCandidates.length} return flight(s) rejected: ${[...new Set(returnFilter.rejected.map((r) => r.code))].join(", ")}`
+            : null,
+          workflowRunId: run.id,
+        })
+      : Promise.resolve(),
     recordGuardrailEvent(supabase, {
       tripId: params.tripId,
       agentName: AGENT_NAME,
@@ -236,7 +265,8 @@ export async function runSearchAndCuration(
       tripId: params.tripId,
       eventType: "inventory_searched",
       payload: {
-        flightCandidateIds: flightFilter.passing.map((f) => f.id),
+        outboundFlightCandidateIds: outboundFilter.passing.map((f) => f.id),
+        returnFlightCandidateIds: returnFilter.passing.map((f) => f.id),
         hotelCandidateIds: hotelFilter.passing.map((h) => h.id),
         activityCandidateIds: activityCandidates.map((a) => a.id),
       },
@@ -253,13 +283,13 @@ export async function runSearchAndCuration(
     workflowRunId: run.id,
   });
 
-  if (flightFilter.passing.length === 0 || hotelFilter.passing.length === 0) {
-    const detail =
-      flightFilter.passing.length === 0 && hotelFilter.passing.length === 0
-        ? "no flights or hotels passed hard constraints"
-        : flightFilter.passing.length === 0
-          ? "no flights passed hard constraints"
-          : "no hotels passed hard constraints";
+  const missing: string[] = [];
+  if (outboundFilter.passing.length === 0) missing.push("no outbound flights passed hard constraints");
+  if (returnDate && returnFilter.passing.length === 0) missing.push("no return flights passed hard constraints");
+  if (hotelFilter.passing.length === 0) missing.push("no hotels passed hard constraints");
+
+  if (missing.length > 0) {
+    const detail = missing.join("; ");
     await advanceOrThrow(supabase, {
       tripId: params.tripId,
       event: "recoverable_error",
@@ -344,7 +374,8 @@ export async function runSearchAndCuration(
 
   return {
     workflowState,
-    flights: flightFilter.passing,
+    outboundFlights: outboundFilter.passing,
+    returnFlights: returnFilter.passing,
     hotels: hotelFilter.passing,
     activities: activityCandidates,
     curation,

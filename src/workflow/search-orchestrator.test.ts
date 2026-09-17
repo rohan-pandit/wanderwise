@@ -158,7 +158,8 @@ describe("runSearchAndCuration", () => {
     expect(advanceTrip).toHaveBeenNthCalledWith(2, supabase, expect.objectContaining({ event: "search_completed" }));
     expect(advanceTrip).toHaveBeenNthCalledWith(3, supabase, expect.objectContaining({ event: "candidates_valid" }));
     expect(result.workflowState).toBe("assembling_options");
-    expect(result.flights.map((f) => f.id)).toEqual(["flight-1"]);
+    expect(result.outboundFlights.map((f) => f.id)).toEqual(["flight-1"]);
+    expect(result.returnFlights).toEqual([]);
     expect(result.hotels.map((h) => h.id)).toEqual(["hotel-1"]);
     expect(result.activities.map((a) => a.id)).toEqual(["activity-1"]);
     expect(result.curation?.rankedIds).toEqual(["activity-1"]);
@@ -178,7 +179,7 @@ describe("runSearchAndCuration", () => {
 
     expect(recordGuardrailEvent).toHaveBeenCalledWith(
       supabase,
-      expect.objectContaining({ guardrailName: "flight_hard_constraints", triggered: true }),
+      expect.objectContaining({ guardrailName: "outbound_flight_hard_constraints", triggered: true }),
     );
     expect(advanceTrip).toHaveBeenCalledWith(supabase, expect.objectContaining({ event: "recoverable_error" }));
   });
@@ -245,8 +246,43 @@ describe("runSearchAndCuration", () => {
       supabase,
       expect.objectContaining({
         eventType: "inventory_searched",
-        payload: expect.objectContaining({ flightCandidateIds: ["flight-1"], hotelCandidateIds: ["hotel-1"] }),
+        payload: expect.objectContaining({ outboundFlightCandidateIds: ["flight-1"], hotelCandidateIds: ["hotel-1"] }),
       }),
     );
+  });
+
+  it("also searches and filters a return flight when returnDate is stated, in the reversed direction", async () => {
+    vi.mocked(listActiveTripRequirements).mockResolvedValue([...READY_REQUIREMENTS, requirementRow("returnDate", "2026-10-12")] as never);
+    vi.mocked(findFlights).mockImplementation(async (_s, filter) =>
+      (filter.origin === "Lisbon"
+        ? [flight("return-flight-1", { origin: "Lisbon", destination: "New York" })]
+        : [flight("flight-1")]) as never,
+    );
+
+    const result = await runSearchAndCuration(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
+
+    expect(findFlights).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ origin: "Lisbon", destination: "New York", departureDate: "2026-10-12" }),
+    );
+    expect(result.returnFlights.map((f) => f.id)).toEqual(["return-flight-1"]);
+  });
+
+  it("fails with NoViableCandidatesError when a stated returnDate finds no viable return flight", async () => {
+    vi.mocked(listActiveTripRequirements).mockResolvedValue([...READY_REQUIREMENTS, requirementRow("returnDate", "2026-10-12")] as never);
+    vi.mocked(findFlights).mockImplementation(async (_s, filter) => (filter.origin === "Lisbon" ? [] : [flight("flight-1")]) as never);
+
+    await expect(runSearchAndCuration(supabase, modelClient, embeddingClient, { tripId: TRIP_ID })).rejects.toThrow(
+      NoViableCandidatesError,
+    );
+    expect(recordGuardrailEvent).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ guardrailName: "return_flight_hard_constraints", triggered: false }),
+    );
+  });
+
+  it("doesn't search a return flight at all when returnDate isn't stated (one-way)", async () => {
+    await runSearchAndCuration(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
+    expect(findFlights).toHaveBeenCalledTimes(1);
   });
 });

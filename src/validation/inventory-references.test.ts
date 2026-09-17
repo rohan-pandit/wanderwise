@@ -56,6 +56,27 @@ describe("validateInventoryReferences", () => {
     ]);
   });
 
+  it("accepts a return-leg flight, whose own .destination column is the trip's origin", () => {
+    // A return flight for a Lisbon trip flies Lisbon -> New York: its
+    // `destination` column is "New York", not "Lisbon".
+    const result = validateInventoryReferences(
+      { flightIds: ["return-flight"], hotelIds: [], activityIds: [] },
+      approvedSet({ flights: [flight({ id: "return-flight", origin: "Lisbon", destination: "New York" })] }),
+    );
+    expect(result).toEqual({ valid: true, unresolvedIds: [], violations: [] });
+  });
+
+  it("flags a flight whose route touches neither endpoint of the trip's destination", () => {
+    const result = validateInventoryReferences(
+      { flightIds: ["unrelated-flight"], hotelIds: [], activityIds: [] },
+      approvedSet({ flights: [flight({ id: "unrelated-flight", origin: "Tokyo", destination: "Kyoto" })] }),
+    );
+    expect(result.valid).toBe(false);
+    expect(result.violations).toEqual([
+      { id: "unrelated-flight", kind: "flight", reason: expect.stringContaining("doesn't involve the trip's destination") },
+    ]);
+  });
+
   it("validates all three item kinds independently in one call", () => {
     const result = validateInventoryReferences(
       { flightIds: ["flight-1", "ghost"], hotelIds: ["hotel-1"], activityIds: ["activity-1"] },

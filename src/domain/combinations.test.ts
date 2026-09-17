@@ -5,7 +5,7 @@ import { money } from "./money";
 
 function baseParams(overrides: Partial<CombinationParams> = {}): CombinationParams {
   return {
-    flights: [flight()],
+    outboundFlights: [flight()],
     hotels: [hotel()],
     activities: [],
     travelers: 2,
@@ -17,18 +17,47 @@ function baseParams(overrides: Partial<CombinationParams> = {}): CombinationPara
 }
 
 describe("assembleCandidateCombinations", () => {
-  it("cross-joins every flight/hotel pair", () => {
+  it("cross-joins every outbound flight/hotel pair (one-way, no returnFlights given)", () => {
     const params = baseParams({
-      flights: [flight({ id: "f1" }), flight({ id: "f2" })],
+      outboundFlights: [flight({ id: "f1" }), flight({ id: "f2" })],
       hotels: [hotel({ id: "h1" }), hotel({ id: "h2" })],
     });
     const combos = assembleCandidateCombinations(params);
     expect(combos).toHaveLength(4);
+    expect(combos.every((c) => c.returnFlight === null)).toBe(true);
+  });
+
+  it("cross-joins outbound x return x hotel when returnFlights are given", () => {
+    const params = baseParams({
+      outboundFlights: [flight({ id: "out1" }), flight({ id: "out2" })],
+      returnFlights: [flight({ id: "ret1" }), flight({ id: "ret2" })],
+      hotels: [hotel({ id: "h1" })],
+      targetUsd: 100_000,
+    });
+    const combos = assembleCandidateCombinations(params);
+    expect(combos).toHaveLength(4);
+    expect(new Set(combos.map((c) => c.returnFlight?.id))).toEqual(new Set(["ret1", "ret2"]));
+  });
+
+  it("sums both legs' cost into the budget when a return flight is selected", () => {
+    const params = baseParams({
+      outboundFlights: [flight({ price_usd: 100, taxes_fees_usd: 10 })],
+      returnFlights: [flight({ price_usd: 150, taxes_fees_usd: 20 })],
+      hotels: [hotel({ price_per_night_usd: 0, taxes_fees_usd: 0 })],
+      nights: 1,
+      travelers: 1,
+      roomGroups: [{ occupants: 1 }],
+      targetUsd: 100_000,
+    });
+    const [combo] = assembleCandidateCombinations(params);
+    // (100 + 150) * 1 traveler = 250 subtotal; (10 + 20) * 1 = 30 taxes
+    expect(combo.budget.subtotal).toEqual(money(250));
+    expect(combo.budget.taxesAndFees).toEqual(money(30));
   });
 
   it("drops a flight/hotel pair that exceeds the ceiling even with zero activities", () => {
     const params = baseParams({
-      flights: [flight({ price_usd: 5000 })],
+      outboundFlights: [flight({ price_usd: 5000 })],
       ceilingUsd: 1000,
     });
     expect(assembleCandidateCombinations(params)).toEqual([]);
@@ -36,7 +65,7 @@ describe("assembleCandidateCombinations", () => {
 
   it("greedily fills in the cheapest activities that still fit under the ceiling", () => {
     const params = baseParams({
-      flights: [flight({ price_usd: 100, taxes_fees_usd: 0 })],
+      outboundFlights: [flight({ price_usd: 100, taxes_fees_usd: 0 })],
       hotels: [hotel({ price_per_night_usd: 100, taxes_fees_usd: 0, id: "h1" })],
       nights: 1,
       travelers: 1,
@@ -57,7 +86,7 @@ describe("assembleCandidateCombinations", () => {
 
   it("caps the number of activities included per combination", () => {
     const params = baseParams({
-      flights: [flight({ price_usd: 0, taxes_fees_usd: 0 })],
+      outboundFlights: [flight({ price_usd: 0, taxes_fees_usd: 0 })],
       hotels: [hotel({ price_per_night_usd: 0, taxes_fees_usd: 0 })],
       nights: 1,
       targetUsd: 100_000,
@@ -70,7 +99,7 @@ describe("assembleCandidateCombinations", () => {
 
   it("ranks combinations by activity count first, then by lowest total cost", () => {
     const params = baseParams({
-      flights: [flight({ id: "f1", price_usd: 100, taxes_fees_usd: 0 })],
+      outboundFlights: [flight({ id: "f1", price_usd: 100, taxes_fees_usd: 0 })],
       hotels: [hotel({ id: "cheap-hotel", price_per_night_usd: 50, taxes_fees_usd: 0 }), hotel({ id: "pricier-hotel", price_per_night_usd: 200, taxes_fees_usd: 0 })],
       nights: 1,
       travelers: 1,
@@ -93,7 +122,7 @@ describe("assembleCandidateCombinations", () => {
 
   it("books and costs one room per room group (parents and kids in separate rooms)", () => {
     const params = baseParams({
-      flights: [flight({ price_usd: 0, taxes_fees_usd: 0 })],
+      outboundFlights: [flight({ price_usd: 0, taxes_fees_usd: 0 })],
       hotels: [hotel({ price_per_night_usd: 100, taxes_fees_usd: 10, room_capacity: 2 })],
       nights: 2,
       travelers: 4,
@@ -112,7 +141,7 @@ describe("assembleCandidateCombinations", () => {
 
   it("only requires the hotel to fit the largest room group, not the whole party (parents/kids/friends splitting three rooms)", () => {
     const params = baseParams({
-      flights: [flight({ price_usd: 0, taxes_fees_usd: 0 })],
+      outboundFlights: [flight({ price_usd: 0, taxes_fees_usd: 0 })],
       hotels: [hotel({ room_capacity: 3 })],
       travelers: 7,
       roomGroups: [

@@ -78,7 +78,8 @@ export interface FeasibilityResult {
   warnings: FeasibilityWarning[];
 }
 
-const DEFAULT_TRANSFER_BUFFER_MINUTES = 180;
+/** Exported so `src/domain/scheduling.ts` can honor the same arrival/departure buffer it's validated against, instead of guessing a schedule this function is guaranteed to reject. */
+export const DEFAULT_TRANSFER_BUFFER_MINUTES = 180;
 const TIGHT_BUFFER_MARGIN_MINUTES = 60;
 const EXCESSIVE_DAILY_LOAD_MINUTES = 600;
 const MINUTES_PER_DAY = 24 * 60;

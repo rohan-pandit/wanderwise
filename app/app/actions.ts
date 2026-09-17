@@ -22,16 +22,36 @@
  * `trip.user_id !== user.id` check below, which replaces what RLS would
  * otherwise have enforced automatically.
  */
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/src/config/supabase/server";
 import { createServiceClient } from "@/src/config/supabase/service";
+import type { Database } from "@/src/config/supabase/database.types";
 import { AnthropicModelClient } from "@/src/agents/providers/anthropic-model-client";
 import { AGENT_MODELS } from "@/src/config/models";
 import { VoyageEmbeddingClient } from "@/src/retrieval/providers/voyage-embedding-client";
 import { createSession } from "@/src/repositories/sessions";
-import { getTrip } from "@/src/repositories/trips";
+import { getTrip, type Trip } from "@/src/repositories/trips";
 import { startTrip } from "@/src/workflow/controller";
+import { assembleItinerary, type AssembleItineraryResult } from "@/src/workflow/itinerary-orchestrator";
 import { processIntakeTurn, type ProcessIntakeTurnResult } from "@/src/workflow/intake-orchestrator";
 import { runSearchAndCuration, type RunSearchAndCurationResult } from "@/src/workflow/search-orchestrator";
+
+/** Shared by every Server Action here past `sendMessage`'s own trip-creation path: authenticate, then load the trip and check ownership explicitly (the RLS-scoped client isn't used past this point — see the module docstring). */
+async function requireOwnedTrip(supabase: SupabaseClient<Database>, tripId: string): Promise<Trip> {
+  const authClient = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await authClient.auth.getUser();
+  if (authError || !user) {
+    throw new Error("Not authenticated.");
+  }
+  const trip = await getTrip(supabase, tripId);
+  if (!trip || trip.user_id !== user.id) {
+    throw new Error(`Trip ${tripId} not found.`);
+  }
+  return trip;
+}
 
 export interface SendMessageInput {
   /** Omit to start a new trip (and its session) for this message. */
@@ -98,24 +118,51 @@ export interface BeginSearchResult extends RunSearchAndCurationResult {
  * same rationale as `sendMessage` above.
  */
 export async function beginSearch(input: BeginSearchInput): Promise<BeginSearchResult> {
-  const authClient = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await authClient.auth.getUser();
-  if (authError || !user) {
-    throw new Error("Not authenticated.");
-  }
-
   const supabase = createServiceClient();
-  const trip = await getTrip(supabase, input.tripId);
-  if (!trip || trip.user_id !== user.id) {
-    throw new Error(`Trip ${input.tripId} not found.`);
-  }
+  await requireOwnedTrip(supabase, input.tripId);
 
   const modelClient = new AnthropicModelClient(AGENT_MODELS.curator);
   const embeddingClient = new VoyageEmbeddingClient();
   const result = await runSearchAndCuration(supabase, modelClient, embeddingClient, { tripId: input.tripId });
 
   return { ...result, tripId: input.tripId };
+}
+
+export interface AssembleTripItineraryInput {
+  tripId: string;
+}
+
+export interface AssembleTripItineraryResult extends AssembleItineraryResult {
+  tripId: string;
+  search: RunSearchAndCurationResult;
+}
+
+/**
+ * Server Action entry point spanning both Phase 6 continued slices: runs
+ * `runSearchAndCuration` (slice 1) then feeds its result straight into
+ * `assembleItinerary` (slice 2) in one round trip. There's no user-facing
+ * checkpoint between `assembling_options` and `presenting_draft` — those
+ * intermediate workflow states are implementation-level retry/telemetry
+ * granularity, not a point a chat UI would ever pause at — so a caller only
+ * ever needs the one call once a trip reaches `requirements_ready`.
+ * `beginSearch` above stays separately callable for testing/debugging one
+ * slice at a time.
+ */
+export async function assembleTripItinerary(input: AssembleTripItineraryInput): Promise<AssembleTripItineraryResult> {
+  const supabase = createServiceClient();
+  await requireOwnedTrip(supabase, input.tripId);
+
+  const modelClient = new AnthropicModelClient(AGENT_MODELS.curator);
+  const embeddingClient = new VoyageEmbeddingClient();
+  const search = await runSearchAndCuration(supabase, modelClient, embeddingClient, { tripId: input.tripId });
+  const result = await assembleItinerary(supabase, {
+    tripId: input.tripId,
+    outboundFlights: search.outboundFlights,
+    returnFlights: search.returnFlights,
+    hotels: search.hotels,
+    activities: search.activities,
+    curation: search.curation,
+  });
+
+  return { ...result, tripId: input.tripId, search };
 }

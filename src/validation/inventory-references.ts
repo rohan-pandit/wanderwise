@@ -7,17 +7,30 @@
  * `filterHardConstraints`/`assembleCandidateCombinations` for this trip), not
  * a live database call — this stays a pure function so it can run as a
  * cheap, deterministic guardrail on model output.
+ *
+ * Flights get their own check, not the generic single-field one hotels/
+ * activities use: `flights` is a one-way table, so a *return* leg's own
+ * `.destination` column is the trip's *origin* (see `src/domain/combinations.ts`'s
+ * header for the same round-trip note) — a flight belongs to this trip if
+ * *either* endpoint matches the trip's destination, not just one fixed field.
  */
 import type { Activity } from "@/src/repositories/activities";
 import type { Flight } from "@/src/repositories/flights";
 import type { Hotel } from "@/src/repositories/hotels";
 
-export interface ApprovedCandidateSet {
+/** The only fields checked for hotels/activities — generic so it also accepts Phase 5's `MatchedActivity` retrieval projection (which lacks `embedding`) without an unsafe cast. */
+export interface DestinationScopedCandidate {
+  id: string;
+  inventory_version: number;
+  destination: string;
+}
+
+export interface ApprovedCandidateSet<A extends DestinationScopedCandidate = Activity> {
   destination: string;
   inventoryVersion: number;
   flights: Flight[];
   hotels: Hotel[];
-  activities: Activity[];
+  activities: A[];
 }
 
 export interface ItineraryReferences {
@@ -42,14 +55,14 @@ export interface InventoryReferenceResult {
   violations: ReferenceViolation[];
 }
 
-export function validateInventoryReferences(
+export function validateInventoryReferences<A extends DestinationScopedCandidate = Activity>(
   references: ItineraryReferences,
-  approved: ApprovedCandidateSet,
+  approved: ApprovedCandidateSet<A>,
 ): InventoryReferenceResult {
   const unresolvedIds: string[] = [];
   const violations: ReferenceViolation[] = [];
 
-  checkKind(references.flightIds, approved.flights, "flight", approved, unresolvedIds, violations, (f) => f.destination);
+  checkFlights(references.flightIds, approved.flights, approved, unresolvedIds, violations);
   checkKind(references.hotelIds, approved.hotels, "hotel", approved, unresolvedIds, violations, (h) => h.destination);
   checkKind(references.activityIds, approved.activities, "activity", approved, unresolvedIds, violations, (a) => a.destination);
 
@@ -60,11 +73,42 @@ export function validateInventoryReferences(
   };
 }
 
+function checkFlights(
+  ids: string[],
+  records: Flight[],
+  approved: { destination: string; inventoryVersion: number },
+  unresolvedIds: string[],
+  violations: ReferenceViolation[],
+): void {
+  for (const id of ids) {
+    const record = records.find((r) => r.id === id);
+    if (!record) {
+      unresolvedIds.push(id);
+      continue;
+    }
+    if (record.inventory_version !== approved.inventoryVersion) {
+      violations.push({
+        id,
+        kind: "flight",
+        reason: `Inventory version ${record.inventory_version} does not match the current version ${approved.inventoryVersion}.`,
+      });
+      continue;
+    }
+    if (record.destination !== approved.destination && record.origin !== approved.destination) {
+      violations.push({
+        id,
+        kind: "flight",
+        reason: `Route ${record.origin} → ${record.destination} doesn't involve the trip's destination "${approved.destination}".`,
+      });
+    }
+  }
+}
+
 function checkKind<T extends { id: string; inventory_version: number }>(
   ids: string[],
   records: T[],
   kind: ReferenceItemKind,
-  approved: ApprovedCandidateSet,
+  approved: { destination: string; inventoryVersion: number },
   unresolvedIds: string[],
   violations: ReferenceViolation[],
   destinationOf: (record: T) => string,
