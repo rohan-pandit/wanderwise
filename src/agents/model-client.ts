@@ -55,6 +55,25 @@ export interface ModelClient {
   complete(request: ModelCompletionRequest): Promise<ModelCompletionResult>;
 }
 
+/**
+ * One entry per physical tool call a model made — the full audit trail an
+ * orchestrator persists as `tool_calls` rows (PROJECT_BRIEF.md §6.4: "log
+ * tool call name, args, and result, not just raw text") and uses to detect
+ * Layer 2 guardrail triggers (§9.1: malformed/invalid tool output). Shared
+ * across every agent that validates its own tool calls against a Zod schema
+ * (originally introduced for the Intake agent, Phase 4; reused by the
+ * Curator/Explanation agents, Phase 5) rather than each agent defining its
+ * own copy of the same shape.
+ */
+export interface ToolCallLogEntry {
+  toolName: string;
+  input: unknown;
+  status: "success" | "error";
+  /** The validated/parsed output for a successful call. */
+  result?: unknown;
+  error?: string;
+}
+
 /** What a `ModelClient` implementation throws on failure — keeps provider-specific exception types (e.g. `Anthropic.APIError`) from leaking through the abstraction. The original error is preserved as `cause`. */
 export class ModelClientError extends Error {
   constructor(message: string, cause: unknown) {

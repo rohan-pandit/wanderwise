@@ -124,7 +124,15 @@ export function requiredAccessibilityConstraint(
   };
 }
 
-export function excludeClosedOnDaysConstraint(closedDays: string[]): HardConstraint<Activity> {
+/**
+ * Generic over any row shape with a `closed_days` column, not just the full
+ * `Activity` row — reused as-is by the Phase 5 retrieval layer's
+ * `MatchedActivity` (a narrower projection returned by the `match_activities`
+ * SQL function), rather than duplicating this logic there.
+ */
+export function excludeClosedOnDaysConstraint<T extends { closed_days: string[] | null }>(
+  closedDays: string[],
+): HardConstraint<T> {
   const excluded = new Set(closedDays.map((d) => d.toLowerCase()));
   return {
     code: "EXCLUDE_CLOSED_DAYS",

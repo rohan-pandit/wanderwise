@@ -31,7 +31,7 @@ import {
   type PreferenceRecord,
   type RequirementRecord,
 } from "@/src/domain/extraction";
-import type { ModelClient, ModelCompletionUsage, ModelTool } from "./model-client";
+import type { ModelClient, ModelCompletionUsage, ModelTool, ToolCallLogEntry } from "./model-client";
 
 /**
  * The full-strictness schema shown to the model as the `record_extraction`
@@ -90,16 +90,6 @@ export interface IntakeAgentInput {
   currentPreferences: PreferenceRecord[];
   /** Minimal decision summaries — present once selections exist, which is what shifts the model into revision framing. */
   currentDecisions?: { field: string; value: unknown }[];
-}
-
-/** One entry per physical tool call the model made — the full audit trail a caller persists as `tool_calls` rows (PROJECT_BRIEF.md §6.4: "log tool call name, args, and result, not just raw text") and uses to detect Layer 2 guardrail triggers (§9.1: malformed/invalid tool output). */
-export interface ToolCallLogEntry {
-  toolName: string;
-  input: unknown;
-  status: "success" | "error";
-  /** The validated/parsed output for a successful call (e.g. counts extracted, or the parsed clarification/revision). */
-  result?: unknown;
-  error?: string;
 }
 
 export interface IntakeAgentResult {

@@ -22,7 +22,7 @@ Tracks decisions under the five ADR areas defined in `PROJECT_BRIEF.md` §5. Per
 - [x] App topology / provider abstraction — **ADR-000**.
 - [x] Model selection (specific Claude model per agent) — resolved 2026-09-16 for the Intake/Revision Interpreter: **Sonnet 5**, confirmed by a component eval run (Sonnet 5 6/6 cases, Haiku 4.5 5/6 — missed a revision-interpretation case) rather than assumed. Model-client interface (`src/agents/model-client.ts`) stays provider/model-agnostic so this can be revisited per-agent as later agents are built.
 - [x] Booking and external-action boundary — adopted from brief §6.5, no deviation.
-- [ ] Security and prompt-injection handling — adopted in principle (brief §6.6); concrete implementation (input sanitization, retrieved-content delimiting) is a Phase 5/6 task, not yet an ADR.
+- [ ] Security and prompt-injection handling — adopted in principle (brief §6.6). Partially implemented: input-size limits for the Intake agent (Phase 6, `src/workflow/intake-orchestrator.ts`'s Layer 1 guardrail) and retrieved-content delimiting/untrusted-labeling for the Curator/Explanation agents (Phase 5, §10.4 — `<candidate_data>`/`<explanation_data>` blocks, explicit "not instructions" framing in both system prompts). Still open: a deterministic scope classifier (non-travel request detection) and adversarial testing against actual injection attempts (Phase 8). Not yet an ADR.
 - [x] Prompt-caching experiment — measured for the Intake agent (`src/agents/providers/anthropic-model-client.ts`, `PROJECT_BRIEF.md` §6.7 static-first ordering); real cache-read hits confirmed via `npm run eval:intake`. Revisit per-agent as later agents (Curator, Explanation, Writer) are built.
 
 ## Area 2 — State and Data Architecture

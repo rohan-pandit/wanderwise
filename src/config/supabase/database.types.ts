@@ -507,7 +507,58 @@ export interface Database {
       };
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      match_destinations: {
+        Args: {
+          query_embedding: string;
+          match_count: number;
+          filter_inventory_version: number;
+          filter_max_daily_cost_usd?: number | null;
+          filter_vibe_tags?: string[] | null;
+        };
+        Returns: {
+          id: string;
+          name: string;
+          country: string | null;
+          time_zone: string | null;
+          description: string | null;
+          vibe_tags: string[] | null;
+          seasonality: Json | null;
+          estimated_daily_cost_usd: number | null;
+          inventory_version: number;
+          similarity: number;
+        }[];
+      };
+      match_activities: {
+        Args: {
+          query_embedding: string;
+          match_count: number;
+          filter_destination: string;
+          filter_inventory_version: number;
+          filter_min_price_usd?: number | null;
+          filter_max_price_usd?: number | null;
+          filter_required_accessibility?: string[] | null;
+          filter_vibe_tags?: string[] | null;
+        };
+        Returns: {
+          id: string;
+          destination: string;
+          name: string;
+          description: string | null;
+          category: string | null;
+          vibe_tags: string[] | null;
+          price_usd: number;
+          duration_minutes: number | null;
+          opening_hours: Json | null;
+          closed_days: string[] | null;
+          location: string | null;
+          accessibility_attributes: string[] | null;
+          reservation_required: boolean;
+          inventory_version: number;
+          similarity: number;
+        }[];
+      };
+    };
     Enums: Record<string, never>;
   };
 }
