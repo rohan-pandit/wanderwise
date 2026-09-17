@@ -1264,3 +1264,21 @@ Also found and fixed a real, unrelated quality issue while back in `BUILD_LOG.md
 **Verification:** N/A — documentation only, no code touched. `git status` confirms nothing else changed.
 
 **Next up:** Whichever of the two the user wants to open with next session — or something else entirely, if their own end-to-end testing pass surfaces something more pressing first.
+
+---
+
+## 2026-09-17 — Session close: confirmed both remaining backlog items as permanent scope boundaries; no code changes
+
+**What happened:** The previous session had flagged two items (hotel room-type variety, the activity scheduler's heavier tiers) as the explicit starting point for this session, each requiring a direct decision before any code was written — "is this worth building at all for a portfolio project at this scale, or does documenting the boundary demonstrate the same judgment more cheaply." Asked both directly via structured questions rather than assuming: for each, offered the fuller-build option against "leave as the documented boundary," recommending the latter. The user chose to leave both as-is for both items.
+
+**Why:** These were the only two open items left in `docs/IMPLEMENTATION_PLAN.md` §5 — everything else on the architectural/eval backlog closed in prior 2026-09-17 sessions. Resolving them (even as "no build") was the blocker before the user's own manual end-to-end testing pass could be considered against a fully-closed backlog rather than an ambiguous one.
+
+**Decisions made:** Hotel room-type variety stays availability-count-only (`available_rooms`/`roomAvailabilityConstraint`), no `hotel_room_types` table. The activity scheduler stays at the lightweight meal-time-window heuristic tier, no repair pass/optimizer/geographic clustering. Both confirmed as permanent, documented boundaries, not oversights — `docs/IMPLEMENTATION_PLAN.md` §5 updated to reflect the closed decision (moved out of "unresolved," kept as a documented-boundary record rather than deleted).
+
+**What didn't work / dead ends:** None — no code was touched this session.
+
+**Verification:** Full clean-state check before handing off to the user's manual testing pass: `npx tsc --noEmit`, `npm run lint`, `npm test` (344/344 passing), `npm run build` — all clean. `git status` confirms a clean working tree (17 commits ahead of `origin/main`, unpushed).
+
+**Known limitations / assumptions:** Unchanged — see `docs/IMPLEMENTATION_PLAN.md` §5, now empty of unresolved items (the two boundary entries are a record, not an action list) plus the standing Docker/`database.types.ts` hand-maintenance constraint and telemetry-retention-automation note.
+
+**Next recommended task:** None from the backlog — it's fully closed. The user is starting their own manual end-to-end testing pass (visual, design, performance, technical) against the current state. Whatever surfaces from that is the next real input.
