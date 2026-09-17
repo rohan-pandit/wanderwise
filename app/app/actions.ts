@@ -38,6 +38,7 @@ import { VoyageEmbeddingClient } from "@/src/retrieval/providers/voyage-embeddin
 import { getCurrentChainStep, type ChainStep } from "@/src/domain/chain";
 import { createSession } from "@/src/repositories/sessions";
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
+import { appendTripEvent } from "@/src/repositories/trip-events";
 import { getLatestTripState } from "@/src/repositories/trip-state";
 import { getTrip, type Trip } from "@/src/repositories/trips";
 import { startTrip } from "@/src/workflow/controller";
@@ -202,8 +203,20 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
   } else if (result.decisionRevisionRequested) {
     const step = result.decisionRevisionRequested.step;
     after(() =>
-      reviseChainStep(supabase, finalTripId, step, stepwiseChainClients()).catch((err) => {
+      reviseChainStep(supabase, finalTripId, step, stepwiseChainClients()).catch(async (err) => {
         console.error(`reviseChainStep failed for trip ${finalTripId}:`, err);
+        // Fire-and-forget: nothing is waiting on this promise's rejection, so
+        // the failure needs its own signal for the itinerary panel to pick up
+        // (via Realtime) rather than being silently swallowed — the honest-
+        // failure gap the direct propose*/confirmCascadeAndRevise paths above
+        // already close with `friendlyStepErrorMessage`+`{error}` returns.
+        const friendly = friendlyStepErrorMessage(err) ?? "That change didn't go through — try again or adjust your requirements.";
+        await appendTripEvent(supabase, {
+          tripId: finalTripId,
+          eventType: "chain_revision_failed",
+          payload: { step, message: friendly },
+          correlationId: deriveCorrelationId(finalTripId, `chain_revision_failed:${step}`),
+        }).catch((logErr) => console.error(`failed to log chain_revision_failed event for trip ${finalTripId}:`, logErr));
       }),
     );
   } else if (result.workflowState === "requirements_ready") {

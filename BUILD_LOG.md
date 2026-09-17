@@ -4,6 +4,22 @@ Entry format and rationale in `PROJECT_BRIEF.md` §17.4. Updated per work sessio
 
 ---
 
+## 2026-09-17 — Close revise-failure gap before Phase 8
+
+**What I built:** Fixed the one open item flagged as worth closing before starting Phase 8 (per `docs/IMPLEMENTATION_PLAN.md` §5): the chat-triggered fire-and-forget revise path (`sendMessage`'s `after()` call to `reviseChainStep` in `app/app/actions.ts`) silently swallowed a "no viable candidates" failure instead of surfacing it to the user. Added a `chain_revision_failed` `trip_events` row (via `appendTripEvent`, no migration needed since `event_type` has no enum constraint) on that failure path, carrying the same friendly message `friendlyStepErrorMessage` already produces for the direct UI paths. `app/app/_components/itinerary-panel.tsx`'s existing `needsAttention` Realtime listener now also handles this event type.
+
+**Why:** Found live 2026-09-17 right after slice 4 shipped, and asked the user fix-now-vs-track per the standing rule — chose fix-now since it's a real honesty-design-rule gap in code just shipped, before committing to Phase 8's direction.
+
+**Decisions made:** Left the rest of `docs/IMPLEMENTATION_PLAN.md` §5's open items (idempotency, naive scheduler, 5-combination cap, one-way trips, etc.) deferred as-is — none touch Phase 8's scope (eval harness, CI, dashboards).
+
+**What didn't work / dead ends:** none.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean. Not live-verified through the real chat UI — reproducing a genuine "no viable candidates" revision failure needs the same OTP dev-signin setup slice 4 used; skipped as low-risk since the fix reuses the already-tested `friendlyStepErrorMessage` pattern exactly, just logging a trip_event instead of returning `{error}`.
+
+**Next up:** Phase 8 — evaluation and observability (eval harness, adversarial cases, CI workflow, dashboards).
+
+---
+
 ## 2026-09-16 — Planning: brief consolidation, repo setup, first architecture decisions
 
 **What I built:**

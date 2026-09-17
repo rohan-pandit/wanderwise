@@ -216,13 +216,20 @@ export function ItineraryPanel({
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "trip_events", filter: `trip_id=eq.${tripId}` },
         (payload) => {
-          const row = payload.new as { event_type: string };
+          const row = payload.new as { event_type: string; payload?: { message?: string } };
           if (row.event_type === "recoverable_error" || row.event_type === "itinerary_invalid") {
             setNeedsAttention(
               row.event_type === "recoverable_error"
                 ? "No matching flights/hotels were found for this trip — try adjusting the dates or budget."
                 : "That combination didn't work out — trying again with different options.",
             );
+          } else if (row.event_type === "chain_revision_failed") {
+            // The chat-triggered fire-and-forget revise path (`sendMessage`'s
+            // `after()` call to `reviseChainStep` in `app/app/actions.ts`)
+            // has no direct caller to return a `{error}` result to, so it
+            // logs this event instead — this is the only place that failure
+            // reaches the user.
+            setNeedsAttention(row.payload?.message ?? "That change didn't go through — try again or adjust your requirements.");
           } else {
             setNeedsAttention(null);
           }
