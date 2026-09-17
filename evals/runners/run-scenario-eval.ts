@@ -1,7 +1,9 @@
 /**
- * End-to-end scenario eval runner (PROJECT_BRIEF.md §9.6/§19; cases in
- * `evals/cases/scenarios.ts`). Drives the real stepwise chain against a
- * real Supabase trip and the real Anthropic/Voyage APIs — costs real money
+ * End-to-end scenario + adversarial eval runner (PROJECT_BRIEF.md §9.6/§19;
+ * cases in `evals/cases/scenarios.ts` and `evals/cases/adversarial.ts` — one
+ * runner for both, since they share the exact same harness, reporting, and
+ * persistence). Drives the real stepwise chain against a real Supabase trip
+ * and the real Anthropic/Voyage APIs — costs real money
  * and takes real wall-clock time (several full flight->hotel->activities
  * chains, each with an intake call plus a Curator and Itinerary Writer
  * call), so run deliberately, not from CI (PROJECT_BRIEF.md §22 defers CI
@@ -22,7 +24,10 @@
 import type { Json } from "../../src/config/supabase/database.types";
 import { createEvalRun, recordEvalResult } from "../../src/repositories/eval-runs";
 import { createScenarioHarness } from "../lib/scenario-harness";
+import { ADVERSARIAL_CASES } from "../cases/adversarial";
 import { SCENARIO_CASES, type ScenarioAssertion } from "../cases/scenarios";
+
+const ALL_CASES = [...SCENARIO_CASES, ...ADVERSARIAL_CASES];
 
 interface ScenarioOutcome {
   name: string;
@@ -38,7 +43,7 @@ async function main() {
   const outcomes: ScenarioOutcome[] = [];
 
   try {
-    for (const scenario of SCENARIO_CASES) {
+    for (const scenario of ALL_CASES) {
       console.log(`\nRunning "${scenario.name}"...`);
       const start = Date.now();
       try {

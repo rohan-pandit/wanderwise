@@ -54,6 +54,22 @@ Entry format and rationale in `PROJECT_BRIEF.md` §17.4. Updated per work sessio
 
 ---
 
+## 2026-09-17 — Phase 8 slice 3: adversarial eval cases
+
+**What I built:** `evals/cases/adversarial.ts` — four adversarial cases (PROJECT_BRIEF.md §9.6) on the same real end-to-end harness slice 1 built: `fabricated_inventory_ids` (confirmFlightStep/confirmHotelStep's re-validation rejects made-up UUIDs, not just trusts the caller), `budget_pressure_wording` ("money is no object" framing doesn't change the literally-stated budget number extracted), `contradictory_dates` (self-contradictory dates in one message resolve to the last-stated value or a clarification, mirroring `evals/cases/intake.ts`'s existing budget case but end to end), `cross_session_reference` (a `tripId`/`sessionId` pair that don't belong together is rejected by `intake-orchestrator.ts`'s `SessionTripMismatchError` before any model call — zero API cost). `evals/runners/run-scenario-eval.ts` now runs both `SCENARIO_CASES` and `ADVERSARIAL_CASES` together (one runner, since they share identical harness/reporting/persistence — a second near-duplicate runner would just be drift risk).
+
+**Why:** Phase 8's "Adversarial eval cases" checklist item, building directly on slice 1's harness rather than a separate one.
+
+**Decisions made:** Four of §9.6's eight adversarial categories covered; "attempts to trigger booking" already covered by `scenarios.ts`'s `out_of_scope_request`. Left uncovered: prompt injection *in retrieved inventory text* and malformed/malicious inventory records — both need a seeded adversarial fixture (mutating shared `activities`/`destinations` rows, even temporarily, or a dedicated fixture migration), judged a separate, bigger piece of work rather than squeezed into this slice.
+
+**What didn't work / dead ends:** `fabricated_inventory_ids`'s hotel half initially risked being ambiguous — with no confirmed flight yet, a fabricated hotel ID could fail on either the ID-doesn't-exist check or the `FlightStepNotConfirmedError` precondition depending on check order; the assertion accepts either since both are a clean rejection, not a crash or silent acceptance, which is what the case actually cares about. Also caught a wrong error-class import while writing this (`FlightStepNotConfirmedError` is defined in `hotel-step.ts`, not `flight-step.ts`, despite `activities-step.ts` re-exporting it from there) via `tsc`.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean. `npm run eval:scenarios` run live: 9/10 total cases pass (all 4 new adversarial ones clean), the 1 failure is the already-tracked `over_budget_request` known gap from slice 1 — no new regressions.
+
+**Next up:** Continue Phase 8 — remaining §19 scenarios (needs RLS/JWT or fault-injection infra), engineering/product dashboards, cache-hit/cost comparison. Order not yet decided.
+
+---
+
 ## 2026-09-16 — Planning: brief consolidation, repo setup, first architecture decisions
 
 **What I built:**
