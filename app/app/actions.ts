@@ -36,7 +36,9 @@ import { AnthropicModelClient } from "@/src/agents/providers/anthropic-model-cli
 import { AGENT_MODELS } from "@/src/config/models";
 import { VoyageEmbeddingClient } from "@/src/retrieval/providers/voyage-embedding-client";
 import { getCurrentChainStep, type ChainStep } from "@/src/domain/chain";
+import type { BudgetBreakdown, BudgetViolation } from "@/src/domain/budget";
 import { createSession } from "@/src/repositories/sessions";
+import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
 import { getLatestTripState } from "@/src/repositories/trip-state";
@@ -398,11 +400,19 @@ export async function confirmCascadeAndRevise(input: ConfirmCascadeAndReviseInpu
 
 export interface FinalizeTripInput {
   tripId: string;
+  /** Set once the user has explicitly acknowledged a CEILING_EXCEEDED budget violation (PROJECT_BRIEF.md §9.3: "cannot be exceeded without explicit user override"). Ignored when there's no violation to override. */
+  overrideBudgetCeiling?: boolean;
 }
 
 export interface FinalizeTripResult {
   tripId: string;
   workflowState: WorkflowState;
+}
+
+/** Returned instead of `FinalizeTripResult` when the confirmed budget exceeds its ceiling and the caller hasn't set `overrideBudgetCeiling` yet — the UI's cue to show the violation and ask for explicit confirmation before retrying. */
+export interface FinalizeTripBudgetOverrideRequired {
+  requiresBudgetOverride: true;
+  violations: BudgetViolation[];
 }
 
 /**
@@ -413,20 +423,50 @@ export interface FinalizeTripResult {
  * inventing new ones, entered via a new direct `chain_completed` event from
  * `requirements_ready` instead of marching through the now-unused
  * `searching_inventory`/`validating_candidates`/etc. states the stepwise
- * steps never touch. `proposalHashMatches`/`guardrailsPassed` are passed
- * `true` unconditionally — no equivalent of the old model's single
- * draft-proposal hash exists here, and every constituent decision already
- * re-validates its own hard constraints/feasibility at its own confirm
- * time; a real proposal-hash mechanism for finalize is out of scope for
- * this slice.
+ * steps never touch. `proposalHashMatches` is passed `true` unconditionally
+ * — no equivalent of the old model's single draft-proposal hash exists
+ * here, and every constituent decision already re-validates its own hard
+ * constraints/feasibility at its own confirm time; a real proposal-hash
+ * mechanism for finalize is out of scope for this slice.
+ *
+ * `guardrailsPassed` is no longer an unconditional `true` — it's computed
+ * from the confirmed `budget` decision's own `violations` (§9.1's
+ * budget-ceiling guardrail, previously computed but never actually checked
+ * here, tracked in `docs/IMPLEMENTATION_PLAN.md` §5). If more finalize-time
+ * guardrails are added later, this is the natural place to aggregate them
+ * rather than tying `guardrailsPassed` to just this one check.
  */
-export async function finalizeTrip(input: FinalizeTripInput): Promise<FinalizeTripResult> {
+export async function finalizeTrip(
+  input: FinalizeTripInput,
+): Promise<FinalizeTripResult | FinalizeTripBudgetOverrideRequired> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId);
 
   const decisions = await listActiveTripDecisions(supabase, input.tripId);
   if (getCurrentChainStep(decisions) !== "complete") {
     throw new Error(`Trip ${input.tripId} can't be finalized yet — not every step is confirmed.`);
+  }
+
+  const budget = decisions.find((d) => d.field === "budget" && d.status === "confirmed")?.value as
+    | BudgetBreakdown
+    | undefined;
+  const violations = budget?.violations ?? [];
+  const overridden = violations.length > 0 && input.overrideBudgetCeiling === true;
+
+  await recordGuardrailEvent(supabase, {
+    tripId: input.tripId,
+    agentName: "finalize_trip",
+    guardrailName: "budget_ceiling_at_finalize",
+    layer: "domain_validation",
+    triggered: violations.length > 0,
+    detail:
+      violations.length > 0
+        ? `${violations.map((v) => v.message).join("; ")}${overridden ? " (user override confirmed)" : ""}`
+        : null,
+  });
+
+  if (violations.length > 0 && !overridden) {
+    return { requiresBudgetOverride: true, violations };
   }
 
   await advanceOrThrow(supabase, {

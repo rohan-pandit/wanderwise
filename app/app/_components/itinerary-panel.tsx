@@ -213,6 +213,7 @@ export function ItineraryPanel({
   const [actionPending, setActionPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [finalized, setFinalized] = useState(initialTripStatus === "finalized");
+  const [budgetOverrideViolations, setBudgetOverrideViolations] = useState<{ message: string }[] | null>(null);
 
   const flightSigRef = useRef<string | null>(null);
   const hotelSigRef = useRef<string | null>(null);
@@ -448,11 +449,16 @@ export function ItineraryPanel({
     }
   }
 
-  async function handleFinalize() {
+  async function handleFinalize(overrideBudgetCeiling = false) {
     setActionPending(true);
     setActionError(null);
     try {
-      await finalizeTrip({ tripId });
+      const result = await finalizeTrip({ tripId, overrideBudgetCeiling });
+      if ("requiresBudgetOverride" in result) {
+        setBudgetOverrideViolations(result.violations);
+        return;
+      }
+      setBudgetOverrideViolations(null);
       setFinalized(true);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Couldn't finalize this trip — try again.");
@@ -667,7 +673,33 @@ export function ItineraryPanel({
 
           {itineraryText ? <ItineraryText text={itineraryText} /> : null}
 
-          {activeStep === "complete" ? (
+          {budgetOverrideViolations ? (
+            <div className="rounded-lg border border-terracotta-200 bg-terracotta-50 px-3 py-3 text-xs text-terracotta-700">
+              {budgetOverrideViolations.map((v, i) => (
+                <p key={i}>{v.message}</p>
+              ))}
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  disabled={actionPending}
+                  onClick={() => void handleFinalize(true)}
+                  className="rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 disabled:opacity-50"
+                >
+                  Finalize anyway
+                </button>
+                <button
+                  type="button"
+                  disabled={actionPending}
+                  onClick={() => setBudgetOverrideViolations(null)}
+                  className="rounded-md border border-terracotta-200 px-3 py-1 text-terracotta-700 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {activeStep === "complete" && !budgetOverrideViolations ? (
             finalized ? (
               <p className="rounded-lg bg-teal-700 px-3 py-2 text-center text-sm font-medium text-sand-50">
                 Trip finalized

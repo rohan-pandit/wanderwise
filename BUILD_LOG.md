@@ -954,3 +954,25 @@ Wired into `app/app/_components/itinerary-panel.tsx`: a new local `ItineraryText
 **Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (337/337) all clean (docs-only changes, re-verified per standing discipline). Manually checked every internal Markdown link/anchor added to `README.md` (`PROJECT_BRIEF.md#32-...`, `docs/architecture/architecture-diagram.md#what-would-change-...`, etc.) against the actual heading text in each target file rather than assuming GitHub's anchor-slugging matched what I wrote.
 
 **Next up:** Phase 9 is functionally complete pending the user recording the demo walkthrough. No specific next phase was planned beyond Phase 9 in `docs/IMPLEMENTATION_PLAN.md` — revisit the tracked open items in §5 (the budget-ceiling-at-finalize gap is the highest-value one) if further work is wanted, or treat the project as portfolio-ready as-is.
+
+---
+
+## 2026-09-17 — Enforce the §9.1 budget-ceiling guardrail at finalize time
+
+**What I built:** Closed the highest-priority tracked open item from `docs/IMPLEMENTATION_PLAN.md` §5 — `finalizeTrip` (`app/app/actions.ts`) previously passed `guardrailsPassed: true` to `advanceOrThrow` unconditionally, so a trip could finalize arbitrarily over its stated budget ceiling with nothing ever checking `calculateBudget`'s `CEILING_EXCEEDED` violations.
+
+Asked the user which of two designs to build, since §9.3 explicitly requires "cannot be exceeded without explicit user override," not just a block: they chose the explicit-override path over a plain hard block. Implementation:
+- `finalizeTrip` now reads the trip's confirmed `budget` decision, computes its violations, and logs a `budget_ceiling_at_finalize` domain_validation guardrail event every time (pass, block, or override — not just failures, matching how every other guardrail here is logged for the §13.3 "which guardrail fires most" dashboard to be meaningful).
+- If there's a violation and the caller hasn't set the new `overrideBudgetCeiling` flag, it returns `{requiresBudgetOverride: true, violations}` instead of advancing the workflow — no partial state change, nothing to unwind.
+- `app/app/_components/itinerary-panel.tsx`'s "Finalize trip" button now handles that result by showing a warning banner with the real violation message and "Finalize anyway"/"Cancel" — visually and structurally the same pattern the existing `pendingCascade` cascade-warning banner already established, not a new interaction paradigm.
+- `evals/cases/scenarios.ts`'s `finalizeTrip` mirror (the real Server Action needs a cookie session the eval harness doesn't have) was updated to match exactly, and the `over_budget_request` case — previously a documented, expected-to-fail `knownGap` case — now asserts the corrected behavior: blocked without override, finalized with it.
+
+**Why:** The single highest-priority item on the open-items list (`docs/IMPLEMENTATION_PLAN.md` §5) — a real correctness gap where the app's own core guardrail promise ("budget cannot be exceeded without override") silently didn't hold.
+
+**Decisions made:** Explicit-override checkbox/banner over a hard block, per direct user choice — matches the brief's literal wording and reuses an interaction pattern (a warning banner with a "continue anyway" affordance) the app already has, rather than a bare error message with no path forward.
+
+**What didn't work / dead ends:** None.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` (337/337) all clean. Ran the real `npm run eval:scenarios` suite against the live Anthropic/Supabase stack: **10/10 passed**, including `over_budget_request` for the first time (previously the one documented `knownGap` failure) — a real $500-ceiling trip against a real ~$4,954 total was correctly blocked without an override and correctly finalized with one. Also live-verified through the actual browser UI via the standard throwaway dev-signin pattern (removed after use, not committed): built a real over-budget trip end to end, saw the real violation message ("Estimated total $4,953.90 exceeds the $500.00 ceiling by $4,453.90") in the warning banner, clicked "Finalize anyway," and confirmed "Trip finalized" appeared. Deleted the throwaway auth user afterward.
+
+**Next up:** Continuing down the tracked open-items list (`docs/IMPLEMENTATION_PLAN.md` §5) in priority order, per the user's request to go one at a time.

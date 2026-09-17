@@ -24,7 +24,9 @@
  */
 import { AnthropicModelClient } from "../../src/agents/providers/anthropic-model-client";
 import { AGENT_MODELS } from "../../src/config/models";
+import type { BudgetBreakdown } from "../../src/domain/budget";
 import { listActiveTripDecisions } from "../../src/repositories/trip-decisions";
+import { recordGuardrailEvent } from "../../src/repositories/guardrail-events";
 import { getLatestTripState } from "../../src/repositories/trip-state";
 import { advanceOrThrow } from "../../src/workflow/advance";
 import { getCurrentChainStep } from "../../src/domain/chain";
@@ -116,8 +118,35 @@ async function proposeAndConfirmActivities(harness: ScenarioHarness, tripId: str
   return { proposed, confirmed };
 }
 
-/** Mirrors `app/app/actions.ts`'s `finalizeTrip` exactly (same two `advanceOrThrow` calls, same unconditional `guardrailsPassed: true`) since that Server Action itself needs a cookie-based session this script doesn't have. */
-async function finalizeTrip(harness: ScenarioHarness, tripId: string) {
+/** Mirrors `app/app/actions.ts`'s `finalizeTrip` exactly (same budget-ceiling check, same two `advanceOrThrow` calls) since that Server Action itself needs a cookie-based session this script doesn't have. Returns `"requires_override"` in place of the resulting workflow state when blocked on an unacknowledged budget-ceiling violation. */
+async function finalizeTrip(
+  harness: ScenarioHarness,
+  tripId: string,
+  overrideBudgetCeiling = false,
+) {
+  const decisions = await listActiveTripDecisions(harness.supabase, tripId);
+  const budget = decisions.find((d) => d.field === "budget" && d.status === "confirmed")?.value as
+    | BudgetBreakdown
+    | undefined;
+  const violations = budget?.violations ?? [];
+  const overridden = violations.length > 0 && overrideBudgetCeiling;
+
+  await recordGuardrailEvent(harness.supabase, {
+    tripId,
+    agentName: "eval_finalize_trip",
+    guardrailName: "budget_ceiling_at_finalize",
+    layer: "domain_validation",
+    triggered: violations.length > 0,
+    detail:
+      violations.length > 0
+        ? `${violations.map((v) => v.message).join("; ")}${overridden ? " (user override confirmed)" : ""}`
+        : null,
+  });
+
+  if (violations.length > 0 && !overridden) {
+    return "requires_override" as const;
+  }
+
   await advanceOrThrow(harness.supabase, {
     tripId,
     event: "confirmation_requested",
@@ -192,9 +221,7 @@ export const SCENARIO_CASES: ScenarioCase[] = [
   {
     name: "over_budget_request",
     description:
-      'Budget ceiling far below the real cost of any feasible combination — PROJECT_BRIEF.md §9.1\'s guardrail table requires the orchestrator to check the budget engine\'s "remaining" before allowing finalization. §19 #3 expects the system to explain the issue rather than finalize over budget.',
-    knownGap:
-      'app/app/actions.ts\'s finalizeTrip passes guardrailsPassed: true unconditionally (its own docstring: "no equivalent of the old model\'s single draft-proposal hash exists here ... out of scope for this slice") — nothing currently reads calculateBudget\'s violations before allowing the "finalized" transition. Tracked in docs/IMPLEMENTATION_PLAN.md §5.',
+      'Budget ceiling far below the real cost of any feasible combination — PROJECT_BRIEF.md §9.1\'s guardrail table requires the orchestrator to check the budget engine\'s "remaining" before allowing finalization without an explicit override (§9.3). §19 #3 expects the system to explain the issue rather than finalize over budget silently.',
     run: async (harness) => {
       const userId = await harness.createUser();
       const { tripId, sessionId } = await harness.newTrip(userId);
@@ -208,21 +235,19 @@ export const SCENARIO_CASES: ScenarioCase[] = [
       await proposeAndConfirmHotel(harness, tripId);
       const { confirmed } = await proposeAndConfirmActivities(harness, tripId);
       const overBudget = confirmed.budget.violations.length > 0;
-      let finalizedDespiteOverBudget = false;
-      try {
-        const finalState = await finalizeTrip(harness, tripId);
-        finalizedDespiteOverBudget = finalState === "finalized";
-      } catch {
-        // A thrown OrchestrationTransitionError here would mean finalize
-        // really is guarded — the desired (currently absent) behavior.
-      }
+
+      const withoutOverride = await finalizeTrip(harness, tripId);
+      const withOverride = await finalizeTrip(harness, tripId, true);
+
       return [
         { pass: overBudget, detail: `$500 budget correctly computed as exceeded (violations: ${JSON.stringify(confirmed.budget.violations)})` },
         {
-          pass: !finalizedDespiteOverBudget,
-          detail: finalizedDespiteOverBudget
-            ? "finalized despite a CEILING_EXCEEDED violation — the §9.1 budget-ceiling guardrail isn't actually enforced at finalize time"
-            : "finalize was blocked while over budget",
+          pass: withoutOverride === "requires_override",
+          detail: `finalize without an override returned "${withoutOverride}" (expected "requires_override")`,
+        },
+        {
+          pass: withOverride === "finalized",
+          detail: `finalize with an explicit override returned "${withOverride}" (expected "finalized")`,
         },
       ];
     },
