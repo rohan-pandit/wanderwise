@@ -875,3 +875,17 @@ Also added two entries to `docs/IMPLEMENTATION_PLAN.md` §5 that a straight Phas
 **Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (323/323, up from 319) all clean.
 
 **Next up:** Continue Phase 9: architecture diagram, visual design pass, final README pass + demo walkthrough recording. Order not yet decided.
+
+---
+
+## 2026-09-17 — Phase 9 slice 2: architecture diagram
+
+**What I built:** [`docs/architecture/architecture-diagram.md`](docs/architecture/architecture-diagram.md) — two Mermaid diagrams: (1) system components (browser, the one Next.js deployable, Anthropic/Voyage, Supabase, the eval harness, CI), and (2) a single chat turn's flow through the deterministic-vs-agent split — agent call → guardrail → deterministic services → workflow controller → persisted state, with every guardrail check (pass or fail) logged. Closes with the §21-required "what would change for live providers or real booking" narrative point, tied to specific diagram boxes rather than written in the abstract.
+
+**Why:** Phase 9's "architecture diagram" checklist item.
+
+**What didn't work / dead ends:** First draft was one diagram with three nested subgraphs (Orchestration/Agents/Deterministic all inside the Next.js app box). It rendered without a Mermaid syntax error, but a real render (via a throwaway local static server + Mermaid CDN, screenshotted) showed it as an unreadably cramped, overlapping mess — nested subgraphs plus many cross-links don't auto-layout well. Rebuilt as two flat, small diagrams (~6-9 nodes each) instead, which is also a better narrative structure (one diagram per concern: what exists vs. how one request flows through it). Learned to always render-and-look at a generated diagram before treating a "no syntax error" result as "it's fine" — an unrendered Mermaid block is only checked for parse validity, not legibility.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (323/323) all clean (docs-only change). Both diagrams rendered via a temporary local Node static server + Mermaid CDN (not committed) and visually inspected via screenshot before and after the redesign; confirmed the final version renders cleanly with correct em-dashes (an earlier mojibake in the render was traced to the throwaway test server missing a UTF-8 content-type header, not a problem with the actual source file — confirmed by reading the file's raw bytes directly).
+
+**Next up:** Continue Phase 9: visual design pass, final README pass + demo walkthrough recording.

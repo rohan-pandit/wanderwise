@@ -2,6 +2,8 @@
 
 Tracks decisions under the five ADR areas defined in `PROJECT_BRIEF.md` §5. Per the project's own coding-agent instructions (`PROJECT_BRIEF.md` §17.1, §23), this index is updated as decisions are made — detailed ADRs are written only for decisions that have actually been made, not speculatively for the full backlog.
 
+See [`architecture-diagram.md`](architecture-diagram.md) for a visual map of the system these decisions describe.
+
 | # | Title | Area | Status |
 |---|---|---|---|
 | [ADR-000](ADR-000-tech-stack-and-topology.md) | Tech stack and app topology | Cross-cutting | Decided |

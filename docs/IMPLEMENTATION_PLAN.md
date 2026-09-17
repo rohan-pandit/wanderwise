@@ -272,7 +272,7 @@ Known gap surfaced, not fixed this slice: revising an *already-confirmed* flight
 
 ### Phase 9 — Portfolio polish
 - [ ] Visual design pass
-- [ ] Architecture diagram
+- [x] Architecture diagram — slice 2, 2026-09-17: [`docs/architecture/architecture-diagram.md`](architecture/architecture-diagram.md), two Mermaid diagrams (system components; one chat turn's deterministic-vs-agent/guardrail flow) plus the "what would change for live providers" narrative point from §21. Rendered and visually checked before committing (a first draft with deeply nested subgraphs rendered but was too cramped to read; flattened into two smaller diagrams instead).
 - [x] Fill in remaining ADRs for any decisions made along the way — slice 1, 2026-09-17: [`ADR-006`](architecture/ADR-006-evaluation-strategy.md) (evaluation strategy — deterministic grading, direct-call harness) and [`ADR-007`](architecture/ADR-007-observability.md) (observability — dashboard placement/split, telemetry retention/redaction). Writing ADR-007 required actually resolving the telemetry retention/redaction question first (asked the user rather than deciding unilaterally, per the standing rule): redact `requiredAccessibility` at write time (`src/observability/redaction.ts`, wired into `src/repositories/agent-runs.ts`'s `recordToolCalls`), document but don't yet automate time-based retention.
 - [ ] Final README pass, demo walkthrough recording
 
