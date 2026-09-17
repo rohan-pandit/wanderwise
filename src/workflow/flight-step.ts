@@ -1,8 +1,9 @@
 /**
  * The flight step of the stepwise chain redesign
  * (`docs/IMPLEMENTATION_PLAN.md`'s "STEPWISE CHAIN REDESIGN" section,
- * decided 2026-09-17) — slice 1. Deliberately scoped to the flight step
- * alone: the old one-shot pipeline (`search-orchestrator.ts`,
+ * decided 2026-09-17) — slice 1, with slice 2's flight->hotel cascade rule
+ * added to `confirmFlightStep` once `hotel-step.ts` gave it something real
+ * to invalidate. The old one-shot pipeline (`search-orchestrator.ts`,
  * `itinerary-orchestrator.ts`) stays live and untouched; nothing is rewired
  * yet.
  *
@@ -45,7 +46,12 @@ import {
   type RequirementRecord,
 } from "@/src/domain/extraction";
 import { deriveHotelStayDates, type HotelStayDates } from "@/src/domain/stay";
-import { appendTripDecision, retireActiveTripDecisionsForField } from "@/src/repositories/trip-decisions";
+import { invalidatedStepsForFlightChange } from "@/src/domain/chain";
+import {
+  appendTripDecision,
+  listActiveTripDecisions,
+  retireActiveTripDecisionsForField,
+} from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
 import { findFlights, getFlightsByIds, type Flight } from "@/src/repositories/flights";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
@@ -238,6 +244,16 @@ export interface ConfirmFlightStepResult {
  * constraints first (defense in depth against a stale or tampered ID,
  * consistent with house style) rather than trusting the caller already
  * checked.
+ *
+ * If this trip already has a confirmed flight (i.e. this call is a
+ * revision, not the first confirmation), this is also where the
+ * flight->hotel cascade rule (`src/domain/chain.ts`'s
+ * `invalidatedStepsForFlightChange`) gets its first real caller: a
+ * confirmed hotel decision is retired (superseded, forcing the hotel step
+ * to be re-proposed) only if the newly-confirmed flight's derived
+ * check-in/check-out dates actually differ from the previous confirmation's
+ * — a same-dates flight swap (different airline/time, same calendar days)
+ * leaves an already-confirmed hotel untouched.
  */
 export async function confirmFlightStep(
   supabase: SupabaseClient<Database>,
@@ -245,7 +261,10 @@ export async function confirmFlightStep(
 ): Promise<ConfirmFlightStepResult> {
   const correlationId = params.correlationId ?? randomUUID();
 
-  const requirementRows = await listActiveTripRequirements(supabase, params.tripId);
+  const [requirementRows, priorDecisions] = await Promise.all([
+    listActiveTripRequirements(supabase, params.tripId),
+    listActiveTripDecisions(supabase, params.tripId),
+  ]);
   const reqs = requirementMap(requirementRows);
   const origin = reqs.get("origin") as string;
   const destination = reqs.get("destination") as string;
@@ -281,6 +300,27 @@ export async function confirmFlightStep(
     );
   }
 
+  // Capture the *previous* confirmation's derived stay dates (if any) before
+  // superseding it below — needed for the flight->hotel cascade check after
+  // persisting the new selection.
+  const priorOutboundId = priorDecisions.find((d) => d.field === "outboundFlight" && d.status === "confirmed")?.value as
+    | string
+    | undefined;
+  const priorReturnId = priorDecisions.find((d) => d.field === "returnFlight" && d.status === "confirmed")?.value as
+    | string
+    | undefined;
+  const priorHotelDecision = priorDecisions.find((d) => d.field === "hotel");
+  let priorStayDates: HotelStayDates | null = null;
+  if (priorOutboundId && priorReturnId) {
+    const [priorOutboundRows, priorReturnRows] = await Promise.all([
+      getFlightsByIds(supabase, [priorOutboundId]),
+      getFlightsByIds(supabase, [priorReturnId]),
+    ]);
+    if (priorOutboundRows[0] && priorReturnRows[0]) {
+      priorStayDates = deriveHotelStayDates(priorOutboundRows[0], priorReturnRows[0]);
+    }
+  }
+
   await retireActiveTripDecisionsForField(supabase, params.tripId, "outboundFlight");
   await appendTripDecision(supabase, {
     tripId: params.tripId,
@@ -305,5 +345,21 @@ export async function confirmFlightStep(
     correlationId: deriveCorrelationId(correlationId, "event:flight_step_confirmed"),
   });
 
-  return { outboundFlight, returnFlight, hotelStayDates: deriveHotelStayDates(outboundFlight, returnFlight) };
+  const newStayDates = deriveHotelStayDates(outboundFlight, returnFlight);
+  const datesChanged = priorStayDates !== null && (priorStayDates.checkIn !== newStayDates.checkIn || priorStayDates.checkOut !== newStayDates.checkOut);
+  if (datesChanged && priorHotelDecision && invalidatedStepsForFlightChange(datesChanged).includes("hotel")) {
+    await retireActiveTripDecisionsForField(supabase, params.tripId, "hotel");
+    await appendTripEvent(supabase, {
+      tripId: params.tripId,
+      eventType: "hotel_step_invalidated",
+      payload: {
+        reason: "flight_dates_changed",
+        previousStayDates: priorStayDates,
+        newStayDates,
+      } as unknown as Json,
+      correlationId: deriveCorrelationId(correlationId, "event:hotel_step_invalidated"),
+    });
+  }
+
+  return { outboundFlight, returnFlight, hotelStayDates: newStayDates };
 }

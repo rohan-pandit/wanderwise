@@ -11,7 +11,7 @@ vi.mock("@/src/repositories/workflow-runs");
 
 import { findFlights, getFlightsByIds } from "@/src/repositories/flights";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
-import { appendTripDecision, retireActiveTripDecisionsForField } from "@/src/repositories/trip-decisions";
+import { appendTripDecision, listActiveTripDecisions, retireActiveTripDecisionsForField } from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
@@ -79,6 +79,10 @@ function returnFlight(id: string, overrides: Record<string, unknown> = {}) {
   });
 }
 
+function decisionRow(field: string, value: unknown, status = "confirmed") {
+  return { id: `dec_${field}_${status}`, trip_id: TRIP_ID, field, value, status, source: "user_explicit", created_at: "now" };
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(listActiveTripRequirements).mockResolvedValue(READY_REQUIREMENTS as never);
@@ -87,6 +91,7 @@ beforeEach(() => {
   vi.mocked(appendTripEvent).mockResolvedValue({} as never);
   vi.mocked(appendTripDecision).mockResolvedValue({} as never);
   vi.mocked(retireActiveTripDecisionsForField).mockResolvedValue(undefined as never);
+  vi.mocked(listActiveTripDecisions).mockResolvedValue([]);
 });
 
 describe("proposeFlightStep", () => {
@@ -247,5 +252,93 @@ describe("confirmFlightStep", () => {
       confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "o1", returnFlightId: "r1" }),
     ).rejects.toThrow(InvalidFlightSelectionError);
     expect(appendTripDecision).not.toHaveBeenCalled();
+  });
+
+  describe("flight->hotel cascade", () => {
+    // A distinct prior confirmed pair with the *same* derived stay dates as
+    // the new "o1"/"r1" selection (2026-10-06 -> 2026-10-12).
+    const SAME_DATES_PRIOR_OUTBOUND = flight("o-old", { arrival_time: "2026-10-06T09:00:00Z" });
+    const SAME_DATES_PRIOR_RETURN = returnFlight("r-old", { departure_time: "2026-10-12T14:00:00Z" });
+    // A prior confirmed pair whose derived stay dates *differ* from the new selection.
+    const DIFFERENT_DATES_PRIOR_OUTBOUND = flight("o-old", { arrival_time: "2026-10-07T09:00:00Z" });
+    const DIFFERENT_DATES_PRIOR_RETURN = returnFlight("r-old", { departure_time: "2026-10-14T14:00:00Z" });
+
+    function mockFlightsById(map: Record<string, unknown>) {
+      vi.mocked(getFlightsByIds).mockImplementation(async (_s, ids) => {
+        const row = map[ids[0]];
+        return (row ? [row] : []) as never;
+      });
+    }
+
+    it("leaves an existing confirmed hotel decision untouched when the new flight's derived stay dates are unchanged", async () => {
+      vi.mocked(listActiveTripDecisions).mockResolvedValue([
+        decisionRow("outboundFlight", "o-old"),
+        decisionRow("returnFlight", "r-old"),
+        decisionRow("hotel", "hotel-1"),
+      ] as never);
+      mockFlightsById({
+        "o-old": SAME_DATES_PRIOR_OUTBOUND,
+        "r-old": SAME_DATES_PRIOR_RETURN,
+        o1: flight("o1"),
+        r1: returnFlight("r1"),
+      });
+
+      await confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "o1", returnFlightId: "r1" });
+
+      expect(retireActiveTripDecisionsForField).not.toHaveBeenCalledWith(supabase, TRIP_ID, "hotel");
+      expect(appendTripEvent).not.toHaveBeenCalledWith(supabase, expect.objectContaining({ eventType: "hotel_step_invalidated" }));
+    });
+
+    it("retires an existing confirmed hotel decision and logs hotel_step_invalidated when the derived stay dates differ", async () => {
+      vi.mocked(listActiveTripDecisions).mockResolvedValue([
+        decisionRow("outboundFlight", "o-old"),
+        decisionRow("returnFlight", "r-old"),
+        decisionRow("hotel", "hotel-1"),
+      ] as never);
+      mockFlightsById({
+        "o-old": DIFFERENT_DATES_PRIOR_OUTBOUND,
+        "r-old": DIFFERENT_DATES_PRIOR_RETURN,
+        o1: flight("o1"),
+        r1: returnFlight("r1"),
+      });
+
+      await confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "o1", returnFlightId: "r1" });
+
+      expect(retireActiveTripDecisionsForField).toHaveBeenCalledWith(supabase, TRIP_ID, "hotel");
+      expect(appendTripEvent).toHaveBeenCalledWith(
+        supabase,
+        expect.objectContaining({
+          eventType: "hotel_step_invalidated",
+          payload: expect.objectContaining({ reason: "flight_dates_changed" }),
+        }),
+      );
+    });
+
+    it("doesn't invalidate anything when there's no existing hotel decision, even if dates changed", async () => {
+      vi.mocked(listActiveTripDecisions).mockResolvedValue([
+        decisionRow("outboundFlight", "o-old"),
+        decisionRow("returnFlight", "r-old"),
+      ] as never);
+      mockFlightsById({
+        "o-old": DIFFERENT_DATES_PRIOR_OUTBOUND,
+        "r-old": DIFFERENT_DATES_PRIOR_RETURN,
+        o1: flight("o1"),
+        r1: returnFlight("r1"),
+      });
+
+      await confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "o1", returnFlightId: "r1" });
+
+      expect(retireActiveTripDecisionsForField).not.toHaveBeenCalledWith(supabase, TRIP_ID, "hotel");
+      expect(appendTripEvent).not.toHaveBeenCalledWith(supabase, expect.objectContaining({ eventType: "hotel_step_invalidated" }));
+    });
+
+    it("doesn't invalidate anything on the very first confirmation (no prior confirmed flight at all)", async () => {
+      vi.mocked(listActiveTripDecisions).mockResolvedValue([]);
+      mockFlightsById({ o1: flight("o1"), r1: returnFlight("r1") });
+
+      await confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "o1", returnFlightId: "r1" });
+
+      expect(retireActiveTripDecisionsForField).not.toHaveBeenCalledWith(supabase, TRIP_ID, "hotel");
+    });
   });
 });
