@@ -1,0 +1,36 @@
+name: CI
+
+# PROJECT_BRIEF.md §22's "CI setup" open item, closed in Phase 8
+# (docs/IMPLEMENTATION_PLAN.md). Runs the deterministic-only checks §9.6
+# says an eval suite must stay cheap/fast/reliable enough for CI to run on
+# every push — `npm run eval:ci` is exactly `npm test`'s real domain-logic
+# unit tests (budget, constraints, feasibility, state machine, etc., all
+# mocked-Supabase, no network calls) plus typecheck/lint. The real-model
+# evals (`eval:intake`, `eval:retrieval`, `eval:scenarios`) call live
+# Anthropic/Voyage/Supabase and cost real money — they stay manual, run
+# deliberately, never from CI (see each runner's own docstring).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    env:
+      # Placeholders only — build/typecheck/lint/test never make a real
+      # Supabase/Anthropic/Voyage call (unit tests mock the Supabase client
+      # entirely; nothing here touches the network). Real secrets are never
+      # needed for this job and are deliberately not configured.
+      NEXT_PUBLIC_SUPABASE_URL: "https://ci-placeholder.supabase.co"
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: "ci-placeholder-anon-key"
+      SUPABASE_SERVICE_ROLE_KEY: "ci-placeholder-service-role-key"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run eval:ci
+      - run: npm run build

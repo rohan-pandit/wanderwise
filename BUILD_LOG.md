@@ -38,6 +38,22 @@ Entry format and rationale in `PROJECT_BRIEF.md` §17.4. Updated per work sessio
 
 ---
 
+## 2026-09-17 — Phase 8 slice 2: CI wiring
+
+**What I built:** `.github/workflows/ci.yml` — a GitHub Actions workflow on every push/PR to `main` running `npm run eval:ci` (new script: `typecheck` (`tsc --noEmit`) + `lint` + `test`, all deterministic and mocked-Supabase, no network calls) and `npm run build`. Placeholder `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY`/`SUPABASE_SERVICE_ROLE_KEY` env vars are set directly in the workflow (not GitHub secrets) — verified locally that `npm run build` succeeds with placeholder values, since nothing in build/typecheck/lint/test makes a real Supabase/Anthropic/Voyage call.
+
+**Why:** Closes the budget-of-two open items this satisfies at once: `PROJECT_BRIEF.md` §22's "CI setup" (deferred to Phase 8 since the build sequence's first session) and Phase 8's own "CI evaluation command + GitHub Actions workflow" checklist item. Kept the decision from `evals/runners/run-scenario-eval.ts`'s Phase 8 slice 1 docstring: real-model evals (`eval:intake`/`eval:retrieval`/`eval:scenarios`) cost real money and stay manual, per §9.6's own guidance that a CI-bound eval suite should stay deterministic, cheap, and fast — `eval:ci` only ever runs the mocked-Supabase domain-logic unit tests already living in `npm test`.
+
+**Decisions made:** No GitHub secrets configured for this workflow — deliberately, since nothing it runs needs real credentials. If a future CI job needs to run a real-model eval against a live Supabase project, that's a distinct, separate workflow/secrets decision, not implied by this one.
+
+**What didn't work / dead ends:** none.
+
+**Verification:** `npm run eval:ci` (new script) passes locally: typecheck, lint, and `npm test` (319/319) all clean. `npm run build` verified to succeed with the exact placeholder env vars the workflow sets (no `.env.local`/real credentials in scope for that run), confirming the workflow will actually pass once pushed rather than failing on a missing-secret assumption never tested locally.
+
+**Next up:** Continue Phase 8 — remaining items: adversarial eval cases, the remaining §19 scenarios, engineering/product dashboards, and the cache-hit/cost comparison. Order not yet decided.
+
+---
+
 ## 2026-09-16 — Planning: brief consolidation, repo setup, first architecture decisions
 
 **What I built:**

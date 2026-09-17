@@ -265,7 +265,7 @@ Known gap surfaced, not fixed this slice: revising an *already-confirmed* flight
 ### Phase 8 — Evaluation and observability
 - [x] Eval harness (`evals/runners`) running the scenarios in `PROJECT_BRIEF.md` §19 — slice 1, 2026-09-17: `evals/lib/scenario-harness.ts` + `evals/cases/scenarios.ts` + `evals/runners/run-scenario-eval.ts` (`npm run eval:scenarios`), 6 of the 16 §19 scenarios against a real Supabase trip + real Anthropic/Voyage calls, persisted to new `eval_runs`/`eval_results` rows (`src/repositories/eval-runs.ts`). Remaining 10 (stale inventory, duplicate/idempotent request, cross-session isolation, cancellation, prompt injection in retrieved inventory text, failure/recovery, and a few others) need different test infrastructure (real RLS/JWT sessions, fault injection) this slice's service-role/direct-function-call harness doesn't provide — left for a follow-up slice.
 - [ ] Adversarial eval cases
-- [ ] CI evaluation command + GitHub Actions workflow (open item from `PROJECT_BRIEF.md` §22)
+- [x] CI evaluation command + GitHub Actions workflow (open item from `PROJECT_BRIEF.md` §22) — slice 2, 2026-09-17: `.github/workflows/ci.yml` runs `npm run eval:ci` (new: `typecheck` + `lint` + `test`, all deterministic/mocked, no network calls) and `npm run build` on every push/PR to `main`, with placeholder Supabase env vars (no real secrets needed — verified locally that `npm run build` succeeds without real credentials). Real-model evals (`eval:intake`/`eval:retrieval`/`eval:scenarios`) stay manual per §9.6's own "keep the eval suite cheap enough for CI" guidance and their own docstrings.
 - [ ] Engineering dashboard (cost/latency/cache/guardrail views)
 - [ ] Product metrics view
 - [ ] Cache-hit / cost comparison (caching on vs. baseline)
@@ -429,7 +429,7 @@ This section is the single place every deferred decision, known bug, and standin
 
 - **Seed data volume** — resolved as a working default (Phase 1); revisit if search feels thin or evals need more edge-case density.
 - **Analytics dashboard access control** — `/internal/analytics` is scoped to authenticated users for now; whether it needs its own elevated-permission check (vs. any signed-in user) is a Phase 8 decision.
-- **CI setup** — deferred to Phase 8 per the build sequence; GitHub Actions is the likely choice given the repo is already on GitHub.
+- ~~**CI setup**~~ — resolved Phase 8 slice 2, 2026-09-17: `.github/workflows/ci.yml` (GitHub Actions, as expected).
 
 No other open items remain from §22 — app stack, auth, and git/GitHub are now decided (see ADR-000, ADR-003, and `BUILD_LOG.md`).
 
