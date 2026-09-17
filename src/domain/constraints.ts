@@ -104,6 +104,25 @@ export function roomCapacityConstraint(roomGroups: RoomGroup[]): HardConstraint<
   };
 }
 
+/**
+ * A hotel might have enough capacity *per room* (`roomCapacityConstraint`)
+ * but not enough rooms free to actually book one per room group
+ * (docs/IMPLEMENTATION_PLAN.md §5's "does the hotel actually have enough
+ * rooms of that type free" gap). Every room group is assumed to book an
+ * identical room type — see `roomCapacityConstraint`'s own docstring and the
+ * module-level scope note in `src/repositories/hotels.ts` — so this only
+ * needs a total-rooms-needed vs. rooms-available comparison, not a per-type
+ * bin-pack.
+ */
+export function roomAvailabilityConstraint(roomGroups: RoomGroup[]): HardConstraint<Hotel> {
+  const required = roomGroups.length;
+  return {
+    code: "ROOM_AVAILABILITY",
+    describe: () => `Needs ${required} room(s) available.`,
+    isSatisfiedBy: (hotel) => hotel.available_rooms >= required,
+  };
+}
+
 export function refundableConstraint(): HardConstraint<Hotel> {
   return {
     code: "REFUNDABLE_REQUIRED",

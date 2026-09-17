@@ -369,6 +369,7 @@ export interface Database {
           taxes_fees_usd: number;
           rating: number | null;
           room_capacity: number;
+          available_rooms: number;
           amenities: string[] | null;
           cancellation_policy: string | null;
           vibe_tags: string[] | null;
@@ -384,6 +385,7 @@ export interface Database {
           taxes_fees_usd?: number;
           rating?: number | null;
           room_capacity?: number;
+          available_rooms?: number;
           amenities?: string[] | null;
           cancellation_policy?: string | null;
           vibe_tags?: string[] | null;

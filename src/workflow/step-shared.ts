@@ -11,7 +11,15 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/src/config/supabase/database.types";
 import type { ChainStep } from "@/src/domain/chain";
 import type { HardConstraint } from "@/src/domain/constraints";
-import { maxFlightPriceConstraint, maxHotelPriceConstraint, minHotelRatingConstraint, noRedEyeConstraint, refundableConstraint, roomCapacityConstraint } from "@/src/domain/constraints";
+import {
+  maxFlightPriceConstraint,
+  maxHotelPriceConstraint,
+  minHotelRatingConstraint,
+  noRedEyeConstraint,
+  refundableConstraint,
+  roomAvailabilityConstraint,
+  roomCapacityConstraint,
+} from "@/src/domain/constraints";
 import type { RequirementFieldName } from "@/src/domain/extraction";
 import { CURRENT_INVENTORY_VERSION } from "@/src/domain/inventory";
 import type { RoomGroup } from "@/src/domain/rooms";
@@ -78,7 +86,7 @@ export function flightHardConstraints(reqs: Map<RequirementFieldName, unknown>):
 }
 
 export function hotelHardConstraints(reqs: Map<RequirementFieldName, unknown>, roomGroups: RoomGroup[]): HardConstraint<Hotel>[] {
-  const constraints: HardConstraint<Hotel>[] = [roomCapacityConstraint(roomGroups)];
+  const constraints: HardConstraint<Hotel>[] = [roomCapacityConstraint(roomGroups), roomAvailabilityConstraint(roomGroups)];
   const minHotelRating = reqs.get("minHotelRating");
   if (typeof minHotelRating === "number") constraints.push(minHotelRatingConstraint(minHotelRating));
   const maxHotelPriceUsd = reqs.get("maxHotelPriceUsd");

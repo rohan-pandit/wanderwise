@@ -1143,3 +1143,23 @@ Replaced the one-shot overfetch with a widen-and-retry loop: if the post-filter 
 **Known limitations / assumptions:** Unchanged from what's tracked in `docs/IMPLEMENTATION_PLAN.md` §5, minus this item. See that section for the full, current list.
 
 **Next recommended task:** Two architectural items remain, each needing its own scoping conversation: the one-room-type-per-hotel limitation and the naive (first-fit, non-optimizing) activity scheduler. The 10 un-automated §19 eval scenarios remain the lowest-priority, biggest-lift item.
+
+---
+
+## 2026-09-17 — Hotel room availability: `available_rooms` closes half of the room-type gap
+
+**What I built:** Closed the next architectural item, chosen by the user. The tracked item actually bundled two separable gaps: (a) every room group books an identical room type/rate (no room-type variety — can't express "2 doubles + 1 twin"), and (b) nothing checked whether a hotel actually had enough rooms free at all. Asked the user how far to go; chose the availability-only fix over a full room-type catalog, since (b) closes a real correctness gap while (a) is speculative — the tracked item's own text already called it "revisit only if a future phase wants richer room-type preferences," with no concrete requirement driving it.
+
+`supabase/migrations/0012_hotel_available_rooms.sql` adds `hotels.available_rooms int not null default 5` — generous on purpose, since this project's room-group counts are always small (a handful of rooms per party at most), so the backfill doesn't change behavior for any existing flow. A new `roomAvailabilityConstraint` (`src/domain/constraints.ts`) checks `roomGroups.length <= available_rooms`, wired into `hotelHardConstraints` (`step-shared.ts`) right alongside the existing `roomCapacityConstraint` (which only checks *per-room* capacity, not room *count*). Added a scope-boundary docstring to `src/repositories/hotels.ts` documenting the still-open room-type-variety limitation, so it doesn't need rediscovering later.
+
+**Why:** Next item off the tracked architectural backlog (`docs/IMPLEMENTATION_PLAN.md` §5), chosen by the user.
+
+**Decisions made:** Availability-count-only over a full room-type catalog, per the user's explicit choice after seeing the real trade-off (a genuine correctness gap vs. a speculative richness feature with no concrete requirement behind it). Generous default (5) for the backfill rather than trying to guess a "realistic" per-hotel value for seed/demo data.
+
+**What didn't work / dead ends:** None.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` (337/337, up from 335) all clean. New tests in `constraints.test.ts` (the new constraint directly) and `hotel-step.test.ts` (a hotel whose per-room capacity is fine but that doesn't have enough *rooms* free for every room group is correctly rejected, distinguishing this from the existing capacity check). Applied `0012_hotel_available_rooms.sql` to the real hosted Supabase project via `supabase db push --db-url`. Live-verified with a throwaway script (not committed, cleaned up after): a 6-room-group request against real seed hotels (every one defaulted to `available_rooms=5`) was correctly rejected with `NoViableHotelCandidatesError`, while a more modest 3-room-group request still found viable hotel candidates.
+
+**Known limitations / assumptions:** Unchanged from what's tracked in `docs/IMPLEMENTATION_PLAN.md` §5, minus the availability half of this item — the room-type-variety half remains open and tracked, by explicit choice.
+
+**Next recommended task:** One architectural item remains, needing its own scoping conversation: the naive (first-fit, non-optimizing) activity scheduler. The 10 un-automated §19 eval scenarios remain the lowest-priority, biggest-lift item.

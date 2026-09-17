@@ -1,3 +1,13 @@
+/**
+ * Scope boundary, tracked (`docs/IMPLEMENTATION_PLAN.md` §5): a hotel row
+ * models exactly one bookable room type at one nightly rate — there's no
+ * room-type variety ("2 doubles + 1 twin" isn't expressible) or per-type
+ * availability. `available_rooms` (added alongside `room_capacity`) only
+ * closes the "does this hotel have enough rooms free at all" half of that
+ * gap — every room group booked at a hotel is still assumed to be the same
+ * type/rate, checked by `src/domain/constraints.ts`'s
+ * `roomCapacityConstraint`/`roomAvailabilityConstraint`.
+ */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/config/supabase/database.types";
 import { CURRENT_INVENTORY_VERSION } from "@/src/domain/inventory";

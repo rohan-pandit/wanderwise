@@ -10,6 +10,7 @@ import {
   noRedEyeConstraint,
   refundableConstraint,
   requiredAccessibilityConstraint,
+  roomAvailabilityConstraint,
   roomCapacityConstraint,
 } from "./constraints";
 
@@ -71,6 +72,15 @@ describe("hotel constraints", () => {
     // largest group (3), not the whole party (7).
     expect(constraint.isSatisfiedBy(hotel({ room_capacity: 3 }))).toBe(true);
     expect(constraint.isSatisfiedBy(hotel({ room_capacity: 2 }))).toBe(false);
+  });
+
+  it("enforces enough rooms available for one room group each", () => {
+    const constraint = roomAvailabilityConstraint([
+      { occupants: 2, label: "parents" },
+      { occupants: 1, label: "kid" },
+    ]);
+    expect(constraint.isSatisfiedBy(hotel({ available_rooms: 2 }))).toBe(true);
+    expect(constraint.isSatisfiedBy(hotel({ available_rooms: 1 }))).toBe(false);
   });
 
   it("enforces a maximum price per night", () => {

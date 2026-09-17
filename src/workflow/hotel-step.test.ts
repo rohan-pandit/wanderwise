@@ -87,6 +87,7 @@ function hotel(id: string, overrides: Record<string, unknown> = {}) {
     price_per_night_usd: 150,
     rating: 4.5,
     room_capacity: 4,
+    available_rooms: 5,
     cancellation_policy: "Free cancellation up to 48 hours before check-in",
     ...overrides,
   };
@@ -175,6 +176,23 @@ describe("proposeHotelStep", () => {
 
   it("rejects a hotel that can't fit the room group, logs the guardrail, and throws NoViableHotelCandidatesError when nothing passes", async () => {
     vi.mocked(findHotels).mockResolvedValue([hotel("too-small", { room_capacity: 1 })] as never);
+
+    await expect(proposeHotelStep(supabase, { tripId: TRIP_ID })).rejects.toThrow(NoViableHotelCandidatesError);
+    expect(recordGuardrailEvent).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ guardrailName: "hotel_hard_constraints", triggered: true }),
+    );
+  });
+
+  it("rejects a hotel without enough rooms free for every room group, even though each room's capacity is fine", async () => {
+    vi.mocked(listActiveTripRequirements).mockResolvedValue([
+      ...READY_REQUIREMENTS,
+      requirementRow("roomGroups", [
+        { occupants: 2, label: "parents" },
+        { occupants: 1, label: "kid" },
+      ]),
+    ] as never);
+    vi.mocked(findHotels).mockResolvedValue([hotel("one-room-only", { room_capacity: 4, available_rooms: 1 })] as never);
 
     await expect(proposeHotelStep(supabase, { tripId: TRIP_ID })).rejects.toThrow(NoViableHotelCandidatesError);
     expect(recordGuardrailEvent).toHaveBeenCalledWith(

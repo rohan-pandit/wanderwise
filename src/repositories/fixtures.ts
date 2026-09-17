@@ -46,6 +46,7 @@ export function hotel(overrides: Partial<Hotel> = {}): Hotel {
     taxes_fees_usd: 20,
     rating: 4.2,
     room_capacity: 2,
+    available_rooms: 5,
     amenities: ["wifi"],
     cancellation_policy: "Free cancellation up to 48 hours before check-in",
     vibe_tags: ["culture"],
