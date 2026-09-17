@@ -852,3 +852,26 @@ Also added two entries to `docs/IMPLEMENTATION_PLAN.md` §5 that a straight Phas
 **Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (319/319) all clean (docs-only changes, but re-verified anyway per the standing discipline of never assuming a change is inert). `git status` clean going into this entry; no other uncommitted work exists.
 
 **Next up:** Phase 9 (portfolio polish) is next: visual design pass, architecture diagram, writing up ADR-006/ADR-007 as standalone files, and the final README/demo pass — the last of which should resolve the telemetry-retention question first if real dashboard data will be shown on screen.
+
+---
+
+## 2026-09-17 — Phase 9 slice 1: telemetry redaction, ADR-006/ADR-007 write-ups
+
+**What I built:**
+- Resolved the genuinely-undecided telemetry retention/redaction question (`PROJECT_BRIEF.md` §13.2) before writing ADR-007, since the write-up can't describe a decision that hasn't been made. Asked the user rather than deciding unilaterally (per `CLAUDE.md`'s "do not silently make major architectural decisions"), with three options ranging from doc-only to a fully automated cleanup job; the user picked the middle option.
+- `src/observability/redaction.ts` (new) — `redactSensitiveTelemetry`, a deep-walk over a tool-call payload that masks the `value` of any `{field|target: "requiredAccessibility", value: ...}` shape (the one field, out of everything the Intake agent extracts, that can reveal a disability/health condition — every other field is ordinary trip-shape data the dashboards need to show as-is).
+- Wired into `src/repositories/agent-runs.ts`'s `recordToolCalls` — the single write boundary all three callers (`intake-orchestrator.ts`, `activities-step.ts`'s Curator and Writer steps) already share, so the redaction applies everywhere without touching any call site.
+- Time-based retention (deletion after N days) is documented as a decided policy in the new ADR, not automated — every row in the hosted DB today is synthetic demo/eval data, so a real cleanup job has no privacy benefit yet.
+- [`docs/architecture/ADR-006-evaluation-strategy.md`](docs/architecture/ADR-006-evaluation-strategy.md) (new) — writes up the deterministic-grading-throughout and real-direct-call-harness decisions from Phase 8, previously only recorded as index-line summaries.
+- [`docs/architecture/ADR-007-observability.md`](docs/architecture/ADR-007-observability.md) (new) — writes up dashboard placement/access, the engineering/product split, and this session's retention/redaction decision.
+- 4 new tests (`src/observability/redaction.test.ts`) covering the record_extraction and propose_trip_revision payload shapes, a non-sensitive-field no-op case, and null/primitive/array inputs. Updated `docs/architecture/ADR-INDEX.md` and `docs/IMPLEMENTATION_PLAN.md` §5 (moved the telemetry item from unresolved to resolved) and §1 (checked off the ADR checklist item, sharpened Phase 9's remaining items).
+
+**Why:** First slice of Phase 9's "fill in remaining ADRs" checklist item — writing ADR-007 honestly required actually closing the retention/redaction gap first, not just describing it as still-open.
+
+**Decisions made:** Retention/redaction resolved as: redact the one sensitive field now (real code), document but don't automate retention (see ADR-007's Rationale/Consequences for the full reasoning) — the user's chosen middle option between doc-only and a fully automated `pg_cron` job.
+
+**What didn't work / dead ends:** None.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm test` (323/323, up from 319) all clean.
+
+**Next up:** Continue Phase 9: architecture diagram, visual design pass, final README pass + demo walkthrough recording. Order not yet decided.

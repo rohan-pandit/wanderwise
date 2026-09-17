@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/src/config/supabase/database.types";
+import { redactSensitiveTelemetry } from "@/src/observability/redaction";
 import { unwrapOrThrow } from "./shared";
 
 export type AgentRun = Database["public"]["Tables"]["agent_runs"]["Row"];
@@ -57,7 +58,13 @@ export async function recordAgentRun(
   );
 }
 
-/** One row per tool call the model made this turn (PROJECT_BRIEF.md §6.4: "log tool call name, args, and result, not just raw text"). */
+/**
+ * One row per tool call the model made this turn (PROJECT_BRIEF.md §6.4:
+ * "log tool call name, args, and result, not just raw text"). Persisted
+ * `arguments`/`result` are redacted (§13.2, `redactSensitiveTelemetry`) —
+ * applied here, the one write boundary every caller (intake-orchestrator,
+ * activities-step) shares, so no call site can forget it.
+ */
 export interface NewToolCall {
   toolName: string;
   arguments: Json;
@@ -79,8 +86,8 @@ export async function recordToolCalls(
         calls.map((call) => ({
           agent_run_id: agentRunId,
           tool_name: call.toolName,
-          arguments: call.arguments,
-          result: call.result ?? null,
+          arguments: redactSensitiveTelemetry(call.arguments),
+          result: call.result != null ? redactSensitiveTelemetry(call.result) : null,
           duration_ms: call.durationMs ?? null,
           status: call.status,
         })),
