@@ -11,6 +11,30 @@ import {
 const MAX_BATCH_SIZE = 128;
 
 /**
+ * Spacing between chunked requests within one `embed()` call, so a
+ * multi-chunk call (more rows than `MAX_BATCH_SIZE`) doesn't burst past
+ * Voyage's free-tier 3-requests/minute account limit (BUILD_LOG.md,
+ * 2026-09-17/18) faster than the SDK's own default 429 retry can absorb.
+ * Only applied between chunks, never before the first or after the last.
+ */
+const INTER_CHUNK_DELAY_MS = 25_000;
+
+/** Extra retries specifically for a 429 that survives the spacing above — the observed real-world margin needed a bit more than fixed spacing alone. */
+const MAX_RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_RETRY_DELAY_MS = 30_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRateLimitError(err: unknown): boolean {
+  const status = (err as { statusCode?: number; rawResponse?: { status?: number } })?.statusCode
+    ?? (err as { rawResponse?: { status?: number } })?.rawResponse?.status;
+  if (status === 429) return true;
+  return String(err).includes("429") || String(err).includes("Too Many Requests");
+}
+
+/**
  * The only file that imports the `voyageai` SDK — every other retrieval
  * module goes through `EmbeddingClient`. `voyage-4-lite` is the default:
  * cheapest tier ($0.02/1M tokens, 200M tokens free per account), and this
@@ -38,17 +62,25 @@ export class VoyageEmbeddingClient implements EmbeddingClient {
     let totalTokens = 0;
 
     for (let i = 0; i < texts.length; i += MAX_BATCH_SIZE) {
+      if (i > 0) await sleep(INTER_CHUNK_DELAY_MS);
       const batch = texts.slice(i, i + MAX_BATCH_SIZE);
       let response;
-      try {
-        response = await this.client.embed({
-          input: batch,
-          model: this.model,
-          inputType,
-          outputDimension: this.dimension,
-        });
-      } catch (err) {
-        throw new EmbeddingClientError(`Voyage embedding request failed for model "${this.model}"`, err);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          response = await this.client.embed({
+            input: batch,
+            model: this.model,
+            inputType,
+            outputDimension: this.dimension,
+          });
+          break;
+        } catch (err) {
+          if (isRateLimitError(err) && attempt < MAX_RATE_LIMIT_RETRIES) {
+            await sleep(RATE_LIMIT_RETRY_DELAY_MS);
+            continue;
+          }
+          throw new EmbeddingClientError(`Voyage embedding request failed for model "${this.model}"`, err);
+        }
       }
 
       const data = response.data ?? [];

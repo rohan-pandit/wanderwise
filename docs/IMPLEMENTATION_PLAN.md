@@ -279,6 +279,29 @@ Known gap surfaced, not fixed this slice: revising an *already-confirmed* flight
 
 ---
 
+## LARGE-SCALE SEED DATA & SYNTHETIC FLIGHT GENERATION (built 2026-09-18)
+
+**Why this exists:** before the user's own manual end-to-end testing pass, the 6-destination catalog (Phase 1) was too thin to avoid hitting dead ends constantly — a real tester picking an arbitrary destination or date range would frequently find nothing. The user asked for ~1000 destinations, dense hotel/activity variety, and near-universal flight date coverage, but explicitly wanted **realistic, occasional gaps** rather than either "always available" or "the norm to fail" — this shaped the design below more than the raw scale did.
+
+**The core problem, scoped in plan mode before writing anything:** `hotels`/`activities` have no per-date rows at all (filtered only by destination/capacity/opening-hours/closed-days), so "every date has options" for those two is purely a volume/variety problem. `flights` rows are matched by exact calendar date — pre-seeding literal rows for ~640 destinations × arbitrary future dates is combinatorially infeasible (tens of millions of rows) and risks the hosted Supabase free tier. This is the one genuine architecture fork in this build, flagged and resolved with the user before code: a **deterministic synthetic flight generator**, invoked only as a `findFlights` fallback on a genuine zero-row miss, not a live/random generator.
+
+**Built:**
+- `src/domain/geography.ts` — a ~150-country region/cost-tier/climate profile table plus pure derivation helpers (seasonality, vibe tags, daily cost range, haul multiplier). Shared by both the seed script and the runtime flight generator so the two never drift independently.
+- `src/domain/random.ts` — deterministic seeded PRNG (`seededRng`/`pick`/`pickMany`/`chance`/etc.), used everywhere content needs to vary but stay reproducible across re-runs.
+- `scripts/data/cities.ts` — 637 real city/country pairs (139 countries), globally unique names (checked against `getDestinationByName`'s exact-match resolution — a duplicate would make it ambiguous), deliberately excluding the 6 original curated destinations by omission.
+- `scripts/data/inventory-templates.ts` + `scripts/generate-large-seed-data.ts` — additive, idempotent-per-city generation: 637 new destinations, 3,841 hotels (5-8 per destination, ~12% deliberately sparse at 2-3 — a smaller destination with fewer real lodging choices, not a bug), 8,114 activities across 10 categories (food/cultural/tour always present; spa/concert/show/movie/sporting_event/outdoor/nightlife included with a per-destination probability, halved for sparse destinations) — covers the user's explicit category list (spa, restaurant, concerts, plays/shows, movies, sporting events, cultural events). The original 6 destinations and their fixtures were never touched.
+- `src/domain/flight-generator.ts` — the fork's actual mechanism: a route's **weekly operating schedule** is deterministic per route (seeded hash, weighted toward 5-7 days/week but sometimes as few as 1-2), not a per-date coin flip — real airlines don't fly every route daily either, and this is what makes a gap feel like "this route doesn't fly Tuesdays" rather than random noise. `generateFlightsForDate` returns `[]` on a non-operating weekday (a genuine, honest "no flight that day" — the existing `NoViableFlightCandidatesError`/friendly-error path already handles this with no new code) or 1-3 priced/timed options otherwise. Deliberately timezone-agnostic (always UTC) so `findFlights`'s local-date filtering round-trips correctly without needing a real IANA zone for an arbitrary free-text origin.
+- `supabase/migrations/0013_flights_source.sql` — `flights.source` (`'seed'`/`'generated'`), mirroring `destinations.source`.
+- `src/repositories/flights.ts`'s `findFlights` — generates and persists only on a genuine zero-row miss for a specific route+date, never competing with or duplicating a real (curated or previously-generated) match; the same route+date always returns the same flights afterward. `src/workflow/flight-step.ts`'s two call sites now also pass the resolved destination's name/country (needed to build a valid row and price it by haul distance) alongside the existing id-based filters.
+
+**A real bug found live, not by any of the 372 unit tests (all mocked):** `scripts/generate-embeddings.ts`'s destination/activity fetch used a bare `select("*")`, which PostgREST caps at 1000 rows by default — invisible at the old 27-activity scale, but it silently embedded only 1,000 of ~8,140 activities on the first post-reseed run. Fixed with `.range()`-based pagination. The same run also surfaced Voyage's 3-requests/minute free-tier limit as a real, not just documented, blocker — fixed with inter-chunk spacing (25s) plus a bounded 429-specific retry in `VoyageEmbeddingClient`, and batched (not fully concurrent) embedding write-backs to avoid overwhelming the connection pool at ~8,100 concurrent updates.
+
+**Verified:** `npx tsc --noEmit`/`npm run lint`/`npm test` (372/372, 28 new — `random.test.ts`, `geography.test.ts`, `flight-generator.test.ts`, and a new `flights.test.ts`, the first repository-level test in this codebase, since the generate-on-miss logic is real behavior worth testing directly rather than only through workflow-level mocks)/`npm run build` all clean. Live-verified against the real hosted Supabase project: embeddings backfilled for all 643 destinations + 8,137 activities; `npm run eval:retrieval` (10/10) and `npm run eval:scenarios` (20/20, all §19 scenarios + adversarial cases) both still pass unchanged, confirming the original 6 destinations' fixtures are genuinely untouched. A live sweep of several new routes confirmed the actual gap behavior: some routes return flights on all 14 sampled dates, others as few as 4/14 — real, route-specific gaps, not universal availability and not a broken feed.
+
+**Known limitations:** the concurrent-insert race if two searches for the exact same never-before-generated route+date land simultaneously (duplicate generated rows, not a correctness bug) is accepted, not guarded — same class of judgment call as other documented low-severity races in this codebase. Hotel/activity content is templated (not hand-curated per destination) by design at this scale — plausible variety for testing, not marketing copy.
+
+---
+
 ## 2. Domain model (proposed)
 
 Implemented in `supabase/migrations/0001_initial_schema.sql`. Summary of each entity's role:
@@ -292,7 +315,7 @@ Implemented in `supabase/migrations/0001_initial_schema.sql`. Summary of each en
 | `trip_requirements` / `trip_preferences` / `trip_decisions` | The three distinct classifications from §7.1 — hard musts, soft wants, and actual selections — each with provenance and status. |
 | `trip_events` | Append-only domain event log (`trip_created`, `budget_calculated`, etc.) — the replay/audit trail. |
 | `approval_records` | Tracks what was proposed, what was approved, and invalidates prior approval on subsequent change. |
-| `destinations` / `flights` / `hotels` / `activities` | Seeded/mock inventory, world-readable, versioned via `inventory_version`. `destinations`/`activities` carry `pgvector` embeddings for RAG. |
+| `destinations` / `flights` / `hotels` / `activities` | Seeded/mock inventory, world-readable, versioned via `inventory_version`. `destinations`/`activities` carry `pgvector` embeddings for RAG. `flights.source` (`'seed'`/`'generated'`) distinguishes curated rows from ones synthesized on demand by `src/domain/flight-generator.ts` when a search finds no real match for a route+date. |
 | `workflow_runs` / `workflow_steps` | One row per workflow execution and per transition within it — internal, service-role only. |
 | `agent_runs` / `tool_calls` | Per-agent-call and per-tool-call telemetry (tokens, cache stats, latency, cost) — internal, service-role only. |
 | `guardrail_events` | Every guardrail check and outcome, across all four layers — internal, service-role only. |
@@ -428,7 +451,7 @@ This section is the single place every deferred decision, known bug, and standin
 
 ### From `PROJECT_BRIEF.md` §22
 
-- **Seed data volume** — resolved as a working default (Phase 1); revisit if search feels thin or evals need more edge-case density.
+- ~~**Seed data volume**~~ — Phase 1's small curated set (6 destinations) was a working default for building against; superseded 2026-09-18 by the large-scale seed data build (see the new section below) once the user's own manual testing pass needed enough inventory that running out of options wasn't the norm. The original 6 and their fixtures are untouched.
 - ~~**Analytics dashboard access control**~~ — resolved Phase 8 slice 4, 2026-09-17: any signed-in user (the same bar every other `/app/*` route uses), not a separate admin role. This is a single-operator portfolio project with no multi-tenant admin concept anywhere else — inventing one just for this page would be unjustified complexity. Revisit only if the app ever gains real multiple untrusted users.
 - ~~**CI setup**~~ — resolved Phase 8 slice 2, 2026-09-17: `.github/workflows/ci.yml` (GitHub Actions, as expected).
 

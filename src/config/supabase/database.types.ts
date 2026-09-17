@@ -320,6 +320,7 @@ export interface Database {
           refundable: boolean;
           changeable: boolean;
           inventory_version: number;
+          source: string;
         };
         Insert: {
           id?: string;
@@ -341,6 +342,7 @@ export interface Database {
           refundable?: boolean;
           changeable?: boolean;
           inventory_version?: number;
+          source?: string;
         };
         Relationships: [
           {

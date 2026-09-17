@@ -163,12 +163,16 @@ export async function proposeFlightStep(
     findFlights(supabase, {
       origin,
       destinationId: destinationRow.id,
+      destination: destinationRow.name,
+      destinationCountry: destinationRow.country,
       departureDate,
       maxPriceUsd: reqs.get("maxFlightPriceUsd") as number | undefined,
       excludeRedEye: reqs.get("noRedEye") === true,
     }),
     findFlights(supabase, {
       originId: destinationRow.id,
+      origin: destinationRow.name,
+      originCountry: destinationRow.country,
       destination: origin,
       departureDate: returnDate,
       maxPriceUsd: reqs.get("maxFlightPriceUsd") as number | undefined,

@@ -31,6 +31,7 @@ export function flight(overrides: Partial<Flight> = {}): Flight {
     refundable: false,
     changeable: true,
     inventory_version: 1,
+    source: "seed",
     ...overrides,
   };
 }

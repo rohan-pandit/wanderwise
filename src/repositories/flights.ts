@@ -2,6 +2,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/config/supabase/database.types";
 import { CURRENT_INVENTORY_VERSION } from "@/src/domain/inventory";
 import { localDateInTimeZone } from "@/src/domain/dates";
+import { generateFlightsForDate } from "@/src/domain/flight-generator";
+import { haulMultiplier } from "@/src/domain/geography";
 import { unwrapOrThrow } from "./shared";
 
 export type Flight = Database["public"]["Tables"]["flights"]["Row"];
@@ -24,17 +26,30 @@ export interface FlightSearchFilter {
   maxPriceUsd?: number;
   excludeRedEye?: boolean;
   inventoryVersion?: number;
+  /**
+   * The real seeded destination side's country, if known — used only by the
+   * synthetic flight generator's haul-distance pricing (`src/domain/
+   * flight-generator.ts`) when a real search finds zero rows. Never used to
+   * filter the real-rows query. Whichever of these is set (a route only ever
+   * has one seeded-destination side in this app's model) wins; if neither is
+   * set, generation falls back to a default haul multiplier.
+   */
+  originCountry?: string | null;
+  destinationCountry?: string | null;
 }
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
-/**
- * Relational query layer backing the `search_flights` model-facing tool
- * (PROJECT_BRIEF.md §12.1). This function only does deterministic filtering —
- * hard-constraint enforcement, budget checks, and ranking are separate
- * deterministic services (Phase 2), not folded in here.
- */
-export async function findFlights(
+function safeHaulMultiplier(country: string | null | undefined): number {
+  if (!country) return 1.3;
+  try {
+    return haulMultiplier(country);
+  } catch {
+    return 1.3;
+  }
+}
+
+async function queryRealFlights(
   supabase: SupabaseClient<Database>,
   filter: FlightSearchFilter,
 ): Promise<Flight[]> {
@@ -80,6 +95,59 @@ export async function findFlights(
     );
   }
   return data;
+}
+
+function matchesRequestedFilter(flight: Flight, filter: FlightSearchFilter): boolean {
+  if (filter.maxPriceUsd !== undefined && flight.price_usd > filter.maxPriceUsd) return false;
+  if (filter.excludeRedEye && flight.is_red_eye) return false;
+  return true;
+}
+
+/**
+ * Relational query layer backing the `search_flights` model-facing tool
+ * (PROJECT_BRIEF.md §12.1). This function only does deterministic filtering —
+ * hard-constraint enforcement, budget checks, and ranking are separate
+ * deterministic services (Phase 2), not folded in here.
+ *
+ * Falls back to the deterministic synthetic flight generator
+ * (`src/domain/flight-generator.ts`) when a real search for a specific
+ * route+date finds nothing — pre-seeding literal rows for every future date
+ * across ~640 destinations is combinatorially infeasible, so gaps are
+ * filled on demand instead and persisted (`source: "generated"`) so the same
+ * route+date always returns the same flights afterward. Only fires when
+ * `departureDate` plus both `origin` and `destination` (the text names,
+ * needed to build a valid row) are all present — otherwise this behaves
+ * exactly as before. A route that genuinely doesn't operate on the
+ * requested weekday still correctly returns `[]` — a realistic "no flight
+ * that day," not an error.
+ */
+export async function findFlights(
+  supabase: SupabaseClient<Database>,
+  filter: FlightSearchFilter,
+): Promise<Flight[]> {
+  const rows = await queryRealFlights(supabase, filter);
+  if (rows.length > 0) return rows;
+  if (!filter.departureDate || !filter.origin || !filter.destination) return rows;
+
+  const multiplier = safeHaulMultiplier(filter.destinationCountry ?? filter.originCountry);
+  const generated = generateFlightsForDate(filter.origin, filter.destination, filter.departureDate, multiplier);
+  if (generated.length === 0) return [];
+
+  const inventoryVersion = filter.inventoryVersion ?? CURRENT_INVENTORY_VERSION;
+  const rowsToInsert: Database["public"]["Tables"]["flights"]["Insert"][] = generated.map((option) => ({
+    origin: filter.origin!,
+    origin_id: filter.originId ?? null,
+    destination: filter.destination!,
+    destination_id: filter.destinationId ?? null,
+    inventory_version: inventoryVersion,
+    source: "generated",
+    ...option,
+  }));
+
+  const inserted = await unwrapOrThrow(
+    supabase.from("flights").insert(rowsToInsert).select("*").order("price_usd", { ascending: true }),
+  );
+  return inserted.filter((flight) => matchesRequestedFilter(flight, filter));
 }
 
 /** Looks up flights already known by ID (e.g. re-hydrating a `trip_decisions` selection) — no destination/date filtering, since the caller already knows exactly which rows it wants. */
