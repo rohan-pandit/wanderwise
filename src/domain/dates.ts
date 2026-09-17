@@ -102,9 +102,27 @@ export function weekdayOf(isoDate: string): string {
  * minutes-of-day into a single sortable instant) don't have to re-parse ISO
  * strings themselves.
  */
+const ISO_DATE_SHAPE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
 export function toEpochDay(isoDate: string): number {
-  const epochMs = Date.parse(`${isoDate}T00:00:00Z`);
-  if (Number.isNaN(epochMs)) {
+  const match = ISO_DATE_SHAPE.exec(isoDate);
+  if (!match) {
+    throw new InvalidDateError(isoDate);
+  }
+  const [, yearStr, monthStr, dayStr] = match;
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  const epochMs = Date.UTC(year, month - 1, day);
+  const roundTrip = new Date(epochMs);
+  // `Date.UTC`/`Date.parse` silently roll over an out-of-range calendar date
+  // (e.g. "2026-02-30" becomes March 2) instead of rejecting it — catch that
+  // by checking the constructed date reports back the same y/m/d.
+  if (
+    roundTrip.getUTCFullYear() !== year ||
+    roundTrip.getUTCMonth() !== month - 1 ||
+    roundTrip.getUTCDate() !== day
+  ) {
     throw new InvalidDateError(isoDate);
   }
   return Math.floor(epochMs / 86_400_000);

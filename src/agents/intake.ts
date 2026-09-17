@@ -1,0 +1,215 @@
+/**
+ * Intake and Revision Interpreter agent (PROJECT_BRIEF.md §6.2 row A). One
+ * agent, not two — "intake" vs. "revision" is a framing difference driven by
+ * whether `currentDecisions` is non-empty, not a separate code path (matches
+ * §6.2's single row covering both responsibilities).
+ *
+ * Design choice, not literal to §12: the model always reports structured
+ * requirements/preferences through a tool call (`record_extraction`) rather
+ * than free-text JSON, alongside the two tools §12 does name
+ * (`request_clarification`, `propose_trip_revision`). §6.4 says tool schemas
+ * must be "explicit, typed, narrow, and validated" — that applies just as
+ * much to getting extraction data out reliably as to the two named tools,
+ * and keeping all three as real tool calls (rather than one structured-output
+ * call plus two tool calls) means a single non-looping model request can
+ * emit any combination of them in one turn.
+ *
+ * This agent never touches the database and never decides workflow state —
+ * it is a pure function of (message, state slice) -> validated extraction,
+ * called by a `ModelClient` it doesn't own. Wiring its output into
+ * `trip_requirements`/`trip_preferences`/the workflow controller is Phase 6
+ * (PROJECT_BRIEF.md §6.3: orchestrator persists validated state changes).
+ */
+import { z } from "zod";
+import {
+  ClarificationRequest,
+  ExtractedPreference,
+  ExtractedRequirement,
+  REQUIRED_FOR_READY,
+  REQUIREMENT_FIELDS,
+  RevisionProposal,
+  type PreferenceRecord,
+  type RequirementRecord,
+} from "@/src/domain/extraction";
+import type { ModelClient, ModelCompletionUsage, ModelTool } from "./model-client";
+
+/**
+ * The full-strictness schema shown to the model as the `record_extraction`
+ * tool's input contract (every item must match `ExtractedRequirement`/
+ * `ExtractedPreference` exactly). Our own parsing of the model's actual call
+ * is deliberately looser than this — see `parseRecordExtractionCall` below —
+ * so one malformed item doesn't discard the rest of an otherwise-valid call.
+ */
+const RecordExtractionInput = z.object({
+  requirements: z.array(ExtractedRequirement).default([]),
+  preferences: z.array(ExtractedPreference).default([]),
+});
+
+/** Single source of truth for tool names, so the dispatch loop below can't silently drift from what's actually sent to the model. */
+const TOOL_NAMES = {
+  recordExtraction: "record_extraction",
+  requestClarification: "request_clarification",
+  proposeTripRevision: "propose_trip_revision",
+} as const;
+
+const TOOLS: ModelTool[] = [
+  {
+    name: TOOL_NAMES.recordExtraction,
+    description:
+      "Report any trip requirements (hard musts) or preferences (soft wants) found in the user's latest message. Call only when the message actually contains new or changed information — omit fields already correctly recorded in the current trip state.",
+    inputSchema: z.toJSONSchema(RecordExtractionInput) as Record<string, unknown>,
+  },
+  {
+    name: TOOL_NAMES.requestClarification,
+    description:
+      "Ask the user for still-missing information needed to proceed. Only call this for fields not already present in the current trip state and not resolved by the latest message.",
+    inputSchema: z.toJSONSchema(ClarificationRequest) as Record<string, unknown>,
+  },
+  {
+    name: TOOL_NAMES.proposeTripRevision,
+    description:
+      "Propose a change to an already-recorded requirement, preference, or decision. Only call this when the user is asking to change something that was previously set, not for first-time information.",
+    inputSchema: z.toJSONSchema(RevisionProposal) as Record<string, unknown>,
+  },
+];
+
+const SYSTEM_PROMPT = `You are the Intake and Revision Interpreter for Wanderwise, a travel-planning concierge. You do not book anything, invent flights/hotels/activities, or quote prices — that is deterministic code's job downstream.
+
+Each turn you receive the current trip state (already-recorded requirements, preferences, and, once selections exist, decisions) and the user's latest message. Your job:
+
+1. Extract new or changed requirements/preferences from the message via record_extraction. A requirement is a hard must (origin, destination, dates, party size, budget, "no red-eye flights", accessibility need). A preference is a soft want that could be traded away (boutique hotels, food and culture focus, late mornings). Mark source as "user_explicit" when the user stated it directly, "user_inferred" when you reasonably inferred it, and set confidence to your actual certainty (1.0 for explicit statements, lower for inferences).
+2. If required information is still missing after this message, call request_clarification naming exactly which fields and why. The required fields before planning can begin are: ${REQUIRED_FOR_READY.join(", ")}. Decide what to ask and how to phrase it yourself — there is no fixed question order.
+3. If the user is asking to change something already recorded in the current trip state (a requirement, preference, or an actual decision like a chosen flight/hotel), call propose_trip_revision instead of record_extraction for that item.
+4. Always also give a short, natural reply to the user as plain text alongside any tool calls.
+
+Valid requirement fields: ${REQUIREMENT_FIELDS.join(", ")}. Never invent a field outside this list, and never fabricate a value the user didn't state or clearly imply.`;
+
+export interface IntakeAgentInput {
+  userMessage: string;
+  currentRequirements: RequirementRecord[];
+  currentPreferences: PreferenceRecord[];
+  /** Minimal decision summaries — present once selections exist, which is what shifts the model into revision framing. */
+  currentDecisions?: { field: string; value: unknown }[];
+}
+
+export interface MalformedToolCall {
+  toolName: string;
+  error: string;
+}
+
+export interface IntakeAgentResult {
+  requirements: ExtractedRequirement[];
+  preferences: ExtractedPreference[];
+  clarification: ClarificationRequest | null;
+  revisionProposal: RevisionProposal | null;
+  assistantMessage: string;
+  /** Tool calls the model made that failed validation — a guardrail signal, not a crash. Callers should log these (PROJECT_BRIEF.md §13.2) rather than trust anything from them. */
+  malformedToolCalls: MalformedToolCall[];
+  usage: ModelCompletionUsage;
+  /** Anthropic's `stop_reason` for this turn (e.g. "end_turn", "max_tokens", "refusal"). Callers should treat anything other than "end_turn"/"tool_use" as a signal the result may be incomplete rather than a clean empty turn. */
+  stopReason: string;
+}
+
+function buildUserContent(input: IntakeAgentInput): string {
+  const state = {
+    requirements: input.currentRequirements.map((r) => ({ field: r.field, value: r.value, status: r.status })),
+    preferences: input.currentPreferences.map((p) => ({ field: p.field, value: p.value, status: p.status })),
+    decisions: input.currentDecisions ?? [],
+  };
+  return `Current trip state:\n${JSON.stringify(state)}\n\nLatest user message:\n${input.userMessage}`;
+}
+
+/** Loose top-level shape only — validates that `requirements`/`preferences` are arrays, without requiring their items to be valid yet. */
+const RecordExtractionShape = z.object({
+  requirements: z.array(z.unknown()).default([]),
+  preferences: z.array(z.unknown()).default([]),
+});
+
+/**
+ * Validates a `record_extraction` call item-by-item rather than as one atomic
+ * array (unlike `RecordExtractionInput`, which is the strict contract shown
+ * to the model). Zod array validation is all-or-nothing — one malformed item
+ * would otherwise silently discard every valid sibling in the same call, so
+ * this keeps whatever validates and reports only the items that don't.
+ */
+function parseRecordExtractionCall(
+  input: unknown,
+): { requirements: ExtractedRequirement[]; preferences: ExtractedPreference[]; errors: string[] } {
+  const shape = RecordExtractionShape.safeParse(input);
+  if (!shape.success) {
+    return { requirements: [], preferences: [], errors: [shape.error.message] };
+  }
+
+  const requirements: ExtractedRequirement[] = [];
+  const preferences: ExtractedPreference[] = [];
+  const errors: string[] = [];
+
+  for (const item of shape.data.requirements) {
+    const parsed = ExtractedRequirement.safeParse(item);
+    if (parsed.success) requirements.push(parsed.data);
+    else errors.push(`requirement: ${parsed.error.message}`);
+  }
+  for (const item of shape.data.preferences) {
+    const parsed = ExtractedPreference.safeParse(item);
+    if (parsed.success) preferences.push(parsed.data);
+    else errors.push(`preference: ${parsed.error.message}`);
+  }
+
+  return { requirements, preferences, errors };
+}
+
+export async function runIntakeAgent(
+  modelClient: ModelClient,
+  input: IntakeAgentInput,
+): Promise<IntakeAgentResult> {
+  const response = await modelClient.complete({
+    system: SYSTEM_PROMPT,
+    tools: TOOLS,
+    messages: [{ role: "user", content: buildUserContent(input) }],
+    maxTokens: 4096,
+  });
+
+  const result: IntakeAgentResult = {
+    requirements: [],
+    preferences: [],
+    clarification: null,
+    revisionProposal: null,
+    assistantMessage: response.text,
+    malformedToolCalls: [],
+    usage: response.usage,
+    stopReason: response.stopReason,
+  };
+
+  for (const call of response.toolCalls) {
+    if (call.toolName === TOOL_NAMES.recordExtraction) {
+      const parsed = parseRecordExtractionCall(call.input);
+      result.requirements.push(...parsed.requirements);
+      result.preferences.push(...parsed.preferences);
+      for (const error of parsed.errors) {
+        result.malformedToolCalls.push({ toolName: call.toolName, error });
+      }
+    } else if (call.toolName === TOOL_NAMES.requestClarification) {
+      const parsed = ClarificationRequest.safeParse(call.input);
+      if (!parsed.success) {
+        result.malformedToolCalls.push({ toolName: call.toolName, error: parsed.error.message });
+      } else if (result.clarification) {
+        result.malformedToolCalls.push({ toolName: call.toolName, error: "duplicate request_clarification call in one turn" });
+      } else {
+        result.clarification = parsed.data;
+      }
+    } else if (call.toolName === TOOL_NAMES.proposeTripRevision) {
+      const parsed = RevisionProposal.safeParse(call.input);
+      if (!parsed.success) {
+        result.malformedToolCalls.push({ toolName: call.toolName, error: parsed.error.message });
+      } else if (result.revisionProposal) {
+        result.malformedToolCalls.push({ toolName: call.toolName, error: "duplicate propose_trip_revision call in one turn" });
+      } else {
+        result.revisionProposal = parsed.data;
+      }
+    } else {
+      result.malformedToolCalls.push({ toolName: call.toolName, error: "unknown tool" });
+    }
+  }
+
+  return result;
+}

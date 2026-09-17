@@ -93,4 +93,16 @@ describe("dates", () => {
     expect(toEpochDay("1970-01-01")).toBe(0);
     expect(toEpochDay("1970-01-02")).toBe(1);
   });
+
+  it("rejects a calendrically-invalid date instead of silently rolling it over", () => {
+    // Date.UTC/Date.parse would otherwise roll "2026-02-30" over to March 2.
+    expect(() => toEpochDay("2026-02-30")).toThrow(InvalidDateError);
+    expect(() => toEpochDay("2026-04-31")).toThrow(InvalidDateError);
+    expect(() => toEpochDay("2026-13-05")).toThrow(InvalidDateError);
+  });
+
+  it("accepts a valid leap day", () => {
+    expect(() => toEpochDay("2028-02-29")).not.toThrow();
+    expect(() => toEpochDay("2027-02-29")).toThrow(InvalidDateError);
+  });
 });

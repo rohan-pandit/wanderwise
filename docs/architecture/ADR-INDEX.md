@@ -20,10 +20,10 @@ Tracks decisions under the five ADR areas defined in `PROJECT_BRIEF.md` §5. Per
 - [x] Agent roster and justification — adopted from brief (4 agents: Intake/Revision Interpreter, Destination/Activity Curator, Trip Explanation Agent, Itinerary Writer), no deviation.
 - [x] Model-facing tool policy — adopted from brief §6.4/§12, no deviation.
 - [x] App topology / provider abstraction — **ADR-000**.
-- [ ] Model selection (specific Claude model per agent) — open, to decide in Phase 4 when agents are actually implemented.
+- [x] Model selection (specific Claude model per agent) — resolved 2026-09-16 for the Intake/Revision Interpreter: **Sonnet 5**, confirmed by a component eval run (Sonnet 5 6/6 cases, Haiku 4.5 5/6 — missed a revision-interpretation case) rather than assumed. Model-client interface (`src/agents/model-client.ts`) stays provider/model-agnostic so this can be revisited per-agent as later agents are built.
 - [x] Booking and external-action boundary — adopted from brief §6.5, no deviation.
 - [ ] Security and prompt-injection handling — adopted in principle (brief §6.6); concrete implementation (input sanitization, retrieved-content delimiting) is a Phase 5/6 task, not yet an ADR.
-- [ ] Prompt-caching experiment — deferred until agents exist to measure (Phase 4+).
+- [x] Prompt-caching experiment — measured for the Intake agent (`src/agents/providers/anthropic-model-client.ts`, `PROJECT_BRIEF.md` §6.7 static-first ordering); real cache-read hits confirmed via `npm run eval:intake`. Revisit per-agent as later agents (Curator, Explanation, Writer) are built.
 
 ## Area 2 — State and Data Architecture
 
