@@ -11,7 +11,14 @@ vi.mock("@/src/repositories/workflow-runs");
 
 import { findFlights, getFlightsByIds } from "@/src/repositories/flights";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
-import { appendTripDecision, listActiveTripDecisions, retireActiveTripDecisionsForField } from "@/src/repositories/trip-decisions";
+import {
+  appendTripDecision,
+  confirmTripDecisions,
+  listActiveTripDecisions,
+  retireActiveTripDecisionsForField,
+  retireProposedTripDecisionsForField,
+  supersedeOtherActiveTripDecisions,
+} from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
@@ -91,6 +98,9 @@ beforeEach(() => {
   vi.mocked(appendTripEvent).mockResolvedValue({} as never);
   vi.mocked(appendTripDecision).mockResolvedValue({} as never);
   vi.mocked(retireActiveTripDecisionsForField).mockResolvedValue(undefined as never);
+  vi.mocked(retireProposedTripDecisionsForField).mockResolvedValue(undefined as never);
+  vi.mocked(supersedeOtherActiveTripDecisions).mockResolvedValue(undefined as never);
+  vi.mocked(confirmTripDecisions).mockResolvedValue(undefined as never);
   vi.mocked(listActiveTripDecisions).mockResolvedValue([]);
 });
 
@@ -125,7 +135,7 @@ describe("proposeFlightStep", () => {
     );
   });
 
-  it("returns the top 3 cheapest passing outbound x return pairs, cheapest first, without persisting anything", async () => {
+  it("returns the top 3 cheapest passing outbound x return pairs, cheapest first, and persists them as proposed", async () => {
     vi.mocked(findFlights).mockImplementation(async (_s, filter) =>
       (filter.origin === "Lisbon"
         ? [returnFlight("r-cheap", { price_usd: 100 }), returnFlight("r-mid", { price_usd: 200 }), returnFlight("r-expensive", { price_usd: 900 })]
@@ -137,7 +147,20 @@ describe("proposeFlightStep", () => {
     expect(result.candidates.map((c) => c.returnFlight.id)).toEqual(["r-cheap", "r-mid", "r-expensive"]);
     expect(result.candidates[0].totalPriceUsd).toBe(600);
     expect(result.candidates).toHaveLength(3);
-    expect(appendTripDecision).not.toHaveBeenCalled();
+    expect(retireProposedTripDecisionsForField).toHaveBeenCalledWith(supabase, TRIP_ID, "outboundFlight");
+    expect(retireProposedTripDecisionsForField).toHaveBeenCalledWith(supabase, TRIP_ID, "returnFlight");
+    expect(appendTripDecision).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "outboundFlight", value: "o1", status: "proposed", source: "system_computed" }),
+    );
+    expect(appendTripDecision).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "returnFlight", value: "r-cheap", status: "proposed", source: "system_computed" }),
+    );
+    expect(appendTripDecision).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "returnFlight", value: "r-expensive", status: "proposed", source: "system_computed" }),
+    );
   });
 
   it("caps the ranked list at 3 even with more passing pairs", async () => {
@@ -210,6 +233,55 @@ describe("confirmFlightStep", () => {
       supabase,
       expect.objectContaining({ eventType: "flight_step_confirmed" }),
     );
+  });
+
+  it("promotes a matching proposed candidate in place instead of retiring and reinserting", async () => {
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([
+      decisionRow("outboundFlight", "o1", "proposed"),
+      decisionRow("returnFlight", "r1", "proposed"),
+    ] as never);
+    vi.mocked(getFlightsByIds).mockImplementation(async (_s, ids) =>
+      (ids[0] === "o1" ? [flight("o1")] : [returnFlight("r1")]) as never,
+    );
+
+    await confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "o1", returnFlightId: "r1" });
+
+    expect(supersedeOtherActiveTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, "outboundFlight", "dec_outboundFlight_proposed");
+    expect(confirmTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, ["outboundFlight"]);
+    expect(supersedeOtherActiveTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, "returnFlight", "dec_returnFlight_proposed");
+    expect(confirmTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, ["returnFlight"]);
+    expect(retireActiveTripDecisionsForField).not.toHaveBeenCalledWith(supabase, TRIP_ID, "outboundFlight");
+    expect(retireActiveTripDecisionsForField).not.toHaveBeenCalledWith(supabase, TRIP_ID, "returnFlight");
+    expect(appendTripDecision).not.toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "outboundFlight", status: "confirmed" }),
+    );
+  });
+
+  it("also supersedes the prior confirmed pair when promoting a new pick while revising an already-confirmed step", async () => {
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([
+      decisionRow("outboundFlight", "o-old", "confirmed"),
+      decisionRow("returnFlight", "r-old", "confirmed"),
+      decisionRow("outboundFlight", "o-new", "proposed"),
+      decisionRow("returnFlight", "r-new", "proposed"),
+    ] as never);
+    const flightsById: Record<string, unknown> = {
+      "o-old": flight("o-old"),
+      "r-old": returnFlight("r-old"),
+      "o-new": flight("o-new"),
+      "r-new": returnFlight("r-new"),
+    };
+    vi.mocked(getFlightsByIds).mockImplementation(async (_s, ids) => [flightsById[ids[0]]] as never);
+
+    await confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "o-new", returnFlightId: "r-new" });
+
+    // supersedeOtherActiveTripDecisions supersedes every OTHER non-superseded
+    // row for the field (any status), so the still-confirmed old pair is
+    // cleared too, not just sibling proposals.
+    expect(supersedeOtherActiveTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, "outboundFlight", "dec_outboundFlight_proposed");
+    expect(supersedeOtherActiveTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, "returnFlight", "dec_returnFlight_proposed");
+    expect(confirmTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, ["outboundFlight"]);
+    expect(confirmTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, ["returnFlight"]);
   });
 
   it("supersedes a prior confirmation when called again with a different pair", async () => {

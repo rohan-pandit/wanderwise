@@ -23,6 +23,11 @@
  * `proposeHotelStep` gained an optional `excludeHotelId` for the interim
  * chat-revision glue (`chain-orchestrator.ts`) to re-propose without
  * returning the same already-confirmed hotel.
+ *
+ * Slice 4: `proposeHotelStep` now persists its ranked candidate list as
+ * `"proposed"` `trip_decisions` rows (same reasoning as `flight-step.ts`);
+ * `confirmHotelStep` promotes the picked one via `step-shared.ts`'s
+ * `confirmDecisionField` instead of always retiring-and-reinserting.
  */
 import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -33,12 +38,12 @@ import { deriveHotelStayDates, type HotelStayDates } from "@/src/domain/stay";
 import { getFlightsByIds } from "@/src/repositories/flights";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { findHotels, getHotelsByIds, type Hotel } from "@/src/repositories/hotels";
-import { appendTripDecision, listActiveTripDecisions, retireActiveTripDecisionsForField } from "@/src/repositories/trip-decisions";
+import { appendTripDecision, listActiveTripDecisions, retireProposedTripDecisionsForField } from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { deriveCorrelationId } from "./correlation";
-import { hotelHardConstraints, requirementMap } from "./step-shared";
+import { confirmDecisionField, hotelHardConstraints, requirementMap } from "./step-shared";
 
 const AGENT_NAME = "hotel_step";
 const MAX_HOTEL_CANDIDATES = 3;
@@ -99,7 +104,7 @@ export interface ProposeHotelStepParams {
 }
 
 export interface ProposeHotelStepResult {
-  /** Best-first (cheapest per night), up to `MAX_HOTEL_CANDIDATES` — nothing is persisted yet. */
+  /** Best-first (cheapest per night), up to `MAX_HOTEL_CANDIDATES` — also persisted as "proposed" `trip_decisions` rows. */
   candidates: Hotel[];
   /** The confirmed flight's derived stay dates this search was scoped to. */
   hotelStayDates: HotelStayDates;
@@ -161,6 +166,17 @@ export async function proposeHotelStep(
   // without a separate sort.
   const topCandidates = eligible.slice(0, MAX_HOTEL_CANDIDATES);
 
+  await retireProposedTripDecisionsForField(supabase, params.tripId, "hotel");
+  for (const candidate of topCandidates) {
+    await appendTripDecision(supabase, {
+      tripId: params.tripId,
+      field: "hotel",
+      value: candidate.id,
+      source: "system_computed",
+      status: "proposed",
+    });
+  }
+
   await appendTripEvent(supabase, {
     tripId: params.tripId,
     eventType: "hotel_step_proposed",
@@ -199,9 +215,10 @@ export async function confirmHotelStep(
 ): Promise<ConfirmHotelStepResult> {
   const correlationId = params.correlationId ?? randomUUID();
 
-  const [hotelRows, requirementRows] = await Promise.all([
+  const [hotelRows, requirementRows, activeDecisions] = await Promise.all([
     getHotelsByIds(supabase, [params.hotelId]),
     listActiveTripRequirements(supabase, params.tripId),
+    listActiveTripDecisions(supabase, params.tripId),
   ]);
   const hotel = hotelRows[0];
   if (!hotel) {
@@ -228,14 +245,7 @@ export async function confirmHotelStep(
     );
   }
 
-  await retireActiveTripDecisionsForField(supabase, params.tripId, "hotel");
-  await appendTripDecision(supabase, {
-    tripId: params.tripId,
-    field: "hotel",
-    value: hotel.id,
-    source: "user_explicit",
-    status: "confirmed",
-  });
+  await confirmDecisionField(supabase, params.tripId, "hotel", hotel.id, activeDecisions);
 
   await appendTripEvent(supabase, {
     tripId: params.tripId,

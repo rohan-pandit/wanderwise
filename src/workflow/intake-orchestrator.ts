@@ -52,10 +52,27 @@ import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
 import { getLatestTripState } from "@/src/repositories/trip-state";
 import { getTrip } from "@/src/repositories/trips";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
+import {
+  getCurrentChainStep,
+  requirementRevisionTargetStep,
+  revisionRisksConfirmedWork,
+  type ChainDecision,
+  type ChainStep,
+} from "@/src/domain/chain";
 import { advanceOrThrow } from "./advance";
 import { deriveCorrelationId } from "./correlation";
-import { REVISABLE_DECISION_FIELDS, type RevisableDecisionField } from "./step-shared";
+import { REVISABLE_CHAIN_STEPS } from "./step-shared";
 import type { WorkflowEvent, WorkflowState } from "./state-machine";
+
+export interface DecisionRevisionRequested {
+  step: ChainStep;
+}
+
+export interface PendingCascadeConfirmation {
+  kind: "decision" | "requirement";
+  step: ChainStep;
+  field: string;
+}
 
 export { OrchestrationConflictError, OrchestrationTransitionError } from "./orchestration-errors";
 
@@ -150,30 +167,45 @@ function decideNextEvents(
  * the revision).
  *
  * `revisionType: "decision"` doesn't apply anything itself — actually
- * revising a decision means re-proposing and re-confirming the relevant
- * chain step (`app/app/actions.ts`'s `runStepwiseRevision`, stepwise chain
- * redesign slice 3), which needs a model client and embedding-adjacent
- * state this orchestrator doesn't own. For a field the caller knows how to
- * handle (`step-shared.ts`'s `REVISABLE_DECISION_FIELDS`), this returns a
- * signal (`decisionRevisionRequested`) for the caller (a Server Action) to
- * act on after this turn persists, rather than driving it here. An
- * unrecognized field (e.g. "activities" — which specific activity to swap
- * needs more than a field name to resolve) is logged as unsupported
- * instead.
+ * revising a decision means re-proposing the relevant chain step
+ * (`src/workflow/step-router.ts`'s `reviseChainStep`), which needs a model
+ * client and embedding-adjacent state this orchestrator doesn't own. For a
+ * step the caller knows how to handle (`step-shared.ts`'s
+ * `REVISABLE_CHAIN_STEPS`), this returns a signal (`decisionRevisionRequested`)
+ * for the caller (a Server Action) to act on after this turn persists,
+ * rather than driving it here. An unrecognized target (e.g. "activities" —
+ * which specific activity to swap needs more than a step name to resolve)
+ * is logged as unsupported instead.
+ *
+ * Stepwise chain redesign slice 4: if revising the target risks invalidating
+ * already-confirmed downstream work (`src/domain/chain.ts`'s
+ * `revisionRisksConfirmedWork`), this returns `pendingCascadeConfirmation`
+ * instead of (for a decision) `decisionRevisionRequested`, or alongside (for
+ * a requirement) the still-persisted `requirement` — a requirement's value
+ * is always recorded this turn as before; only the *ensuing* chain
+ * re-propose/retirement waits on explicit user confirmation. Revising the
+ * currently-active (not-yet-confirmed) step never risks this, since nothing
+ * confirmed exists downstream of it yet.
  */
 async function applyRevisionProposal(
   supabase: SupabaseClient<Database>,
   tripId: string,
   workflowRunId: string,
   proposal: RevisionProposal,
+  confirmedDecisions: ChainDecision[],
 ): Promise<{
   requirement?: ExtractedRequirement;
   preference?: ExtractedPreference;
-  decisionRevisionRequested?: RevisableDecisionField;
+  decisionRevisionRequested?: DecisionRevisionRequested;
+  pendingCascadeConfirmation?: PendingCascadeConfirmation;
 }> {
   if (proposal.revisionType === "decision") {
-    if (REVISABLE_DECISION_FIELDS.includes(proposal.target as RevisableDecisionField)) {
-      return { decisionRevisionRequested: proposal.target as RevisableDecisionField };
+    if (REVISABLE_CHAIN_STEPS.includes(proposal.target as ChainStep)) {
+      const step = proposal.target as ChainStep;
+      if (revisionRisksConfirmedWork(step, confirmedDecisions)) {
+        return { pendingCascadeConfirmation: { kind: "decision", step, field: step } };
+      }
+      return { decisionRevisionRequested: { step } };
     }
     await recordGuardrailEvent(supabase, {
       tripId,
@@ -181,7 +213,7 @@ async function applyRevisionProposal(
       guardrailName: "decision_revision_unsupported",
       layer: "domain_validation",
       triggered: true,
-      detail: `Revising "${proposal.target}" isn't supported yet — only outboundFlight/returnFlight/hotel can be revised.`,
+      detail: `Revising "${proposal.target}" isn't supported yet — only flight/hotel can be revised.`,
       workflowRunId,
     });
     return {};
@@ -202,9 +234,15 @@ async function applyRevisionProposal(
     });
     return {};
   }
-  return proposal.revisionType === "requirement"
-    ? { requirement: parsed.data as ExtractedRequirement }
-    : { preference: parsed.data as ExtractedPreference };
+  if (proposal.revisionType === "preference") {
+    return { preference: parsed.data as ExtractedPreference };
+  }
+  const requirement = parsed.data as ExtractedRequirement;
+  const targetStep = requirementRevisionTargetStep(requirement.field);
+  if (revisionRisksConfirmedWork(targetStep, confirmedDecisions)) {
+    return { requirement, pendingCascadeConfirmation: { kind: "requirement", step: targetStep, field: requirement.field } };
+  }
+  return { requirement };
 }
 
 export interface ProcessIntakeTurnParams {
@@ -222,8 +260,10 @@ export interface ProcessIntakeTurnResult {
   ready: boolean;
   requirements: RequirementRecord[];
   preferences: PreferenceRecord[];
-  /** Set when this turn proposed a revision to an already-selected decision (e.g. "switch hotels") — the caller should follow up with `runStepwiseRevision` (`app/app/actions.ts`) once this turn's own persistence/transition finishes. */
-  decisionRevisionRequested: RevisableDecisionField | null;
+  /** Set when this turn proposed a revision to the *active* (not-yet-confirmed) chain step, safe to act on immediately — the caller should follow up with `reviseChainStep` (`src/workflow/step-router.ts`) once this turn's own persistence/transition finishes. Mutually exclusive with `pendingCascadeConfirmation`. */
+  decisionRevisionRequested: DecisionRevisionRequested | null;
+  /** Set when applying this turn's revision risks invalidating already-confirmed downstream work (`src/domain/chain.ts`'s `revisionRisksConfirmedWork`) — the caller must show a warning and get explicit confirmation (`confirmCascadeAndRevise`) before re-proposing/retiring anything. For a requirement revision, the value itself is already persisted this turn regardless; only the ensuing cascade waits. */
+  pendingCascadeConfirmation: PendingCascadeConfirmation | null;
 }
 
 export async function processIntakeTurn(
@@ -288,7 +328,13 @@ export async function processIntakeTurn(
   ]);
   const currentRequirements = requirementRows.map(requirementRecordFromRow);
   const currentPreferences = preferenceRows.map(preferenceRecordFromRow);
-  const currentDecisions = decisionRows.map((d) => ({ field: d.field, value: d.value }));
+  // Only genuinely confirmed decisions are shown to the model (and used for
+  // the cascade-warning check below) — `decisionRows` can now also include
+  // "proposed" candidate rows (stepwise chain redesign slice 4), which
+  // aren't decisions the user has actually made yet.
+  const confirmedDecisionRows = decisionRows.filter((d) => d.status === "confirmed");
+  const currentDecisions = confirmedDecisionRows.map((d) => ({ field: d.field, value: d.value, status: d.status }));
+  const activeChainStep = getCurrentChainStep(confirmedDecisionRows);
 
   const run = await getOrCreateActiveWorkflowRun(supabase, params.tripId);
   const startedAt = Date.now();
@@ -299,6 +345,7 @@ export async function processIntakeTurn(
       currentRequirements,
       currentPreferences,
       currentDecisions,
+      activeChainStep,
     });
   } catch (err) {
     await recordAgentRun(supabase, {
@@ -367,12 +414,20 @@ export async function processIntakeTurn(
 
   const rawRequirements = [...agentResult.requirements];
   const rawPreferences = [...agentResult.preferences];
-  let decisionRevisionRequested: RevisableDecisionField | null = null;
+  let decisionRevisionRequested: DecisionRevisionRequested | null = null;
+  let pendingCascadeConfirmation: PendingCascadeConfirmation | null = null;
   if (agentResult.revisionProposal) {
-    const applied = await applyRevisionProposal(supabase, params.tripId, run.id, agentResult.revisionProposal);
+    const applied = await applyRevisionProposal(
+      supabase,
+      params.tripId,
+      run.id,
+      agentResult.revisionProposal,
+      confirmedDecisionRows,
+    );
     if (applied.requirement) rawRequirements.push(applied.requirement);
     if (applied.preference) rawPreferences.push(applied.preference);
     if (applied.decisionRevisionRequested) decisionRevisionRequested = applied.decisionRevisionRequested;
+    if (applied.pendingCascadeConfirmation) pendingCascadeConfirmation = applied.pendingCascadeConfirmation;
   }
   const requirementsToApply = lastByField(rawRequirements);
   const preferencesToApply = lastByField(rawPreferences);
@@ -470,5 +525,6 @@ export async function processIntakeTurn(
     requirements: allRequirements,
     preferences: allPreferences,
     decisionRevisionRequested,
+    pendingCascadeConfirmation,
   };
 }

@@ -25,7 +25,12 @@ import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
 import { getFlightsByIds } from "@/src/repositories/flights";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { getHotelsByIds } from "@/src/repositories/hotels";
-import { appendTripDecision, listActiveTripDecisions, retireActiveTripDecisionsForField } from "@/src/repositories/trip-decisions";
+import {
+  appendTripDecision,
+  listActiveTripDecisions,
+  retireActiveTripDecisionsForField,
+  retireProposedTripDecisionsForField,
+} from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
 import { listActiveTripPreferences } from "@/src/repositories/trip-preferences";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
@@ -170,6 +175,7 @@ beforeEach(() => {
   vi.mocked(recordToolCalls).mockResolvedValue([]);
   vi.mocked(appendTripDecision).mockResolvedValue({} as never);
   vi.mocked(retireActiveTripDecisionsForField).mockResolvedValue(undefined as never);
+  vi.mocked(retireProposedTripDecisionsForField).mockResolvedValue(undefined as never);
 });
 
 describe("proposeActivitiesStep", () => {
@@ -199,6 +205,11 @@ describe("proposeActivitiesStep", () => {
     expect(result.scheduledActivities[0].date >= "2026-10-06" && result.scheduledActivities[0].date <= "2026-10-12").toBe(true);
     expect(result.feasibility.valid).toBe(true);
     expect(result.curation?.rankedIds).toEqual(["a1"]);
+    expect(retireProposedTripDecisionsForField).toHaveBeenCalledWith(supabase, TRIP_ID, "activities");
+    expect(appendTripDecision).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "activities", status: "proposed", source: "system_computed" }),
+    );
   });
 
   it("skips the Curator call and returns null curation when there are no activity candidates", async () => {

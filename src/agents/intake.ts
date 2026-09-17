@@ -82,14 +82,20 @@ Each turn you receive the current trip state (already-recorded requirements, pre
 3. If the user is asking to change something already recorded in the current trip state (a requirement, preference, or an actual decision like a chosen flight/hotel), call propose_trip_revision instead of record_extraction for that item.
 4. Always also give a short, natural reply to the user as plain text alongside any tool calls.
 
-Valid requirement fields: ${REQUIREMENT_FIELDS.join(", ")}. Never invent a field outside this list, and never fabricate a value the user didn't state or clearly imply.`;
+Valid requirement fields: ${REQUIREMENT_FIELDS.join(", ")}. Never invent a field outside this list, and never fabricate a value the user didn't state or clearly imply.
+
+When calling propose_trip_revision with revisionType "decision", target must be exactly "flight" or "hotel" — the chain step being revised, not a specific leg or field ("flight" covers both the outbound and return legs together). Activities can't be revised this way yet. The currently active, not-yet-confirmed step is given to you as activeChainStep in the trip state below; you may also target an earlier step that's already confirmed if the user is asking to change something already picked.
+
+If the user's request about a decision is comparative/directional ("cheaper", "less expensive", "shorter", "higher rated") rather than an absolute threshold, don't propose a "decision" revision for it — instead propose a "requirement" revision with a concrete numeric threshold computed relative to the currently selected item's price/attribute (shown in the trip state's decisions below). For example, if the current hotel costs $158/night and the user asks for something cheaper, propose maxHotelPriceUsd around 10-15% below that (e.g. 135), not the word "cheaper" itself. If the request is instead absolute/hard ("free", "wheelchair accessible", "non-stop"), propose the matching requirement field directly at its exact value (e.g. maxActivityPriceUsd: 0 for "free") — do not invent a threshold for these.`;
 
 export interface IntakeAgentInput {
   userMessage: string;
   currentRequirements: RequirementRecord[];
   currentPreferences: PreferenceRecord[];
-  /** Minimal decision summaries — present once selections exist, which is what shifts the model into revision framing. */
-  currentDecisions?: { field: string; value: unknown }[];
+  /** Minimal decision summaries — present once selections exist, which is what shifts the model into revision framing. Confirmed decisions only (the caller filters out merely-"proposed" candidates). */
+  currentDecisions?: { field: string; value: unknown; status: string }[];
+  /** The chain step (`src/domain/chain.ts`'s `ChainStep`) that's currently active/not-yet-confirmed, or "complete" once all three are — computed by the orchestrator via `getCurrentChainStep`, not by this module, to keep it free of chain-domain coupling beyond this string. Tells the model which decision-revision targets are "the active step" vs. "an already-confirmed earlier one." */
+  activeChainStep?: string;
 }
 
 export interface IntakeAgentResult {
@@ -109,6 +115,7 @@ function buildUserContent(input: IntakeAgentInput): string {
     requirements: input.currentRequirements.map((r) => ({ field: r.field, value: r.value, status: r.status })),
     preferences: input.currentPreferences.map((p) => ({ field: p.field, value: p.value, status: p.status })),
     decisions: input.currentDecisions ?? [],
+    activeChainStep: input.activeChainStep ?? "flight",
   };
   return `Current trip state:\n${JSON.stringify(state)}\n\nLatest user message:\n${input.userMessage}`;
 }

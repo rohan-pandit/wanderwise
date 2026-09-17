@@ -34,6 +34,25 @@ describe("validateStateTransition", () => {
     }
   });
 
+  it("allows the stepwise chain redesign's direct finalize path (chain_completed -> presenting_draft -> awaiting_confirmation -> finalized)", () => {
+    const steps: [WorkflowState, WorkflowEvent, WorkflowState][] = [
+      ["requirements_ready", "chain_completed", "presenting_draft"],
+      ["presenting_draft", "confirmation_requested", "awaiting_confirmation"],
+    ];
+    for (const [fromState, event, toState] of steps) {
+      expect(validateStateTransition(req({ fromState, event }))).toEqual({ allowed: true, toState });
+    }
+    expect(
+      validateStateTransition(
+        req({ fromState: "awaiting_confirmation", event: "user_confirmed", proposalHashMatches: true, guardrailsPassed: true }),
+      ),
+    ).toEqual({ allowed: true, toState: "finalized" });
+  });
+
+  it("rejects chain_completed from anywhere but requirements_ready", () => {
+    expect(validateStateTransition(req({ fromState: "collecting_requirements", event: "chain_completed" })).allowed).toBe(false);
+  });
+
   it("finalizes only when the proposal hash matches and guardrails passed", () => {
     const base = req({ fromState: "awaiting_confirmation", event: "user_confirmed" });
 

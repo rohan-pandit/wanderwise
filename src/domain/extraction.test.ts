@@ -111,6 +111,26 @@ describe("ExtractedRequirement", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts a valid maxHotelPriceUsd requirement", () => {
+    const result = ExtractedRequirement.safeParse({
+      field: "maxHotelPriceUsd",
+      value: 150,
+      source: "user_explicit",
+      confidence: 0.9,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a non-positive maxHotelPriceUsd", () => {
+    const result = ExtractedRequirement.safeParse({
+      field: "maxHotelPriceUsd",
+      value: 0,
+      source: "user_explicit",
+      confidence: 0.9,
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("accepts a valid roomGroups requirement", () => {
     const result = ExtractedRequirement.safeParse({
       field: "roomGroups",

@@ -8,6 +8,8 @@ import {
   invalidatedStepsForFlightChange,
   invalidatedStepsForHotelChange,
   invalidatedStepsForRequirementField,
+  requirementRevisionTargetStep,
+  revisionRisksConfirmedWork,
 } from "./chain";
 
 describe("REQUIREMENT_FIELD_STEP", () => {
@@ -36,6 +38,7 @@ describe("REQUIREMENT_FIELD_STEP", () => {
     expect(REQUIREMENT_FIELD_STEP.noRedEye).toBe("flight");
     expect(REQUIREMENT_FIELD_STEP.maxFlightPriceUsd).toBe("flight");
     expect(REQUIREMENT_FIELD_STEP.minHotelRating).toBe("hotel");
+    expect(REQUIREMENT_FIELD_STEP.maxHotelPriceUsd).toBe("hotel");
     expect(REQUIREMENT_FIELD_STEP.refundableHotel).toBe("hotel");
     expect(REQUIREMENT_FIELD_STEP.requiredAccessibility).toBe("activities");
     expect(REQUIREMENT_FIELD_STEP.excludeClosedOnDays).toBe("activities");
@@ -140,5 +143,51 @@ describe("invalidatedStepsForHotelChange", () => {
 describe("invalidatedStepsForActivitiesChange", () => {
   it("invalidates nothing downstream — it's the last step", () => {
     expect(invalidatedStepsForActivitiesChange()).toEqual(["activities"]);
+  });
+});
+
+describe("requirementRevisionTargetStep", () => {
+  it("routes a foundational field to 'flight'", () => {
+    expect(requirementRevisionTargetStep("destination")).toBe("flight");
+    expect(requirementRevisionTargetStep("budgetTotalUsd")).toBe("flight");
+  });
+
+  it("routes a step-specific field to its own step", () => {
+    expect(requirementRevisionTargetStep("maxFlightPriceUsd")).toBe("flight");
+    expect(requirementRevisionTargetStep("maxHotelPriceUsd")).toBe("hotel");
+    expect(requirementRevisionTargetStep("maxActivityPriceUsd")).toBe("activities");
+  });
+});
+
+describe("revisionRisksConfirmedWork", () => {
+  it("is false for the active step when nothing downstream is confirmed", () => {
+    expect(revisionRisksConfirmedWork("flight", [])).toBe(false);
+  });
+
+  it("is false when only the target step itself is confirmed", () => {
+    const decisions = [
+      { field: "outboundFlight", status: "confirmed" },
+      { field: "returnFlight", status: "confirmed" },
+    ];
+    expect(revisionRisksConfirmedWork("flight", decisions)).toBe(false);
+  });
+
+  it("is true when a downstream step already has a confirmed decision", () => {
+    const decisions = [
+      { field: "outboundFlight", status: "confirmed" },
+      { field: "returnFlight", status: "confirmed" },
+      { field: "hotel", status: "confirmed" },
+    ];
+    expect(revisionRisksConfirmedWork("flight", decisions)).toBe(true);
+    expect(revisionRisksConfirmedWork("hotel", decisions)).toBe(false);
+  });
+
+  it("ignores a merely-proposed downstream decision", () => {
+    const decisions = [
+      { field: "outboundFlight", status: "confirmed" },
+      { field: "returnFlight", status: "confirmed" },
+      { field: "hotel", status: "proposed" },
+    ];
+    expect(revisionRisksConfirmedWork("flight", decisions)).toBe(false);
   });
 });

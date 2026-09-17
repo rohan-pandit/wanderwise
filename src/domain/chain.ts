@@ -67,6 +67,7 @@ export const REQUIREMENT_FIELD_STEP: Record<RequirementFieldName, ChainStep | "f
   noRedEye: "flight",
   maxFlightPriceUsd: "flight",
   minHotelRating: "hotel",
+  maxHotelPriceUsd: "hotel",
   refundableHotel: "hotel",
   requiredAccessibility: "activities",
   excludeClosedOnDays: "activities",
@@ -102,4 +103,31 @@ export function invalidatedStepsForHotelChange(): ChainStep[] {
 /** Activities is the last step — nothing further downstream to invalidate. */
 export function invalidatedStepsForActivitiesChange(): ChainStep[] {
   return ["activities"];
+}
+
+/**
+ * Which chain step a requirement field's revision should be routed through
+ * for the warn-before-cascade check below (stepwise chain redesign slice 4).
+ * "foundational" fields map to "flight" — the same step
+ * `invalidatedStepsForRequirementField` starts invalidating from for them.
+ */
+export function requirementRevisionTargetStep(field: RequirementFieldName): ChainStep {
+  const mapped = REQUIREMENT_FIELD_STEP[field];
+  return mapped === "foundational" ? "flight" : mapped;
+}
+
+/**
+ * True if revising `target` risks invalidating already-confirmed work — some
+ * step strictly *after* `target` in chain order currently has a confirmed
+ * decision. Revising the active step (nothing confirmed downstream yet)
+ * never needs a warning; revising a step that already has confirmed work
+ * downstream does (slice 4's warn-before-cascade UX). Deliberately excludes
+ * `target` itself — `target` having a confirmed decision is exactly the
+ * precondition for even calling this (you only revise a step that has
+ * something to revise).
+ */
+export function revisionRisksConfirmedWork(target: ChainStep, decisions: ChainDecision[]): boolean {
+  const confirmedFields = new Set(decisions.filter((d) => d.status === "confirmed").map((d) => d.field));
+  const downstream = stepsFrom(target).slice(1);
+  return downstream.some((step) => STEP_DECISION_FIELDS[step].some((f) => confirmedFields.has(f)));
 }

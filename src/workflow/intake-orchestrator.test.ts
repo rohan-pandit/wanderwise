@@ -516,13 +516,59 @@ describe("processIntakeTurn", () => {
       userMessage: "switch hotels",
     });
 
-    expect(result.decisionRevisionRequested).toBe("hotel");
+    expect(result.decisionRevisionRequested).toEqual({ step: "hotel" });
+    expect(result.pendingCascadeConfirmation).toBeNull();
     expect(recordGuardrailEvent).not.toHaveBeenCalledWith(
       supabase,
       expect.objectContaining({ guardrailName: "decision_revision_unsupported" }),
     );
     expect(appendTripRequirement).not.toHaveBeenCalled();
     expect(appendTripPreference).not.toHaveBeenCalled();
+  });
+
+  it("signals pendingCascadeConfirmation instead of decisionRevisionRequested when revising an already-confirmed earlier step", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([
+      { id: "d1", trip_id: TRIP_ID, field: "outboundFlight", value: "o1", status: "confirmed", source: "user_explicit", created_at: "now" },
+      { id: "d2", trip_id: TRIP_ID, field: "returnFlight", value: "r1", status: "confirmed", source: "user_explicit", created_at: "now" },
+      { id: "d3", trip_id: TRIP_ID, field: "hotel", value: "h1", status: "confirmed", source: "user_explicit", created_at: "now" },
+    ] as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({
+        revisionProposal: { revisionType: "decision", target: "flight", value: null },
+      }) as never,
+    );
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "actually, change my flight",
+    });
+
+    expect(result.decisionRevisionRequested).toBeNull();
+    expect(result.pendingCascadeConfirmation).toEqual({ kind: "decision", step: "flight", field: "flight" });
+  });
+
+  it("signals pendingCascadeConfirmation for a requirement revision that maps to a step with confirmed downstream work, while still persisting the requirement", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([
+      { id: "d1", trip_id: TRIP_ID, field: "hotel", value: "h1", status: "confirmed", source: "user_explicit", created_at: "now" },
+      { id: "d2", trip_id: TRIP_ID, field: "activities", value: "[]", status: "confirmed", source: "user_explicit", created_at: "now" },
+    ] as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({
+        revisionProposal: { revisionType: "requirement", target: "minHotelRating", value: 4.5 },
+      }) as never,
+    );
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "actually I want a higher-rated hotel",
+    });
+
+    expect(result.pendingCascadeConfirmation).toEqual({ kind: "requirement", step: "hotel", field: "minHotelRating" });
+    expect(appendTripRequirement).toHaveBeenCalledWith(supabase, expect.objectContaining({ field: "minHotelRating", value: 4.5 }));
   });
 
   it("logs a domain-validation guardrail for a decision revision targeting a field that isn't revisable", async () => {

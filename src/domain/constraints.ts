@@ -78,6 +78,14 @@ export function minHotelRatingConstraint(minRating: number): HardConstraint<Hote
   };
 }
 
+export function maxHotelPriceConstraint(maxPriceUsd: number): HardConstraint<Hotel> {
+  return {
+    code: "MAX_HOTEL_PRICE",
+    describe: () => `Hotel price must not exceed $${maxPriceUsd} per night.`,
+    isSatisfiedBy: (hotel) => hotel.price_per_night_usd <= maxPriceUsd,
+  };
+}
+
 /**
  * A hotel booking here always books one room *per room group* — so the
  * hotel's `room_capacity` only needs to fit the single largest group (e.g.

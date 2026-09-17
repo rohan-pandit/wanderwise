@@ -5,6 +5,7 @@ import {
   filterHardConstraints,
   maxActivityPriceConstraint,
   maxFlightPriceConstraint,
+  maxHotelPriceConstraint,
   minHotelRatingConstraint,
   noRedEyeConstraint,
   refundableConstraint,
@@ -70,6 +71,12 @@ describe("hotel constraints", () => {
     // largest group (3), not the whole party (7).
     expect(constraint.isSatisfiedBy(hotel({ room_capacity: 3 }))).toBe(true);
     expect(constraint.isSatisfiedBy(hotel({ room_capacity: 2 }))).toBe(false);
+  });
+
+  it("enforces a maximum price per night", () => {
+    const constraint = maxHotelPriceConstraint(150);
+    expect(constraint.isSatisfiedBy(hotel({ price_per_night_usd: 150 }))).toBe(true);
+    expect(constraint.isSatisfiedBy(hotel({ price_per_night_usd: 151 }))).toBe(false);
   });
 
   it("enforces refundability against real free-text cancellation policies", () => {

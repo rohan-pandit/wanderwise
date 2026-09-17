@@ -29,6 +29,7 @@ export const REQUIREMENT_FIELDS = [
   "noRedEye",
   "maxFlightPriceUsd",
   "minHotelRating",
+  "maxHotelPriceUsd",
   "refundableHotel",
   "requiredAccessibility",
   "excludeClosedOnDays",
@@ -79,6 +80,7 @@ export const ExtractedRequirement = z.discriminatedUnion("field", [
   z.object({ field: z.literal("noRedEye"), value: z.boolean(), ...provenance }),
   z.object({ field: z.literal("maxFlightPriceUsd"), value: z.number().positive(), ...provenance }),
   z.object({ field: z.literal("minHotelRating"), value: z.number().min(0).max(5), ...provenance }),
+  z.object({ field: z.literal("maxHotelPriceUsd"), value: z.number().positive(), ...provenance }),
   z.object({ field: z.literal("refundableHotel"), value: z.boolean(), ...provenance }),
   z.object({
     field: z.literal("requiredAccessibility"),

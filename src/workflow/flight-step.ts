@@ -25,18 +25,20 @@
  *    states get reused across three repeated steps is deliberately deferred
  *    until hotel + activities also exist and the chat loop is rebuilt.
  *
- * `proposeFlightStep` returns candidates without persisting anything —
- * ephemeral, same pattern `runSearchAndCuration` already uses. Since the
- * user picks one explicitly from a visible list, there's no need for the
- * `trip_decisions.status = "proposed"` intermediate here: `confirmFlightStep`
- * is the sole persistence point, writing directly as `"confirmed"`.
+ * `proposeFlightStep` persists its ranked candidate list as `"proposed"`
+ * `trip_decisions` rows (stepwise chain redesign slice 4) so a real UI can
+ * render candidate cards that survive a page reload — a change from slices
+ * 1-3, where candidates were purely ephemeral. `confirmFlightStep` promotes
+ * the picked pair's matching proposed row in place (via `step-shared.ts`'s
+ * `confirmDecisionField`) rather than always retiring-and-reinserting, and
+ * falls back to the original retire-then-insert behavior if no matching
+ * proposed row exists (e.g. a direct `confirmFlightStep` call with no prior
+ * `proposeFlightStep` call).
  *
  * No separate "revise" function exists this slice: a requirement change
  * (e.g. a future `maxFlightPriceUsd` revision) just means calling
  * `proposeFlightStep` again — it always reads current active requirements
- * fresh. The chat-level "detect 'cheaper' -> revise a requirement ->
- * re-propose" wiring needs `intake-orchestrator.ts` to become step-aware,
- * which is out of scope until a later slice.
+ * fresh.
  */
 import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -54,6 +56,7 @@ import {
   appendTripDecision,
   listActiveTripDecisions,
   retireActiveTripDecisionsForField,
+  retireProposedTripDecisionsForField,
 } from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
 import { findFlights, getFlightsByIds, type Flight } from "@/src/repositories/flights";
@@ -61,7 +64,7 @@ import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { listActiveTripRequirements, type TripRequirementRow } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { deriveCorrelationId } from "./correlation";
-import { flightHardConstraints, OneWayTripNotSupportedError, requirementMap } from "./step-shared";
+import { confirmDecisionField, flightHardConstraints, OneWayTripNotSupportedError, requirementMap } from "./step-shared";
 
 const AGENT_NAME = "flight_step";
 const MAX_FLIGHT_CANDIDATES = 3;
@@ -116,7 +119,7 @@ export interface ProposeFlightStepParams {
 }
 
 export interface ProposeFlightStepResult {
-  /** Best-first, up to `MAX_FLIGHT_CANDIDATES` — nothing is persisted yet. */
+  /** Best-first, up to `MAX_FLIGHT_CANDIDATES` — also persisted as "proposed" `trip_decisions` rows. */
   candidates: FlightStepCandidate[];
 }
 
@@ -217,6 +220,29 @@ export async function proposeFlightStep(
   }
   candidates.sort((a, b) => a.totalPriceUsd - b.totalPriceUsd);
   const topCandidates = candidates.slice(0, MAX_FLIGHT_CANDIDATES);
+
+  // Persist the ranked list as "proposed" (stepwise chain redesign slice 4)
+  // so the UI can render candidate cards that survive a page reload, and so
+  // `confirmFlightStep` can promote the picked pair in place rather than
+  // retiring and reinserting it.
+  await retireProposedTripDecisionsForField(supabase, params.tripId, "outboundFlight");
+  await retireProposedTripDecisionsForField(supabase, params.tripId, "returnFlight");
+  for (const candidate of topCandidates) {
+    await appendTripDecision(supabase, {
+      tripId: params.tripId,
+      field: "outboundFlight",
+      value: candidate.outboundFlight.id,
+      source: "system_computed",
+      status: "proposed",
+    });
+    await appendTripDecision(supabase, {
+      tripId: params.tripId,
+      field: "returnFlight",
+      value: candidate.returnFlight.id,
+      source: "system_computed",
+      status: "proposed",
+    });
+  }
 
   await appendTripEvent(supabase, {
     tripId: params.tripId,
@@ -335,22 +361,8 @@ export async function confirmFlightStep(
     }
   }
 
-  await retireActiveTripDecisionsForField(supabase, params.tripId, "outboundFlight");
-  await appendTripDecision(supabase, {
-    tripId: params.tripId,
-    field: "outboundFlight",
-    value: outboundFlight.id,
-    source: "user_explicit",
-    status: "confirmed",
-  });
-  await retireActiveTripDecisionsForField(supabase, params.tripId, "returnFlight");
-  await appendTripDecision(supabase, {
-    tripId: params.tripId,
-    field: "returnFlight",
-    value: returnFlight.id,
-    source: "user_explicit",
-    status: "confirmed",
-  });
+  await confirmDecisionField(supabase, params.tripId, "outboundFlight", outboundFlight.id, priorDecisions);
+  await confirmDecisionField(supabase, params.tripId, "returnFlight", returnFlight.id, priorDecisions);
 
   await appendTripEvent(supabase, {
     tripId: params.tripId,

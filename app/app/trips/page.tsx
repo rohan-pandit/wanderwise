@@ -1,5 +1,19 @@
 import Link from "next/link";
 import { createClient } from "@/src/config/supabase/server";
+import { getCurrentChainStep, type ChainDecision } from "@/src/domain/chain";
+
+const CHAIN_STEP_LABELS: Record<ReturnType<typeof getCurrentChainStep>, string> = {
+  flight: "Flight",
+  hotel: "Hotel",
+  activities: "Activities",
+  complete: "Complete, not yet finalized",
+};
+
+/** `trips.status` never advances past "requirements_ready" under the stepwise chain redesign — steps only ever write `trip_decisions`/`finalizeTrip` writes `finalized`. So progress for an in-flight trip is read from `trip_decisions` instead. */
+function describeProgress(status: string, decisions: ChainDecision[]): string {
+  if (status === "finalized") return "Finalized";
+  return CHAIN_STEP_LABELS[getCurrentChainStep(decisions)];
+}
 
 /**
  * Trip history list (PROJECT_BRIEF.md §14, IMPLEMENTATION_PLAN.md §4).
@@ -12,6 +26,20 @@ export default async function TripsPage() {
     .from("trips")
     .select("id, status, created_at")
     .order("created_at", { ascending: false });
+
+  const decisionsByTrip = new Map<string, ChainDecision[]>();
+  if (trips && trips.length > 0) {
+    const { data: decisionRows } = await supabase
+      .from("trip_decisions")
+      .select("trip_id, field, status")
+      .in("trip_id", trips.map((t) => t.id))
+      .eq("status", "confirmed");
+    for (const row of decisionRows ?? []) {
+      const list = decisionsByTrip.get(row.trip_id) ?? [];
+      list.push({ field: row.field, status: row.status });
+      decisionsByTrip.set(row.trip_id, list);
+    }
+  }
 
   return (
     <div className="flex flex-1 flex-col px-6 py-8">
@@ -43,7 +71,7 @@ export default async function TripsPage() {
                   Trip {trip.id.slice(0, 8)}
                 </span>
                 <span className="text-zinc-500 dark:text-zinc-400">
-                  {trip.status}
+                  {describeProgress(trip.status, decisionsByTrip.get(trip.id) ?? [])}
                 </span>
               </Link>
             </li>

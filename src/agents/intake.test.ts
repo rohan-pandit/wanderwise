@@ -251,9 +251,18 @@ describe("runIntakeAgent", () => {
     const client = new FakeModelClient({});
     const input: IntakeAgentInput = {
       ...baseInput,
-      currentDecisions: [{ field: "hotel", value: "hotel_123" }],
+      currentDecisions: [{ field: "hotel", value: "hotel_123", status: "confirmed" }],
     };
     await runIntakeAgent(client, input);
     expect(client.lastRequest?.messages[0].content).toContain("hotel_123");
+  });
+
+  it("serializes activeChainStep into the request, defaulting to 'flight' when omitted", async () => {
+    const client = new FakeModelClient({});
+    await runIntakeAgent(client, baseInput);
+    expect(client.lastRequest?.messages[0].content).toContain(`"activeChainStep":"flight"`);
+
+    await runIntakeAgent(client, { ...baseInput, activeChainStep: "hotel" });
+    expect(client.lastRequest?.messages[0].content).toContain(`"activeChainStep":"hotel"`);
   });
 });

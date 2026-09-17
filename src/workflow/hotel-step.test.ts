@@ -13,7 +13,14 @@ vi.mock("@/src/repositories/workflow-runs");
 import { getFlightsByIds } from "@/src/repositories/flights";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { findHotels, getHotelsByIds } from "@/src/repositories/hotels";
-import { appendTripDecision, listActiveTripDecisions, retireActiveTripDecisionsForField } from "@/src/repositories/trip-decisions";
+import {
+  appendTripDecision,
+  confirmTripDecisions,
+  listActiveTripDecisions,
+  retireActiveTripDecisionsForField,
+  retireProposedTripDecisionsForField,
+  supersedeOtherActiveTripDecisions,
+} from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
@@ -88,6 +95,9 @@ beforeEach(() => {
   vi.mocked(appendTripEvent).mockResolvedValue({} as never);
   vi.mocked(appendTripDecision).mockResolvedValue({} as never);
   vi.mocked(retireActiveTripDecisionsForField).mockResolvedValue(undefined as never);
+  vi.mocked(retireProposedTripDecisionsForField).mockResolvedValue(undefined as never);
+  vi.mocked(supersedeOtherActiveTripDecisions).mockResolvedValue(undefined as never);
+  vi.mocked(confirmTripDecisions).mockResolvedValue(undefined as never);
   vi.mocked(getFlightsByIds).mockImplementation(async (_s, ids) => (ids[0] === "o1" ? [outboundFlight()] : [returnFlight()]) as never);
 });
 
@@ -108,7 +118,7 @@ describe("proposeHotelStep", () => {
     expect(findHotels).toHaveBeenCalledWith(supabase, expect.objectContaining({ destination: "Lisbon" }));
   });
 
-  it("returns the top 3 cheapest passing hotels, without persisting anything", async () => {
+  it("returns the top 3 cheapest passing hotels and persists them as proposed", async () => {
     vi.mocked(findHotels).mockResolvedValue([
       hotel("cheap", { price_per_night_usd: 100 }),
       hotel("mid", { price_per_night_usd: 150 }),
@@ -119,7 +129,34 @@ describe("proposeHotelStep", () => {
     const result = await proposeHotelStep(supabase, { tripId: TRIP_ID });
 
     expect(result.candidates.map((h) => h.id)).toEqual(["cheap", "mid", "pricier"]);
-    expect(appendTripDecision).not.toHaveBeenCalled();
+    expect(retireProposedTripDecisionsForField).toHaveBeenCalledWith(supabase, TRIP_ID, "hotel");
+    expect(appendTripDecision).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "hotel", value: "cheap", status: "proposed", source: "system_computed" }),
+    );
+    expect(appendTripDecision).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "hotel", value: "mid", status: "proposed", source: "system_computed" }),
+    );
+    expect(appendTripDecision).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "hotel", value: "pricier", status: "proposed", source: "system_computed" }),
+    );
+  });
+
+  it("narrows candidates by a maxHotelPriceUsd requirement", async () => {
+    vi.mocked(listActiveTripRequirements).mockResolvedValue([
+      ...READY_REQUIREMENTS,
+      requirementRow("maxHotelPriceUsd", 150),
+    ] as never);
+    vi.mocked(findHotels).mockResolvedValue([
+      hotel("cheap", { price_per_night_usd: 150 }),
+      hotel("pricier", { price_per_night_usd: 151 }),
+    ] as never);
+
+    const result = await proposeHotelStep(supabase, { tripId: TRIP_ID });
+
+    expect(result.candidates.map((h) => h.id)).toEqual(["cheap"]);
   });
 
   it("rejects a hotel that can't fit the room group, logs the guardrail, and throws NoViableHotelCandidatesError when nothing passes", async () => {
@@ -164,6 +201,41 @@ describe("confirmHotelStep", () => {
     );
     expect(result.hotel.id).toBe("h1");
     expect(appendTripEvent).toHaveBeenCalledWith(supabase, expect.objectContaining({ eventType: "hotel_step_confirmed" }));
+  });
+
+  it("promotes a matching proposed candidate in place instead of retiring and reinserting", async () => {
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([
+      ...CONFIRMED_FLIGHT_DECISIONS,
+      decisionRow("hotel", "h1", "proposed"),
+    ] as never);
+    vi.mocked(getHotelsByIds).mockResolvedValue([hotel("h1")] as never);
+
+    await confirmHotelStep(supabase, { tripId: TRIP_ID, hotelId: "h1" });
+
+    expect(supersedeOtherActiveTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, "hotel", "dec_hotel");
+    expect(confirmTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, ["hotel"]);
+    expect(retireActiveTripDecisionsForField).not.toHaveBeenCalledWith(supabase, TRIP_ID, "hotel");
+    expect(appendTripDecision).not.toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "hotel", status: "confirmed" }),
+    );
+  });
+
+  it("also supersedes the prior confirmed hotel when promoting a new pick while revising an already-confirmed step", async () => {
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([
+      ...CONFIRMED_FLIGHT_DECISIONS,
+      { id: "dec_hotel_old", trip_id: TRIP_ID, field: "hotel", value: "h-old", status: "confirmed", source: "user_explicit", created_at: "now" },
+      { id: "dec_hotel_new", trip_id: TRIP_ID, field: "hotel", value: "h-new", status: "proposed", source: "system_computed", created_at: "now" },
+    ] as never);
+    vi.mocked(getHotelsByIds).mockResolvedValue([hotel("h-new")] as never);
+
+    await confirmHotelStep(supabase, { tripId: TRIP_ID, hotelId: "h-new" });
+
+    // supersedeOtherActiveTripDecisions supersedes every OTHER non-superseded
+    // row for the field (any status) except the one being kept — that
+    // includes the still-confirmed old pick, not just sibling proposals.
+    expect(supersedeOtherActiveTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, "hotel", "dec_hotel_new");
+    expect(confirmTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, ["hotel"]);
   });
 
   it("throws InvalidHotelSelectionError when the id doesn't resolve to real inventory", async () => {

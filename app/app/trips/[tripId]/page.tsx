@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/src/config/supabase/server";
-import { ChatPanel, type ChatMessage } from "../../_components/chat-panel";
-import { ItineraryPanel } from "../../_components/itinerary-panel";
+import { type ChatMessage } from "../../_components/chat-panel";
+import { TripWorkspace } from "../../_components/trip-workspace";
 
 /**
  * A specific trip's chat + live itinerary, resumed. RLS enforces ownership —
@@ -42,10 +42,5 @@ export default async function TripPage({
     content: m.content,
   }));
 
-  return (
-    <div className="flex min-h-0 flex-1">
-      <ChatPanel tripId={trip.id} initialMessages={initialMessages} />
-      <ItineraryPanel tripId={trip.id} />
-    </div>
-  );
+  return <TripWorkspace tripId={trip.id} initialMessages={initialMessages} initialTripStatus={trip.status} />;
 }

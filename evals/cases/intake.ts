@@ -85,7 +85,7 @@ export const INTAKE_EVAL_CASES: IntakeEvalCase[] = [
       userMessage: "Actually, can we switch to a different, cheaper hotel than the one we picked?",
       currentRequirements: [],
       currentPreferences: [],
-      currentDecisions: [{ field: "hotel", value: "hotel_456" }],
+      currentDecisions: [{ field: "hotel", value: "hotel_456", status: "confirmed" }],
     },
     assert: (result) => [
       { pass: result.revisionProposal !== null, detail: "proposed a revision" },

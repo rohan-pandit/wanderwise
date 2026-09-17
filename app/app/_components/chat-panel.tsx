@@ -9,10 +9,18 @@
  * and otherwise just render whatever comes back. The live itinerary panel
  * (`itinerary-panel.tsx`) picks up everything that happens after this
  * response returns via its own Supabase Realtime subscription.
+ *
+ * Slice 4 (stepwise chain redesign): if `sendMessage` signals
+ * `pendingCascadeConfirmation` (a chat-requested revision that risks
+ * invalidating already-confirmed downstream work), this reports it up via
+ * `onPendingCascade` instead of silently proceeding — `TripWorkspace` owns
+ * that state and `ItineraryPanel` renders the actual warning banner, since
+ * either this panel (chat) or that one (a direct "Change" click) can
+ * trigger it.
  */
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { sendMessage } from "../actions";
+import { sendMessage, type PendingCascadeConfirmation } from "../actions";
 
 export interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -22,9 +30,11 @@ export interface ChatMessage {
 export function ChatPanel({
   tripId: initialTripId,
   initialMessages,
+  onPendingCascade,
 }: {
   tripId?: string;
   initialMessages: ChatMessage[];
+  onPendingCascade?: (pending: PendingCascadeConfirmation) => void;
 }) {
   const router = useRouter();
   const [tripId, setTripId] = useState(initialTripId);
@@ -49,6 +59,9 @@ export function ChatPanel({
       if (!tripId) {
         setTripId(result.tripId);
         router.push(`/app/trips/${result.tripId}`);
+      }
+      if (result.pendingCascadeConfirmation) {
+        onPendingCascade?.(result.pendingCascadeConfirmation);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong — try again.");

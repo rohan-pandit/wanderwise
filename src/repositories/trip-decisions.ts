@@ -65,7 +65,55 @@ export async function retireActiveTripDecisionsForField(
   );
 }
 
-/** Flips every currently-`"proposed"` row for these fields to `"confirmed"` — the other half of the propose/confirm lifecycle a chain step that shows a proposal before confirming it (rather than writing straight to `"confirmed"`, as the flight step does) would use. */
+/** Supersedes every currently-`"proposed"` row for a field, leaving a `"confirmed"` row (if any) untouched. Called by a `propose*Step` before writing a fresh candidate list, so a re-propose doesn't leave the prior list's rows lingering as stale proposals — without disturbing an already-confirmed decision that a mere re-propose shouldn't touch until the user actually picks a replacement. */
+export async function retireProposedTripDecisionsForField(
+  supabase: SupabaseClient<Database>,
+  tripId: string,
+  field: string,
+): Promise<void> {
+  await unwrapOrThrow(
+    supabase
+      .from("trip_decisions")
+      .update({ status: "superseded" })
+      .eq("trip_id", tripId)
+      .eq("field", field)
+      .eq("status", "proposed")
+      .select(),
+  );
+}
+
+/**
+ * Supersedes every other non-superseded row for a field — both sibling
+ * `"proposed"` candidates AND, critically, any prior `"confirmed"` row for
+ * that field. Used at confirm time when promoting a matching proposed row
+ * in place (`step-shared.ts`'s `confirmDecisionField`): a first-ever confirm
+ * has no prior confirmed row to touch, but *revising* an already-confirmed
+ * step (stepwise chain redesign slice 4's per-step "Change" UI) proposes
+ * fresh candidates alongside the still-confirmed old one — without also
+ * superseding that old confirmed row here, promoting the newly-picked
+ * candidate would leave two `"confirmed"` rows for the same field at once,
+ * breaking the "at most one confirmed row per field" invariant
+ * `getCurrentChainStep` and every step module rely on.
+ */
+export async function supersedeOtherActiveTripDecisions(
+  supabase: SupabaseClient<Database>,
+  tripId: string,
+  field: string,
+  keepDecisionId: string,
+): Promise<void> {
+  await unwrapOrThrow(
+    supabase
+      .from("trip_decisions")
+      .update({ status: "superseded" })
+      .eq("trip_id", tripId)
+      .eq("field", field)
+      .neq("status", "superseded")
+      .neq("id", keepDecisionId)
+      .select(),
+  );
+}
+
+/** Flips every currently-`"proposed"` row for these fields to `"confirmed"` — the other half of the propose/confirm lifecycle a chain step that shows a proposal before confirming it (rather than writing straight to `"confirmed"`, as the flight step originally did) uses. */
 export async function confirmTripDecisions(
   supabase: SupabaseClient<Database>,
   tripId: string,

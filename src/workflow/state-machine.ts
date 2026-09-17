@@ -42,6 +42,7 @@ export const WORKFLOW_EVENTS = [
   "combinations_assembled",
   "itinerary_valid",
   "itinerary_invalid",
+  "chain_completed",
   "confirmation_requested",
   "revision_requested",
   "revision_submitted",
@@ -104,6 +105,13 @@ const RULES: TransitionRule[] = [
   { from: "awaiting_clarification", event: "clarification_resolved", to: "collecting_requirements" },
   { from: "collecting_requirements", event: "requirements_complete", to: "requirements_ready" },
   { from: "requirements_ready", event: "begin_search", to: "searching_inventory" },
+  // Stepwise chain redesign slice 4: once all three chain steps
+  // (flight/hotel/activities, `src/domain/chain.ts`'s `getCurrentChainStep`)
+  // are confirmed, `app/app/actions.ts`'s `finalizeTrip` fires this directly
+  // from `requirements_ready` rather than marching through the now-unused
+  // one-shot-pipeline states below (`searching_inventory` through
+  // `validating_itinerary`) that the stepwise steps never touch.
+  { from: "requirements_ready", event: "chain_completed", to: "presenting_draft" },
   { from: "searching_inventory", event: "search_completed", to: "validating_candidates" },
   { from: "validating_candidates", event: "candidates_valid", to: "assembling_options" },
   { from: "assembling_options", event: "combinations_assembled", to: "validating_itinerary" },

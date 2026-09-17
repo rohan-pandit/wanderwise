@@ -19,6 +19,13 @@
  * downstream), `confirmActivitiesStep` is also where the trip's budget gets
  * computed and the Itinerary Writer runs, exactly as the old pipeline's
  * `finalizeCombinations` did at the end of its one-shot assembly.
+ *
+ * Slice 4: `proposeActivitiesStep` persists its one scheduled result as a
+ * `"proposed"` `trip_decisions` row (same reasoning as flight/hotel — reload
+ * survival for a real UI). `confirmActivitiesStep` needs no equivalent
+ * change: its existing retire-then-insert-as-confirmed loop over
+ * `activities`/`budget`/`itineraryText` already correctly supersedes that
+ * proposed row in the same call that writes the confirmed one.
  */
 import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -45,7 +52,12 @@ import { getActivitiesByIds, type MatchedActivity } from "@/src/repositories/act
 import { getFlightsByIds, type Flight } from "@/src/repositories/flights";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { getHotelsByIds, type Hotel } from "@/src/repositories/hotels";
-import { appendTripDecision, listActiveTripDecisions, retireActiveTripDecisionsForField } from "@/src/repositories/trip-decisions";
+import {
+  appendTripDecision,
+  listActiveTripDecisions,
+  retireActiveTripDecisionsForField,
+  retireProposedTripDecisionsForField,
+} from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
 import { listActiveTripPreferences } from "@/src/repositories/trip-preferences";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
@@ -359,6 +371,25 @@ export async function proposeActivitiesStep(
     workflowRunId: run.id,
   });
 
+  const proposedScheduledActivities: ProposedScheduledActivity[] = scheduledActivities.map((a) => ({
+    id: a.id,
+    date: a.date,
+    startMinutes: a.startMinutes,
+    durationMinutes: a.durationMinutes,
+  }));
+
+  // Persisted as "proposed" (stepwise chain redesign slice 4) so the UI can
+  // render this schedule and survive a page reload before it's confirmed —
+  // a single row, since activities is a scheduling result, not a pick-list.
+  await retireProposedTripDecisionsForField(supabase, params.tripId, "activities");
+  await appendTripDecision(supabase, {
+    tripId: params.tripId,
+    field: "activities",
+    value: proposedScheduledActivities as unknown as Json,
+    source: "system_computed",
+    status: "proposed",
+  });
+
   await appendTripEvent(supabase, {
     tripId: params.tripId,
     eventType: "activities_step_proposed",
@@ -370,7 +401,7 @@ export async function proposeActivitiesStep(
   });
 
   return {
-    scheduledActivities: scheduledActivities.map((a) => ({ id: a.id, date: a.date, startMinutes: a.startMinutes, durationMinutes: a.durationMinutes })),
+    scheduledActivities: proposedScheduledActivities,
     unscheduledActivityIds: schedule.unscheduled,
     feasibility,
     curation,

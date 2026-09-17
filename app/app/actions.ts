@@ -1,13 +1,8 @@
 "use server";
 
 /**
- * Server Action entry point for the Intake orchestrator (Phase 6). No chat
- * UI consumes this yet — that's Phase 7 — but this makes the wiring
- * genuinely reachable through the real Next.js request path (authenticated
- * Supabase client, real Anthropic calls), not just exercised by mocked
- * unit tests. A future chat UI calls `sendMessage` directly as a Server
- * Action, or a Route Handler wraps it if a non-Server-Component client ever
- * needs it over HTTP.
+ * Server Action entry points for the chat UI and the stepwise chain
+ * (Phase 6/7; stepwise chain redesign per `docs/IMPLEMENTATION_PLAN.md`).
  *
  * Uses the **service-role** client (`createServiceClient`), not the
  * RLS-scoped one, for everything past the auth check below. The
@@ -18,9 +13,19 @@
  * tables that DO have policies, would just be redundant with the explicit
  * `tripId` scoping this module already does). This is exactly the "trusted
  * server-side code" `service.ts`'s own docstring describes, on the
- * condition that ownership is checked explicitly instead — see the
- * `trip.user_id !== user.id` check below, which replaces what RLS would
- * otherwise have enforced automatically.
+ * condition that ownership is checked explicitly instead — see
+ * `requireOwnedTrip` below, which replaces what RLS would otherwise have
+ * enforced automatically.
+ *
+ * Slice 4 (chat UI rework, "STEPWISE CHAIN REDESIGN") replaced
+ * `chain-orchestrator.ts`'s interim auto-confirm glue (deleted this slice)
+ * with real per-step interaction: `propose*Candidates`/`confirm*Candidate`
+ * are the hybrid UI's direct, no-LLM-round-trip pick/confirm path;
+ * `sendMessage`'s auto-chain now only ever *proposes* the next step (never
+ * auto-confirms), and a revision that risks invalidating already-confirmed
+ * downstream work surfaces as `pendingCascadeConfirmation` for the UI to
+ * show a warning and get explicit confirmation (`confirmCascadeAndRevise`)
+ * before anything is retired.
  */
 import { after } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -30,17 +35,49 @@ import type { Database } from "@/src/config/supabase/database.types";
 import { AnthropicModelClient } from "@/src/agents/providers/anthropic-model-client";
 import { AGENT_MODELS } from "@/src/config/models";
 import { VoyageEmbeddingClient } from "@/src/retrieval/providers/voyage-embedding-client";
+import { getCurrentChainStep, type ChainStep } from "@/src/domain/chain";
 import { createSession } from "@/src/repositories/sessions";
+import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
+import { getLatestTripState } from "@/src/repositories/trip-state";
 import { getTrip, type Trip } from "@/src/repositories/trips";
 import { startTrip } from "@/src/workflow/controller";
-import { processIntakeTurn, type ProcessIntakeTurnResult } from "@/src/workflow/intake-orchestrator";
+import { advanceOrThrow } from "@/src/workflow/advance";
+import { deriveCorrelationId } from "@/src/workflow/correlation";
 import {
-  runStepwiseChain,
-  runStepwiseRevision,
-  type RunStepwiseChainResult,
+  processIntakeTurn,
+  type PendingCascadeConfirmation,
+  type ProcessIntakeTurnResult,
+} from "@/src/workflow/intake-orchestrator";
+import {
+  advanceOrRefreshChain,
+  proposeCurrentChainStep,
+  reviseChainStep,
+  type AdvanceOrRefreshResult,
+  type ReviseChainStepResult,
   type StepwiseChainClients,
-} from "@/src/workflow/chain-orchestrator";
-import type { RevisableDecisionField } from "@/src/workflow/step-shared";
+} from "@/src/workflow/step-router";
+import {
+  NoViableFlightCandidatesError,
+  confirmFlightStep,
+  proposeFlightStep,
+  type ConfirmFlightStepResult,
+  type ProposeFlightStepResult,
+} from "@/src/workflow/flight-step";
+import {
+  NoViableHotelCandidatesError,
+  confirmHotelStep,
+  proposeHotelStep,
+  type ConfirmHotelStepResult,
+  type ProposeHotelStepResult,
+} from "@/src/workflow/hotel-step";
+import {
+  confirmActivitiesStep,
+  proposeActivitiesStep,
+  type ConfirmActivitiesStepResult,
+  type ProposeActivitiesStepResult,
+  type ProposedScheduledActivity,
+} from "@/src/workflow/activities-step";
+import type { WorkflowState } from "@/src/workflow/state-machine";
 
 /** Shared by every Server Action here past `sendMessage`'s own trip-creation path: authenticate, then load the trip and check ownership explicitly (the RLS-scoped client isn't used past this point — see the module docstring). */
 async function requireOwnedTrip(supabase: SupabaseClient<Database>, tripId: string): Promise<Trip> {
@@ -66,6 +103,31 @@ function stepwiseChainClients(): StepwiseChainClients {
     writerModelClient: new AnthropicModelClient(AGENT_MODELS.itineraryWriter),
     embeddingClient: new VoyageEmbeddingClient(),
   };
+}
+
+/**
+ * A candidate list can genuinely come up empty — e.g. a revision converts
+ * "cheaper" into a `maxHotelPriceUsd` threshold below every real hotel's
+ * price. That's not a bug, it's the honest outcome (design rule 3: say so,
+ * don't silently substitute the nearest option) — but left as a thrown
+ * error, it surfaces to the client as Next.js's generic obfuscated
+ * production error ("An error occurred in the Server Components render...",
+ * no usable detail) instead of an actual explanation. Recognized "no viable
+ * candidates" errors get converted to a friendly message here instead of
+ * propagating as an exception; anything else re-throws unchanged.
+ */
+function friendlyStepErrorMessage(err: unknown): string | null {
+  if (err instanceof NoViableFlightCandidatesError) {
+    return "No flights match your current requirements — try relaxing the budget or other constraints.";
+  }
+  if (err instanceof NoViableHotelCandidatesError) {
+    return "No hotels match your current requirements — try relaxing the price or rating constraints.";
+  }
+  return null;
+}
+
+export interface StepActionError {
+  error: string;
 }
 
 export interface SendMessageInput {
@@ -113,74 +175,265 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
     userMessage: input.message,
   });
 
-  // Auto-chain into whatever's next (Phase 7, decided with the user): there's
-  // no user-facing checkpoint between "requirements just became ready" (or "a
-  // decision revision was requested") and the resulting draft — those
-  // intermediate workflow states exist for retry/telemetry granularity, not
-  // because a chat UI should ever pause and ask before continuing. Scheduled
-  // via `after()` so this response returns immediately (the user's message +
-  // the intake agent's own reply) instead of blocking on several more
-  // seconds of real API calls; the chat UI watches `trip_decisions`/
-  // `trip_events` via Supabase Realtime to see the rest land live, piece by
-  // piece, exactly as each step's write completes.
+  // Auto-chain into whatever's next, scheduled via `after()` so this
+  // response returns immediately (the user's message + the intake agent's
+  // own reply) instead of blocking on real API calls; the itinerary panel
+  // watches `trip_decisions`/`trip_events` via Supabase Realtime to see the
+  // rest land live. Unlike the old interim glue (`chain-orchestrator.ts`,
+  // deleted this slice), nothing here auto-confirms anything — it only ever
+  // proposes, and the user picks/confirms via the hybrid UI's own Server
+  // Actions below.
   //
-  // `runStepwiseChain`/`runStepwiseRevision` (stepwise chain redesign slice
-  // 3, `docs/IMPLEMENTATION_PLAN.md`) are interim glue: they auto-confirm
-  // each step's top-ranked candidate rather than showing it and waiting for
-  // the user, so the chat UI keeps behaving as it did under the old
-  // one-shot pipeline (retired this slice) until slice 4 replaces this with
-  // real per-step interaction.
-  //
-  // `decisionRevisionRequested` is checked *first*, not `workflowState`.
-  // Caught live (not by unit tests, which mock `processIntakeTurn` and so
-  // never see this): under the old pipeline, `workflowState` genuinely left
-  // `"requirements_ready"` once search began (`advanceTrip` moved it along).
-  // The new stepwise steps deliberately never call `advanceTrip` (slice 1's
-  // decision), so `workflowState` stays `"requirements_ready"` forever after
-  // the first run — checking it first meant a revision turn always
-  // re-entered `runStepwiseChain` (which correctly no-ops once the chain is
-  // already complete) instead of ever reaching `runStepwiseRevision`, so no
-  // chat-requested revision could ever actually apply. `runStepwiseChain`
-  // is safe to call speculatively on any other turn: `getCurrentChainStep`
-  // makes it a harmless no-op once the chain is already fully confirmed.
+  // Checked in this exact order — `pendingCascadeConfirmation` and
+  // `decisionRevisionRequested` first, `workflowState` last. Caught live in
+  // slice 3 (not by unit tests, which mock `processIntakeTurn` and so never
+  // see this): `workflowState` never leaves `"requirements_ready"` once the
+  // stepwise steps take over (they deliberately never call `advanceTrip`),
+  // so checking it first would mean a genuine chat-requested revision is
+  // silently missed forever in favor of the "requirements_ready" branch.
   const finalTripId = tripId;
-  if (result.decisionRevisionRequested) {
-    const field = result.decisionRevisionRequested;
+  if (result.pendingCascadeConfirmation) {
+    // Do nothing yet — the UI must show the warning (from
+    // `result.pendingCascadeConfirmation`) and the user must explicitly
+    // confirm via `confirmCascadeAndRevise` before any re-propose/retirement
+    // happens. The requirement/decision value this turn resolved to, if
+    // any, is already persisted regardless (see `applyRevisionProposal`'s
+    // docstring in `intake-orchestrator.ts`).
+  } else if (result.decisionRevisionRequested) {
+    const step = result.decisionRevisionRequested.step;
     after(() =>
-      runStepwiseRevision(supabase, { tripId: finalTripId, field, ...stepwiseChainClients() }).catch((err) => {
-        console.error(`runStepwiseRevision failed for trip ${finalTripId}:`, err);
+      reviseChainStep(supabase, finalTripId, step, stepwiseChainClients()).catch((err) => {
+        console.error(`reviseChainStep failed for trip ${finalTripId}:`, err);
       }),
     );
   } else if (result.workflowState === "requirements_ready") {
-    after(() =>
-      runStepwiseChain(supabase, { tripId: finalTripId, ...stepwiseChainClients() }).catch((err) => {
-        console.error(`runStepwiseChain failed for trip ${finalTripId}:`, err);
-      }),
-    );
+    // Only propose the very first time the chain has nothing at all yet —
+    // `workflowState` stays "requirements_ready" on every later turn too,
+    // and without this check an unrelated chat message would keep
+    // re-searching and overwriting the current step's candidate list.
+    const existingDecisions = await listActiveTripDecisions(supabase, finalTripId);
+    if (existingDecisions.length === 0) {
+      after(() =>
+        proposeCurrentChainStep(supabase, finalTripId, stepwiseChainClients()).catch((err) => {
+          console.error(`proposeCurrentChainStep failed for trip ${finalTripId}:`, err);
+        }),
+      );
+    }
   }
 
   return { ...result, tripId, sessionId };
 }
 
-export interface ReviseTripDecisionInput {
+export interface ProposeFlightCandidatesInput {
   tripId: string;
-  field: RevisableDecisionField;
 }
 
-export interface ReviseTripDecisionResult extends RunStepwiseChainResult {
+export async function proposeFlightCandidates(input: ProposeFlightCandidatesInput): Promise<ProposeFlightStepResult | StepActionError> {
+  const supabase = createServiceClient();
+  await requireOwnedTrip(supabase, input.tripId);
+  try {
+    return await proposeFlightStep(supabase, { tripId: input.tripId });
+  } catch (err) {
+    const friendly = friendlyStepErrorMessage(err);
+    if (friendly) return { error: friendly };
+    throw err;
+  }
+}
+
+export interface ConfirmFlightCandidateInput {
   tripId: string;
+  outboundFlightId: string;
+  returnFlightId: string;
+}
+
+export interface ConfirmFlightCandidateResult {
+  confirmed: ConfirmFlightStepResult;
+  /** Whatever `advanceOrRefreshChain` did next — the client uses this directly to populate the following step's candidates rather than redundantly re-fetching once Realtime delivers the same rows. */
+  next: AdvanceOrRefreshResult;
+}
+
+/** Confirms the user's picked flight pair, then either proposes the next step (first-time) or refreshes budget/itineraryText (a revision that left the rest of the chain confirmed) — see `step-router.ts`'s `advanceOrRefreshChain`. */
+export async function confirmFlightCandidate(input: ConfirmFlightCandidateInput): Promise<ConfirmFlightCandidateResult | StepActionError> {
+  const supabase = createServiceClient();
+  await requireOwnedTrip(supabase, input.tripId);
+  const confirmed = await confirmFlightStep(supabase, {
+    tripId: input.tripId,
+    outboundFlightId: input.outboundFlightId,
+    returnFlightId: input.returnFlightId,
+  });
+  try {
+    const next = await advanceOrRefreshChain(supabase, input.tripId, stepwiseChainClients());
+    return { confirmed, next };
+  } catch (err) {
+    const friendly = friendlyStepErrorMessage(err);
+    if (friendly) return { error: friendly };
+    throw err;
+  }
+}
+
+export interface ProposeHotelCandidatesInput {
+  tripId: string;
+}
+
+export async function proposeHotelCandidates(input: ProposeHotelCandidatesInput): Promise<ProposeHotelStepResult | StepActionError> {
+  const supabase = createServiceClient();
+  await requireOwnedTrip(supabase, input.tripId);
+  try {
+    return await proposeHotelStep(supabase, { tripId: input.tripId });
+  } catch (err) {
+    const friendly = friendlyStepErrorMessage(err);
+    if (friendly) return { error: friendly };
+    throw err;
+  }
+}
+
+export interface ConfirmHotelCandidateInput {
+  tripId: string;
+  hotelId: string;
+}
+
+export interface ConfirmHotelCandidateResult {
+  confirmed: ConfirmHotelStepResult;
+  /** Whatever `advanceOrRefreshChain` did next — critically, when this is `{step: "activities", result}`, the client must use `result` directly rather than also re-fetching, since `proposeActivitiesStep` makes a real Curator LLM call it shouldn't pay for twice. */
+  next: AdvanceOrRefreshResult;
+}
+
+export async function confirmHotelCandidate(input: ConfirmHotelCandidateInput): Promise<ConfirmHotelCandidateResult | StepActionError> {
+  const supabase = createServiceClient();
+  await requireOwnedTrip(supabase, input.tripId);
+  const confirmed = await confirmHotelStep(supabase, { tripId: input.tripId, hotelId: input.hotelId });
+  try {
+    const next = await advanceOrRefreshChain(supabase, input.tripId, stepwiseChainClients());
+    return { confirmed, next };
+  } catch (err) {
+    const friendly = friendlyStepErrorMessage(err);
+    if (friendly) return { error: friendly };
+    throw err;
+  }
+}
+
+export interface ProposeActivitiesCandidateInput {
+  tripId: string;
+}
+
+export async function proposeActivitiesCandidate(input: ProposeActivitiesCandidateInput): Promise<ProposeActivitiesStepResult> {
+  const supabase = createServiceClient();
+  await requireOwnedTrip(supabase, input.tripId);
+  const clients = stepwiseChainClients();
+  return proposeActivitiesStep(supabase, clients.curatorModelClient, clients.embeddingClient, { tripId: input.tripId });
+}
+
+export interface ConfirmActivitiesCandidateInput {
+  tripId: string;
+  scheduledActivities: ProposedScheduledActivity[];
+}
+
+/** Confirms the schedule (activities is the chain's last step, so this also computes budget/itineraryText), then fires the one-time `chain_completed` transition if the whole chain is now confirmed — idempotent, and skipped if the trip has already moved past `requirements_ready` (e.g. a later re-confirm after finalization). */
+export async function confirmActivitiesCandidate(input: ConfirmActivitiesCandidateInput): Promise<ConfirmActivitiesStepResult> {
+  const supabase = createServiceClient();
+  await requireOwnedTrip(supabase, input.tripId);
+  const clients = stepwiseChainClients();
+  const result = await confirmActivitiesStep(supabase, clients.writerModelClient, {
+    tripId: input.tripId,
+    scheduledActivities: input.scheduledActivities,
+  });
+
+  const decisions = await listActiveTripDecisions(supabase, input.tripId);
+  if (getCurrentChainStep(decisions) === "complete") {
+    const currentState = await getLatestTripState(supabase, input.tripId);
+    if (currentState?.state.workflowState === "requirements_ready") {
+      await advanceOrThrow(supabase, {
+        tripId: input.tripId,
+        event: "chain_completed",
+        actor: "system",
+        correlationId: deriveCorrelationId(input.tripId, "chain_completed"),
+        agentName: "activities_step",
+      });
+    }
+  }
+
+  return result;
+}
+
+export interface ConfirmCascadeAndReviseInput {
+  tripId: string;
+  step: ChainStep;
 }
 
 /**
- * Server Action entry point for the decision-revision loop
- * (`src/workflow/chain-orchestrator.ts`'s `runStepwiseRevision`). No chat UI
- * calls this directly today — `sendMessage`'s auto-chain above calls it once
- * `processIntakeTurn` signals `decisionRevisionRequested` — but it's exposed
- * as its own action too for testing/debugging a revision in isolation.
+ * The user's explicit "yes, go ahead" after `pendingCascadeConfirmation`
+ * warned that revising an already-confirmed earlier step may invalidate
+ * what's downstream — and also the direct "Change" click for revising a
+ * step that *doesn't* risk any confirmed downstream work (no warning
+ * needed there, but the re-propose mechanics are identical either way, so
+ * both UI paths call this same action). Only fires the re-propose — the
+ * requirement/decision value itself was already persisted the turn it was
+ * requested (see `sendMessage`'s docstring). Returns the fresh candidates
+ * directly so the client can render them without a further round trip.
  */
-export async function reviseTripDecision(input: ReviseTripDecisionInput): Promise<ReviseTripDecisionResult> {
+export async function confirmCascadeAndRevise(input: ConfirmCascadeAndReviseInput): Promise<ReviseChainStepResult | StepActionError> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId);
-  const result = await runStepwiseRevision(supabase, { tripId: input.tripId, field: input.field, ...stepwiseChainClients() });
-  return { ...result, tripId: input.tripId };
+  try {
+    return await reviseChainStep(supabase, input.tripId, input.step, stepwiseChainClients());
+  } catch (err) {
+    const friendly = friendlyStepErrorMessage(err);
+    if (friendly) return { error: friendly };
+    throw err;
+  }
 }
+
+export interface FinalizeTripInput {
+  tripId: string;
+}
+
+export interface FinalizeTripResult {
+  tripId: string;
+  workflowState: WorkflowState;
+}
+
+/**
+ * Explicitly finalizes a trip once all three chain steps are confirmed —
+ * the stepwise model's replacement for the old one-shot pipeline's
+ * `presenting_draft` -> `awaiting_confirmation` -> `finalized` flow, reusing
+ * those same existing transition rules (`state-machine.ts`) rather than
+ * inventing new ones, entered via a new direct `chain_completed` event from
+ * `requirements_ready` instead of marching through the now-unused
+ * `searching_inventory`/`validating_candidates`/etc. states the stepwise
+ * steps never touch. `proposalHashMatches`/`guardrailsPassed` are passed
+ * `true` unconditionally — no equivalent of the old model's single
+ * draft-proposal hash exists here, and every constituent decision already
+ * re-validates its own hard constraints/feasibility at its own confirm
+ * time; a real proposal-hash mechanism for finalize is out of scope for
+ * this slice.
+ */
+export async function finalizeTrip(input: FinalizeTripInput): Promise<FinalizeTripResult> {
+  const supabase = createServiceClient();
+  await requireOwnedTrip(supabase, input.tripId);
+
+  const decisions = await listActiveTripDecisions(supabase, input.tripId);
+  if (getCurrentChainStep(decisions) !== "complete") {
+    throw new Error(`Trip ${input.tripId} can't be finalized yet — not every step is confirmed.`);
+  }
+
+  await advanceOrThrow(supabase, {
+    tripId: input.tripId,
+    event: "confirmation_requested",
+    actor: "user",
+    correlationId: deriveCorrelationId(input.tripId, "confirmation_requested"),
+    agentName: "finalize_trip",
+  });
+  const workflowState = await advanceOrThrow(supabase, {
+    tripId: input.tripId,
+    event: "user_confirmed",
+    actor: "user",
+    proposalHashMatches: true,
+    guardrailsPassed: true,
+    correlationId: deriveCorrelationId(input.tripId, "user_confirmed"),
+    agentName: "finalize_trip",
+  });
+
+  return { tripId: input.tripId, workflowState };
+}
+
+export type { PendingCascadeConfirmation };
