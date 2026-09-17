@@ -64,3 +64,20 @@ export async function retireActiveTripDecisionsForField(
       .select(),
   );
 }
+
+/** Flips every currently-`"proposed"` row for these fields to `"confirmed"` — the other half of the propose/confirm lifecycle a chain step that shows a proposal before confirming it (rather than writing straight to `"confirmed"`, as the flight step does) would use. */
+export async function confirmTripDecisions(
+  supabase: SupabaseClient<Database>,
+  tripId: string,
+  fields: string[],
+): Promise<void> {
+  await unwrapOrThrow(
+    supabase
+      .from("trip_decisions")
+      .update({ status: "confirmed" })
+      .eq("trip_id", tripId)
+      .in("field", fields)
+      .eq("status", "proposed")
+      .select(),
+  );
+}

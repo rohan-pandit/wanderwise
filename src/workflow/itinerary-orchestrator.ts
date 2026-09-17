@@ -44,7 +44,7 @@ import type { ModelClient } from "@/src/agents/model-client";
 import { assembleCandidateCombinations, type CandidateCombination } from "@/src/domain/combinations";
 import { filterHardConstraints } from "@/src/domain/constraints";
 import type { CurationOutput } from "@/src/domain/curation";
-import { dateRange, localDateInTimeZone, localMinutesOfDay, nightsBetween } from "@/src/domain/dates";
+import { dateRange, localMinutesOfDay, nightsBetween } from "@/src/domain/dates";
 import {
   DEFAULT_TRANSFER_BUFFER_MINUTES,
   validateItineraryFeasibility,
@@ -55,6 +55,7 @@ import {
 } from "@/src/domain/feasibility";
 import type { RoomGroup } from "@/src/domain/rooms";
 import { scheduleActivities } from "@/src/domain/scheduling";
+import { deriveHotelStayDates } from "@/src/domain/stay";
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
 import { getActivitiesByIds, type MatchedActivity } from "@/src/repositories/activities";
 import { findFlights, getFlightsByIds, type Flight } from "@/src/repositories/flights";
@@ -128,9 +129,7 @@ function buildDraft(
   // `OneWayTripNotSupportedError`), and `assembleCandidateCombinations` only
   // produces a `null` `returnFlight` when no return candidates were given.
   const returnFlight = combination.returnFlight!;
-  const destinationTimeZone = outboundFlight.arrival_time_zone ?? "UTC";
-  const checkIn = localDateInTimeZone(outboundFlight.arrival_time, destinationTimeZone);
-  const checkOut = localDateInTimeZone(returnFlight.departure_time, destinationTimeZone);
+  const { destinationTimeZone, checkIn, checkOut } = deriveHotelStayDates(outboundFlight, returnFlight);
   const tripDateRange = dateRange(checkIn, checkOut);
 
   // Schedule in curation-rank order (when available) so higher-ranked
