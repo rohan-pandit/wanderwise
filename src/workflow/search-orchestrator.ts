@@ -86,7 +86,8 @@ export class NoViableCandidatesError extends Error {
   }
 }
 
-function requirementMap(rows: TripRequirementRow[]): Map<RequirementFieldName, unknown> {
+/** Exported for reuse by `itinerary-orchestrator.ts`, which needs the same requirement lookup for both fresh assembly and revisions. */
+export function requirementMap(rows: TripRequirementRow[]): Map<RequirementFieldName, unknown> {
   const map = new Map<RequirementFieldName, unknown>();
   for (const row of rows) map.set(row.field as RequirementFieldName, row.value);
   return map;
@@ -104,7 +105,8 @@ function flattenPreferenceText(values: unknown[]): string[] {
   return terms;
 }
 
-function flightHardConstraints(reqs: Map<RequirementFieldName, unknown>): HardConstraint<Flight>[] {
+/** Exported for reuse by `itinerary-orchestrator.ts`'s revision flow, which re-fetches alternate candidates for a single field outside the initial search step. */
+export function flightHardConstraints(reqs: Map<RequirementFieldName, unknown>): HardConstraint<Flight>[] {
   const constraints: HardConstraint<Flight>[] = [];
   if (reqs.get("noRedEye") === true) constraints.push(noRedEyeConstraint());
   const maxFlightPriceUsd = reqs.get("maxFlightPriceUsd");
@@ -112,7 +114,8 @@ function flightHardConstraints(reqs: Map<RequirementFieldName, unknown>): HardCo
   return constraints;
 }
 
-function hotelHardConstraints(reqs: Map<RequirementFieldName, unknown>, roomGroups: RoomGroup[]): HardConstraint<Hotel>[] {
+/** Exported for reuse by `itinerary-orchestrator.ts`'s revision flow. */
+export function hotelHardConstraints(reqs: Map<RequirementFieldName, unknown>, roomGroups: RoomGroup[]): HardConstraint<Hotel>[] {
   const constraints: HardConstraint<Hotel>[] = [roomCapacityConstraint(roomGroups)];
   const minHotelRating = reqs.get("minHotelRating");
   if (typeof minHotelRating === "number") constraints.push(minHotelRatingConstraint(minHotelRating));

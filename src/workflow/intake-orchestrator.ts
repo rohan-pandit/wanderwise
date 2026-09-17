@@ -48,12 +48,17 @@ import {
   retireActiveTripRequirementsForField,
   type TripRequirementRow,
 } from "@/src/repositories/trip-requirements";
+import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
 import { getLatestTripState } from "@/src/repositories/trip-state";
 import { getTrip } from "@/src/repositories/trips";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { advanceOrThrow } from "./advance";
 import { deriveCorrelationId } from "./correlation";
+import type { RevisableDecisionField } from "./itinerary-orchestrator";
 import type { WorkflowEvent, WorkflowState } from "./state-machine";
+
+/** Decision fields `reviseItinerary` (`src/workflow/itinerary-orchestrator.ts`) actually knows how to revise — kept here rather than imported as a value to avoid a cross-module runtime dependency for what's just a literal-string check. */
+const REVISABLE_DECISION_FIELDS: readonly RevisableDecisionField[] = ["outboundFlight", "returnFlight", "hotel"];
 
 export { OrchestrationConflictError, OrchestrationTransitionError } from "./orchestration-errors";
 
@@ -145,26 +150,39 @@ function decideNextEvents(
  * structurally just a new value for a field, re-validated against that
  * field's own schema since `RevisionProposal.value` is untyped
  * (`src/domain/extraction.ts` deliberately leaves this to whoever applies
- * the revision). `revisionType: "decision"` has nothing to apply against
- * yet — no `trip_decisions` repository exists before Phase 5/7's
- * search/curation work creates actual decisions — so it's logged as a
- * domain-validation guardrail trigger rather than silently dropped or
- * crashing.
+ * the revision).
+ *
+ * `revisionType: "decision"` doesn't apply anything itself — actually
+ * revising a decision means re-running combination assembly
+ * (`reviseItinerary`, `src/workflow/itinerary-orchestrator.ts`), which needs
+ * a model client and embedding-adjacent state this orchestrator doesn't own.
+ * For a field `reviseItinerary` knows how to handle, this returns a signal
+ * (`decisionRevisionRequested`) for the caller (a Server Action) to act on
+ * after this turn persists, rather than driving it here. An unrecognized
+ * field (e.g. "activities" — which specific activity to swap needs more
+ * than a field name to resolve) is logged as unsupported instead.
  */
 async function applyRevisionProposal(
   supabase: SupabaseClient<Database>,
   tripId: string,
   workflowRunId: string,
   proposal: RevisionProposal,
-): Promise<{ requirement?: ExtractedRequirement; preference?: ExtractedPreference }> {
+): Promise<{
+  requirement?: ExtractedRequirement;
+  preference?: ExtractedPreference;
+  decisionRevisionRequested?: RevisableDecisionField;
+}> {
   if (proposal.revisionType === "decision") {
+    if (REVISABLE_DECISION_FIELDS.includes(proposal.target as RevisableDecisionField)) {
+      return { decisionRevisionRequested: proposal.target as RevisableDecisionField };
+    }
     await recordGuardrailEvent(supabase, {
       tripId,
       agentName: AGENT_NAME,
       guardrailName: "decision_revision_unsupported",
       layer: "domain_validation",
       triggered: true,
-      detail: `No decisions exist yet to revise (target "${proposal.target}") — decision revisions aren't wired until Phase 5/7's search/curation work creates actual decisions.`,
+      detail: `Revising "${proposal.target}" isn't supported yet — only outboundFlight/returnFlight/hotel can be revised.`,
       workflowRunId,
     });
     return {};
@@ -205,6 +223,8 @@ export interface ProcessIntakeTurnResult {
   ready: boolean;
   requirements: RequirementRecord[];
   preferences: PreferenceRecord[];
+  /** Set when this turn proposed a revision to an already-selected decision (e.g. "switch hotels") — the caller should follow up with `reviseItinerary` (`src/workflow/itinerary-orchestrator.ts`) once this turn's own persistence/transition finishes. */
+  decisionRevisionRequested: RevisableDecisionField | null;
 }
 
 export async function processIntakeTurn(
@@ -262,12 +282,14 @@ export async function processIntakeTurn(
     });
   }
 
-  const [requirementRows, preferenceRows] = await Promise.all([
+  const [requirementRows, preferenceRows, decisionRows] = await Promise.all([
     listActiveTripRequirements(supabase, params.tripId),
     listActiveTripPreferences(supabase, params.tripId),
+    listActiveTripDecisions(supabase, params.tripId),
   ]);
   const currentRequirements = requirementRows.map(requirementRecordFromRow);
   const currentPreferences = preferenceRows.map(preferenceRecordFromRow);
+  const currentDecisions = decisionRows.map((d) => ({ field: d.field, value: d.value }));
 
   const run = await getOrCreateActiveWorkflowRun(supabase, params.tripId);
   const startedAt = Date.now();
@@ -277,6 +299,7 @@ export async function processIntakeTurn(
       userMessage: trimmed,
       currentRequirements,
       currentPreferences,
+      currentDecisions,
     });
   } catch (err) {
     await recordAgentRun(supabase, {
@@ -345,10 +368,12 @@ export async function processIntakeTurn(
 
   const rawRequirements = [...agentResult.requirements];
   const rawPreferences = [...agentResult.preferences];
+  let decisionRevisionRequested: RevisableDecisionField | null = null;
   if (agentResult.revisionProposal) {
     const applied = await applyRevisionProposal(supabase, params.tripId, run.id, agentResult.revisionProposal);
     if (applied.requirement) rawRequirements.push(applied.requirement);
     if (applied.preference) rawPreferences.push(applied.preference);
+    if (applied.decisionRevisionRequested) decisionRevisionRequested = applied.decisionRevisionRequested;
   }
   const requirementsToApply = lastByField(rawRequirements);
   const preferencesToApply = lastByField(rawPreferences);
@@ -437,5 +462,6 @@ export async function processIntakeTurn(
     ready: completeness.ready,
     requirements: allRequirements,
     preferences: allPreferences,
+    decisionRevisionRequested,
   };
 }

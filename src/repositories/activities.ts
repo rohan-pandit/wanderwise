@@ -50,6 +50,26 @@ export async function findActivities(
 export type MatchedActivity =
   Database["public"]["Functions"]["match_activities"]["Returns"][number];
 
+/**
+ * Looks up activities already known by ID (e.g. re-hydrating a
+ * `trip_decisions` selection for a revision) — no semantic search involved,
+ * so `similarity` is meaningless here; set to `1` for every row so the
+ * shape still matches `MatchedActivity`, which the rest of the itinerary
+ * pipeline (scheduling, feasibility) is already built around.
+ */
+export async function getActivitiesByIds(
+  supabase: SupabaseClient<Database>,
+  ids: string[],
+): Promise<MatchedActivity[]> {
+  if (ids.length === 0) return [];
+  const rows = await unwrapOrThrow(supabase.from("activities").select("*").in("id", ids));
+  return rows.map((row): MatchedActivity => {
+    const { embedding, ...rest } = row;
+    void embedding;
+    return { ...rest, similarity: 1 };
+  });
+}
+
 export interface ActivitySimilarityFilter {
   queryEmbedding: number[];
   matchCount: number;

@@ -1,10 +1,12 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/src/config/supabase/server";
+import { ChatPanel, type ChatMessage } from "../../_components/chat-panel";
+import { ItineraryPanel } from "../../_components/itinerary-panel";
 
 /**
- * A specific trip's chat + itinerary, resumed. RLS enforces ownership —
- * a trip belonging to another user simply won't be returned by this
- * query, so we don't need a separate authorization check here.
+ * A specific trip's chat + live itinerary, resumed. RLS enforces ownership —
+ * a trip belonging to another user simply won't be returned by this query,
+ * so we don't need a separate authorization check here.
  */
 export default async function TripPage({
   params,
@@ -15,7 +17,7 @@ export default async function TripPage({
   const supabase = await createClient();
   const { data: trip, error } = await supabase
     .from("trips")
-    .select("id, status, created_at")
+    .select("id, session_id, status, created_at")
     .eq("id", tripId)
     .single();
 
@@ -30,14 +32,20 @@ export default async function TripPage({
     throw error;
   }
 
+  const { data: messageRows } = await supabase
+    .from("messages")
+    .select("role, content")
+    .eq("session_id", trip.session_id)
+    .order("created_at", { ascending: true });
+  const initialMessages: ChatMessage[] = (messageRows ?? []).map((m) => ({
+    role: m.role as ChatMessage["role"],
+    content: m.content,
+  }));
+
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-      <p className="text-sm text-zinc-500 dark:text-zinc-400">
-        Trip {trip.id.slice(0, 8)} — status: {trip.status}
-      </p>
-      <p className="text-xs text-zinc-400 dark:text-zinc-600">
-        Resumed chat + itinerary view coming in Phase 6/7.
-      </p>
+    <div className="flex min-h-0 flex-1">
+      <ChatPanel tripId={trip.id} initialMessages={initialMessages} />
+      <ItineraryPanel tripId={trip.id} />
     </div>
   );
 }

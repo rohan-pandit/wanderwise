@@ -40,3 +40,12 @@ export async function findHotels(
 
   return unwrapOrThrow(query.order("price_per_night_usd", { ascending: true }));
 }
+
+/** Looks up hotels already known by ID (e.g. re-hydrating a `trip_decisions` selection) — no destination filtering, since the caller already knows exactly which rows it wants. */
+export async function getHotelsByIds(
+  supabase: SupabaseClient<Database>,
+  ids: string[],
+): Promise<Hotel[]> {
+  if (ids.length === 0) return [];
+  return unwrapOrThrow(supabase.from("hotels").select("*").in("id", ids));
+}

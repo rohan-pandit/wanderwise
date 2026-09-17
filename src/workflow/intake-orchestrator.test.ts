@@ -7,6 +7,7 @@ vi.mock("@/src/agents/intake");
 vi.mock("@/src/repositories/agent-runs");
 vi.mock("@/src/repositories/guardrail-events");
 vi.mock("@/src/repositories/messages");
+vi.mock("@/src/repositories/trip-decisions");
 vi.mock("@/src/repositories/trip-preferences");
 vi.mock("@/src/repositories/trip-requirements");
 vi.mock("@/src/repositories/trip-state");
@@ -18,6 +19,7 @@ import { runIntakeAgent } from "@/src/agents/intake";
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { appendMessage } from "@/src/repositories/messages";
+import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
 import {
   appendTripPreference,
   listActiveTripPreferences,
@@ -93,6 +95,7 @@ beforeEach(() => {
   vi.mocked(appendMessage).mockResolvedValue({} as never);
   vi.mocked(listActiveTripRequirements).mockResolvedValue([]);
   vi.mocked(listActiveTripPreferences).mockResolvedValue([]);
+  vi.mocked(listActiveTripDecisions).mockResolvedValue([]);
   vi.mocked(retireActiveTripRequirementsForField).mockResolvedValue(undefined);
   vi.mocked(retireActiveTripPreferencesForField).mockResolvedValue(undefined);
   vi.mocked(appendTripRequirement).mockImplementation(
@@ -499,7 +502,7 @@ describe("processIntakeTurn", () => {
     expect(budgetEntries[0].value).toBe(4000);
   });
 
-  it("logs a domain-validation guardrail for a decision revision instead of applying or crashing (no decisions exist yet)", async () => {
+  it("signals decisionRevisionRequested for a revisable decision field, without applying anything itself or logging it as unsupported", async () => {
     vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
     vi.mocked(runIntakeAgent).mockResolvedValue(
       emptyAgentResult({
@@ -507,8 +510,36 @@ describe("processIntakeTurn", () => {
       }) as never,
     );
 
-    await processIntakeTurn(supabase, modelClient, { tripId: TRIP_ID, sessionId: SESSION_ID, userMessage: "switch hotels" });
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "switch hotels",
+    });
 
+    expect(result.decisionRevisionRequested).toBe("hotel");
+    expect(recordGuardrailEvent).not.toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ guardrailName: "decision_revision_unsupported" }),
+    );
+    expect(appendTripRequirement).not.toHaveBeenCalled();
+    expect(appendTripPreference).not.toHaveBeenCalled();
+  });
+
+  it("logs a domain-validation guardrail for a decision revision targeting a field that isn't revisable", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({
+        revisionProposal: { revisionType: "decision", target: "activities", value: "swap the food tour" },
+      }) as never,
+    );
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "swap the food tour for something else",
+    });
+
+    expect(result.decisionRevisionRequested).toBeNull();
     expect(recordGuardrailEvent).toHaveBeenCalledWith(
       supabase,
       expect.objectContaining({ guardrailName: "decision_revision_unsupported", layer: "domain_validation", triggered: true }),

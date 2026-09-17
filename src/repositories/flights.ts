@@ -68,3 +68,12 @@ export async function findFlights(
   }
   return data;
 }
+
+/** Looks up flights already known by ID (e.g. re-hydrating a `trip_decisions` selection) — no destination/date filtering, since the caller already knows exactly which rows it wants. */
+export async function getFlightsByIds(
+  supabase: SupabaseClient<Database>,
+  ids: string[],
+): Promise<Flight[]> {
+  if (ids.length === 0) return [];
+  return unwrapOrThrow(supabase.from("flights").select("*").in("id", ids));
+}
