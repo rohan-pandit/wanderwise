@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "eval:ci": "npm run typecheck && npm run lint && npm test",
     "eval:intake": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-intake-eval.ts",
