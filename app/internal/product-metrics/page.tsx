@@ -141,12 +141,12 @@ export default async function ProductMetricsPage() {
     <div className="mx-auto flex max-w-5xl flex-1 flex-col gap-8 px-6 py-8">
       <div>
         <div className="flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-black dark:text-zinc-50">Product metrics</h1>
-          <a href="/internal/analytics" className="text-sm text-zinc-500 underline hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100">
+          <h1 className="font-serif text-2xl font-semibold text-navy-900">Product metrics</h1>
+          <a href="/internal/analytics" className="text-sm text-teal-700 underline hover:text-teal-800">
             ← Engineering dashboard
           </a>
         </div>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="mt-1 text-sm text-navy-400">
           PROJECT_BRIEF.md §13.4 — product outcomes, kept separate from the engineering dashboard so a high agent-call count is never mistaken for product success.
         </p>
       </div>
@@ -166,11 +166,11 @@ export default async function ProductMetricsPage() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold text-black dark:text-zinc-50">Abandonment stage</h2>
-        <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">Where non-finalized trips currently sit.</p>
-        <div className="mt-2 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+        <h2 className="text-sm font-semibold text-navy-900">Abandonment stage</h2>
+        <p className="mt-1 text-xs text-navy-400">Where non-finalized trips currently sit.</p>
+        <div className="mt-2 overflow-x-auto rounded-lg border border-sand-200">
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-zinc-200 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            <thead className="border-b border-sand-200 text-navy-400">
               <tr>
                 <th className="px-3 py-2 font-medium">Stage</th>
                 <th className="px-3 py-2 font-medium">Trips</th>
@@ -179,15 +179,15 @@ export default async function ProductMetricsPage() {
             </thead>
             <tbody>
               {abandonmentRows.map(([label, count]) => (
-                <tr key={label} className="border-b border-zinc-100 last:border-0 dark:border-zinc-900">
-                  <td className="px-3 py-2 text-black dark:text-zinc-50">{label}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{count}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{pct(count, abandonedTrips.length)}</td>
+                <tr key={label} className="border-b border-sand-100 last:border-0">
+                  <td className="px-3 py-2 text-navy-900">{label}</td>
+                  <td className="px-3 py-2 text-navy-700">{count}</td>
+                  <td className="px-3 py-2 text-navy-700">{pct(count, abandonedTrips.length)}</td>
                 </tr>
               ))}
               {abandonedTrips.length === 0 && (
                 <tr>
-                  <td colSpan={3} className="px-3 py-4 text-center text-zinc-500 dark:text-zinc-400">
+                  <td colSpan={3} className="px-3 py-4 text-center text-navy-400">
                     Every trip either just started or is finalized.
                   </td>
                 </tr>
@@ -198,8 +198,8 @@ export default async function ProductMetricsPage() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold text-black dark:text-zinc-50">Qualitative feedback</h2>
-        <p className="mt-2 rounded-lg border border-dashed border-zinc-300 px-4 py-3 text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+        <h2 className="text-sm font-semibold text-navy-900">Qualitative feedback</h2>
+        <p className="mt-2 rounded-lg border border-dashed border-sand-300 px-4 py-3 text-sm text-navy-400">
           Not yet collected — no feedback-collection mechanism exists in the app yet (no post-trip survey, thumbs up/down, or free-text field). Shown here rather than omitted, per §13.4&apos;s own list.
         </p>
       </section>
@@ -209,10 +209,10 @@ export default async function ProductMetricsPage() {
 
 function StatCard({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
-    <div className="rounded-lg border border-zinc-200 px-4 py-3 dark:border-zinc-800">
-      <div className="text-xs text-zinc-500 dark:text-zinc-400">{label}</div>
-      <div className="mt-1 text-xl font-semibold text-black dark:text-zinc-50">{value}</div>
-      <div className="mt-0.5 text-xs text-zinc-400 dark:text-zinc-500">{sub}</div>
+    <div className="rounded-lg border border-sand-200 px-4 py-3">
+      <div className="text-xs text-navy-400">{label}</div>
+      <div className="mt-1 text-xl font-semibold text-navy-900">{value}</div>
+      <div className="mt-0.5 text-xs text-navy-400">{sub}</div>
     </div>
   );
 }

@@ -33,51 +33,56 @@ export default function Home() {
   }
 
   return (
-    <div className="flex flex-1 items-center justify-center bg-zinc-50 px-6 font-sans dark:bg-black">
+    <div className="flex flex-1 items-center justify-center bg-sand-50 px-6 font-sans">
       <main className="w-full max-w-sm">
-        <h1 className="text-2xl font-semibold tracking-tight text-black dark:text-zinc-50">
+        <p className="text-xs font-medium tracking-[0.2em] text-terracotta-600 uppercase">
+          AI-assisted trip planning
+        </p>
+        <h1 className="mt-2 font-serif text-4xl font-semibold tracking-tight text-navy-900">
           Wanderwise
         </h1>
-        <p className="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
+        <p className="mt-3 text-sm leading-6 text-navy-700">
           A travel-planning concierge that reasons over a deterministic,
           testable planning engine — not a booking platform. Sign in to plan
           a trip.
         </p>
 
-        {status === "sent" ? (
-          <p className="mt-8 rounded-lg border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
-            Check your inbox — we sent a sign-in link to <strong>{email}</strong>.
-          </p>
-        ) : (
-          <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-3">
-            <label htmlFor="email" className="sr-only">
-              Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              className="rounded-full border border-zinc-300 bg-white px-4 py-2.5 text-sm text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
-            />
-            <button
-              type="submit"
-              disabled={status === "sending"}
-              className="rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-colors hover:bg-[#383838] disabled:opacity-60 dark:hover:bg-[#ccc]"
-            >
-              {status === "sending" ? "Sending..." : "Send magic link"}
-            </button>
-            {status === "error" && errorMessage ? (
-              <p className="text-sm text-red-600 dark:text-red-400">
-                {errorMessage}
-              </p>
-            ) : null}
-          </form>
-        )}
+        <div className="mt-8 rounded-2xl border border-sand-200 bg-sand-100 p-6 shadow-sm">
+          {status === "sent" ? (
+            <p className="text-sm text-navy-700">
+              Check your inbox — we sent a sign-in link to <strong>{email}</strong>.
+            </p>
+          ) : (
+            <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+              <label htmlFor="email" className="sr-only">
+                Email
+              </label>
+              <input
+                id="email"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                className="rounded-full border border-sand-300 bg-sand-50 px-4 py-2.5 text-sm text-navy-900 outline-none focus:border-teal-600"
+              />
+              <button
+                type="submit"
+                disabled={status === "sending"}
+                className="rounded-full bg-teal-700 px-5 py-2.5 text-sm font-medium text-sand-50 transition-colors hover:bg-teal-800 disabled:opacity-60"
+              >
+                {status === "sending" ? "Sending..." : "Send magic link"}
+              </button>
+              {status === "error" && errorMessage ? (
+                <p className="text-sm text-red-600">
+                  {errorMessage}
+                </p>
+              ) : null}
+            </form>
+          )}
+        </div>
 
-        <p className="mt-6 text-xs text-zinc-500 dark:text-zinc-500">
+        <p className="mt-6 text-xs text-navy-400">
           No password, ever — just click the link in your email.
         </p>
       </main>

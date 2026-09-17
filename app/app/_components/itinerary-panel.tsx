@@ -437,17 +437,17 @@ export function ItineraryPanel({
   const hotelConfirmed = Boolean(hotelId);
 
   return (
-    <aside className="flex w-96 flex-shrink-0 flex-col overflow-y-auto border-l border-zinc-200 px-6 py-6 dark:border-zinc-800">
-      <h2 className="text-sm font-semibold text-black dark:text-zinc-50">Your itinerary</h2>
+    <aside className="flex w-96 flex-shrink-0 flex-col overflow-y-auto border-l border-sand-200 px-6 py-6">
+      <h2 className="font-serif text-lg font-semibold text-navy-900">Your itinerary</h2>
 
       {needsAttention ? (
-        <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+        <p className="mt-4 rounded-lg bg-terracotta-50 px-3 py-2 text-xs text-terracotta-600">
           {needsAttention}
         </p>
       ) : null}
 
       {pendingCascade ? (
-        <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+        <div className="mt-4 rounded-lg border border-terracotta-200 bg-terracotta-50 px-3 py-3 text-xs text-terracotta-700">
           <p>
             Changing your {STEP_LABELS[pendingCascade.step]} may also change your {DOWNSTREAM_LABEL[pendingCascade.step]}. Continue?
           </p>
@@ -456,7 +456,7 @@ export function ItineraryPanel({
               type="button"
               disabled={actionPending}
               onClick={() => void handleConfirmCascade()}
-              className="rounded-md bg-amber-800 px-3 py-1 text-white disabled:opacity-50 dark:bg-amber-200 dark:text-amber-950"
+              className="rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 disabled:opacity-50"
             >
               Continue
             </button>
@@ -464,7 +464,7 @@ export function ItineraryPanel({
               type="button"
               disabled={actionPending}
               onClick={() => onPendingCascade(null)}
-              className="rounded-md border border-amber-300 px-3 py-1 text-amber-900 disabled:opacity-50 dark:border-amber-700 dark:text-amber-200"
+              className="rounded-md border border-terracotta-200 px-3 py-1 text-terracotta-700 disabled:opacity-50"
             >
               Cancel
             </button>
@@ -472,31 +472,31 @@ export function ItineraryPanel({
         </div>
       ) : null}
 
-      {actionError ? <p className="mt-4 text-xs text-red-600 dark:text-red-400">{actionError}</p> : null}
+      {actionError ? <p className="mt-4 text-xs text-red-600">{actionError}</p> : null}
 
       {initialLoad ? (
-        <p className="mt-4 text-sm text-zinc-400 dark:text-zinc-600">Loading your itinerary…</p>
+        <p className="mt-4 text-sm text-navy-400">Loading your itinerary…</p>
       ) : (
         <div className="mt-4 flex flex-col gap-5">
           {/* Flight step */}
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Flight</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-navy-400">Flight</h3>
             {flightConfirmed && !revisingFlightCandidates ? (
-              <div className="mt-2 rounded-lg border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-800">
+              <div className="mt-2 rounded-lg border border-sand-200 px-3 py-2 text-xs">
                 {confirmedFlightSummary ? (
-                  <p className="text-zinc-700 dark:text-zinc-300">
+                  <p className="text-navy-700">
                     {confirmedFlightSummary.outboundFlight.airline ?? "Flight"} · {formatFlightTime(confirmedFlightSummary.outboundFlight.departure_time, confirmedFlightSummary.outboundFlight.departure_time_zone)}
                     {" -> "}
                     {formatFlightTime(confirmedFlightSummary.returnFlight.arrival_time, confirmedFlightSummary.returnFlight.arrival_time_zone)}
                   </p>
                 ) : (
-                  <p className="text-zinc-500 dark:text-zinc-400">Confirmed ({flightOutboundId} / {flightReturnId})</p>
+                  <p className="text-navy-400">Confirmed ({flightOutboundId} / {flightReturnId})</p>
                 )}
                 <button
                   type="button"
                   disabled={actionPending}
                   onClick={() => handleChangeClick("flight")}
-                  className="mt-1 text-xs font-medium text-black underline disabled:opacity-50 dark:text-zinc-50"
+                  className="mt-1 text-xs font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50"
                 >
                   Change
                 </button>
@@ -509,12 +509,12 @@ export function ItineraryPanel({
                       type="button"
                       disabled={actionPending}
                       onClick={() => void handleConfirmFlight(c.outboundFlight.id, c.returnFlight.id)}
-                      className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-left text-xs hover:border-zinc-400 disabled:opacity-50 dark:border-zinc-800 dark:hover:border-zinc-600"
+                      className="w-full rounded-lg border border-sand-200 px-3 py-2 text-left text-xs hover:border-teal-600 disabled:opacity-50"
                     >
-                      <p className="font-medium text-black dark:text-zinc-50">
+                      <p className="font-medium text-navy-900">
                         {c.outboundFlight.airline ?? "Flight"} — {formatMoney({ amount: c.totalPriceUsd, currency: "USD" })}
                       </p>
-                      <p className="mt-0.5 text-zinc-500 dark:text-zinc-400">
+                      <p className="mt-0.5 text-navy-400">
                         {formatFlightTime(c.outboundFlight.departure_time, c.outboundFlight.departure_time_zone)} → {formatFlightTime(c.returnFlight.arrival_time, c.returnFlight.arrival_time_zone)}
                       </p>
                     </button>
@@ -522,28 +522,28 @@ export function ItineraryPanel({
                 ))}
               </ul>
             ) : (
-              <p className="mt-2 text-xs text-zinc-400 dark:text-zinc-600">Finding flights…</p>
+              <p className="mt-2 text-xs text-navy-400">Finding flights…</p>
             )}
           </section>
 
           {/* Hotel step */}
           {flightConfirmed || hotelConfirmed ? (
             <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Hotel</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-navy-400">Hotel</h3>
               {hotelConfirmed && !revisingHotelCandidates ? (
-                <div className="mt-2 rounded-lg border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-800">
+                <div className="mt-2 rounded-lg border border-sand-200 px-3 py-2 text-xs">
                   {confirmedHotelSummary ? (
-                    <p className="text-zinc-700 dark:text-zinc-300">
+                    <p className="text-navy-700">
                       {confirmedHotelSummary.name} · {formatMoney({ amount: confirmedHotelSummary.price_per_night_usd, currency: "USD" })}/night
                     </p>
                   ) : (
-                    <p className="text-zinc-500 dark:text-zinc-400">Confirmed ({hotelId})</p>
+                    <p className="text-navy-400">Confirmed ({hotelId})</p>
                   )}
                   <button
                     type="button"
                     disabled={actionPending}
                     onClick={() => handleChangeClick("hotel")}
-                    className="mt-1 text-xs font-medium text-black underline disabled:opacity-50 dark:text-zinc-50"
+                    className="mt-1 text-xs font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50"
                   >
                     Change
                   </button>
@@ -556,12 +556,12 @@ export function ItineraryPanel({
                         type="button"
                         disabled={actionPending}
                         onClick={() => void handleConfirmHotel(h.id)}
-                        className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-left text-xs hover:border-zinc-400 disabled:opacity-50 dark:border-zinc-800 dark:hover:border-zinc-600"
+                        className="w-full rounded-lg border border-sand-200 px-3 py-2 text-left text-xs hover:border-teal-600 disabled:opacity-50"
                       >
-                        <p className="font-medium text-black dark:text-zinc-50">
+                        <p className="font-medium text-navy-900">
                           {h.name} — {formatMoney({ amount: h.price_per_night_usd, currency: "USD" })}/night
                         </p>
-                        <p className="mt-0.5 text-zinc-500 dark:text-zinc-400">
+                        <p className="mt-0.5 text-navy-400">
                           {h.neighborhood ?? h.destination}
                           {h.rating ? ` · ${h.rating}★` : ""}
                         </p>
@@ -570,7 +570,7 @@ export function ItineraryPanel({
                   ))}
                 </ul>
               ) : (
-                <p className="mt-2 text-xs text-zinc-400 dark:text-zinc-600">Finding hotels…</p>
+                <p className="mt-2 text-xs text-navy-400">Finding hotels…</p>
               )}
             </section>
           ) : null}
@@ -578,10 +578,10 @@ export function ItineraryPanel({
           {/* Activities step */}
           {hotelConfirmed || confirmedActivities ? (
             <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Activities</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-navy-400">Activities</h3>
               {confirmedActivities ? (
                 itineraryText ? null : (
-                  <ul className="mt-2 flex flex-col gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  <ul className="mt-2 flex flex-col gap-1 text-xs text-navy-400">
                     {[...confirmedActivities]
                       .sort((a, b) => (a.date === b.date ? a.startMinutes - b.startMinutes : a.date < b.date ? -1 : 1))
                       .map((a) => (
@@ -592,11 +592,11 @@ export function ItineraryPanel({
                   </ul>
                 )
               ) : activitiesProposal ? (
-                <div className="mt-2 rounded-lg border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-800">
+                <div className="mt-2 rounded-lg border border-sand-200 px-3 py-2 text-xs">
                   {activitiesProposal.scheduledActivities.length === 0 ? (
-                    <p className="text-zinc-500 dark:text-zinc-400">No activities could be scheduled for this trip.</p>
+                    <p className="text-navy-400">No activities could be scheduled for this trip.</p>
                   ) : (
-                    <ul className="flex flex-col gap-1 text-zinc-600 dark:text-zinc-400">
+                    <ul className="flex flex-col gap-1 text-navy-700">
                       {[...activitiesProposal.scheduledActivities]
                         .sort((a, b) => (a.date === b.date ? a.startMinutes - b.startMinutes : a.date < b.date ? -1 : 1))
                         .map((a) => (
@@ -610,28 +610,28 @@ export function ItineraryPanel({
                     type="button"
                     disabled={actionPending}
                     onClick={() => void handleConfirmActivities(activitiesProposal.scheduledActivities)}
-                    className="mt-2 rounded-md bg-black px-3 py-1 text-white disabled:opacity-50 dark:bg-zinc-50 dark:text-black"
+                    className="mt-2 rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 transition-colors hover:bg-terracotta-700 disabled:opacity-50"
                   >
                     Confirm this schedule
                   </button>
                 </div>
               ) : (
-                <p className="mt-2 text-xs text-zinc-400 dark:text-zinc-600">Planning activities…</p>
+                <p className="mt-2 text-xs text-navy-400">Planning activities…</p>
               )}
             </section>
           ) : null}
 
           {totalEstimate ? (
-            <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              Estimated total: <span className="font-medium text-black dark:text-zinc-50">{totalEstimate}</span>
+            <p className="text-sm text-navy-700">
+              Estimated total: <span className="font-medium text-navy-900">{totalEstimate}</span>
             </p>
           ) : null}
 
-          {itineraryText ? <div className="whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">{itineraryText}</div> : null}
+          {itineraryText ? <div className="whitespace-pre-wrap text-sm text-navy-700">{itineraryText}</div> : null}
 
           {activeStep === "complete" ? (
             finalized ? (
-              <p className="rounded-lg bg-black px-3 py-2 text-center text-sm font-medium text-white dark:bg-zinc-50 dark:text-black">
+              <p className="rounded-lg bg-teal-700 px-3 py-2 text-center text-sm font-medium text-sand-50">
                 Trip finalized
               </p>
             ) : (
@@ -639,7 +639,7 @@ export function ItineraryPanel({
                 type="button"
                 disabled={actionPending}
                 onClick={() => void handleFinalize()}
-                className="rounded-lg bg-black px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-50 dark:text-black"
+                className="rounded-lg bg-terracotta-600 px-3 py-2 text-sm font-medium text-sand-50 transition-colors hover:bg-terracotta-700 disabled:opacity-50"
               >
                 Finalize trip
               </button>

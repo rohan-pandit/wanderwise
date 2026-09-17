@@ -1,26 +1,47 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/*
+ * Warm editorial travel palette (Phase 9 visual design pass, 2026-09-17):
+ * sand/cloud for surfaces, navy for text/structure, teal as the primary
+ * interactive color (nav, links, neutral actions), terracotta reserved for
+ * the one important call-to-action per screen and attention/warning states.
+ * Single warm-light theme, no dark mode — a boutique travel product reads
+ * as light-first, and it halves the class list on every component.
+ */
+@theme {
+  --color-sand-50: #fbf7ef;
+  --color-sand-100: #f3ead6;
+  --color-sand-200: #e8dbc0;
+  --color-sand-300: #d9c5a0;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-navy-50: #eef1f5;
+  --color-navy-200: #c7d0dc;
+  --color-navy-400: #6b7d93;
+  --color-navy-700: #2b3b52;
+  --color-navy-900: #16233a;
+
+  --color-teal-50: #e7f0ef;
+  --color-teal-100: #cfe1df;
+  --color-teal-200: #a9c9c6;
+  --color-teal-600: #14666b;
+  --color-teal-700: #0e4f53;
+  --color-teal-800: #0a3a3d;
+
+  --color-terracotta-50: #fbeee6;
+  --color-terracotta-100: #f5dcc9;
+  --color-terracotta-200: #efc3a7;
+  --color-terracotta-500: #c1653a;
+  --color-terracotta-600: #a6522d;
+  --color-terracotta-700: #8a4224;
+
+  --color-background: var(--color-sand-50);
+  --color-foreground: var(--color-navy-900);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-serif: var(--font-fraunces);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-background);
+  color: var(--color-foreground);
 }

@@ -17,17 +17,17 @@ export default function AppLayout({
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center justify-between border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
+      <header className="flex items-center justify-between border-b border-sand-200 bg-sand-50 px-6 py-4">
         <Link
           href="/app"
-          className="text-sm font-semibold tracking-tight text-black dark:text-zinc-50"
+          className="font-serif text-lg font-semibold tracking-tight text-navy-900"
         >
           Wanderwise
         </Link>
         <nav className="flex items-center gap-4">
           <Link
             href="/app/trips"
-            className="text-sm text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+            className="text-sm text-navy-400 hover:text-teal-700"
           >
             Your trips
           </Link>

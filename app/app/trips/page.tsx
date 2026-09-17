@@ -43,18 +43,18 @@ export default async function TripsPage() {
 
   return (
     <div className="flex flex-1 flex-col px-6 py-8">
-      <h1 className="text-lg font-semibold text-black dark:text-zinc-50">
+      <h1 className="font-serif text-2xl font-semibold text-navy-900">
         Your trips
       </h1>
 
       {error ? (
-        <p className="mt-4 text-sm text-red-600 dark:text-red-400">
+        <p className="mt-4 text-sm text-red-600">
           Couldn&apos;t load trips: {error.message}
         </p>
       ) : !trips || trips.length === 0 ? (
-        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="mt-4 text-sm text-navy-400">
           No trips yet.{" "}
-          <Link href="/app" className="underline">
+          <Link href="/app" className="text-teal-700 underline hover:text-teal-800">
             Start planning one
           </Link>
           .
@@ -65,12 +65,12 @@ export default async function TripsPage() {
             <li key={trip.id}>
               <Link
                 href={`/app/trips/${trip.id}`}
-                className="flex items-center justify-between rounded-lg border border-zinc-200 px-4 py-3 text-sm hover:border-zinc-400 dark:border-zinc-800 dark:hover:border-zinc-600"
+                className="flex items-center justify-between rounded-lg border border-sand-200 bg-sand-100 px-4 py-3 text-sm transition-colors hover:border-teal-600"
               >
-                <span className="text-black dark:text-zinc-50">
+                <span className="text-navy-900">
                   Trip {trip.id.slice(0, 8)}
                 </span>
-                <span className="text-zinc-500 dark:text-zinc-400">
+                <span className="text-navy-400">
                   {describeProgress(trip.status, decisionsByTrip.get(trip.id) ?? [])}
                 </span>
               </Link>

@@ -139,12 +139,12 @@ export default async function AnalyticsPage() {
     <div className="mx-auto flex max-w-5xl flex-1 flex-col gap-8 px-6 py-8">
       <div>
         <div className="flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-black dark:text-zinc-50">Engineering dashboard</h1>
-          <a href="/internal/product-metrics" className="text-sm text-zinc-500 underline hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100">
+          <h1 className="font-serif text-2xl font-semibold text-navy-900">Engineering dashboard</h1>
+          <a href="/internal/product-metrics" className="text-sm text-teal-700 underline hover:text-teal-800">
             Product metrics →
           </a>
         </div>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="mt-1 text-sm text-navy-400">
           PROJECT_BRIEF.md §13.3 — workflow health, cost, latency, cache, and guardrail activity across every trip.
         </p>
       </div>
@@ -157,10 +157,10 @@ export default async function AnalyticsPage() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold text-black dark:text-zinc-50">Cost &amp; latency by agent</h2>
-        <div className="mt-2 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+        <h2 className="text-sm font-semibold text-navy-900">Cost &amp; latency by agent</h2>
+        <div className="mt-2 overflow-x-auto rounded-lg border border-sand-200">
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-zinc-200 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            <thead className="border-b border-sand-200 text-navy-400">
               <tr>
                 <th className="px-3 py-2 font-medium">Agent</th>
                 <th className="px-3 py-2 font-medium">Runs</th>
@@ -172,18 +172,18 @@ export default async function AnalyticsPage() {
             </thead>
             <tbody>
               {[...byAgent.entries()].map(([agentName, a]) => (
-                <tr key={agentName} className="border-b border-zinc-100 last:border-0 dark:border-zinc-900">
-                  <td className="px-3 py-2 text-black dark:text-zinc-50">{agentName}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{a.runs}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{pct(a.errors, a.runs)}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{ms(a.latencyMsTotal / a.runs)}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{formatMoney(money(a.costUsd))}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{a.cacheReadTokens.toLocaleString()}</td>
+                <tr key={agentName} className="border-b border-sand-100 last:border-0">
+                  <td className="px-3 py-2 text-navy-900">{agentName}</td>
+                  <td className="px-3 py-2 text-navy-700">{a.runs}</td>
+                  <td className="px-3 py-2 text-navy-700">{pct(a.errors, a.runs)}</td>
+                  <td className="px-3 py-2 text-navy-700">{ms(a.latencyMsTotal / a.runs)}</td>
+                  <td className="px-3 py-2 text-navy-700">{formatMoney(money(a.costUsd))}</td>
+                  <td className="px-3 py-2 text-navy-700">{a.cacheReadTokens.toLocaleString()}</td>
                 </tr>
               ))}
               {byAgent.size === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-3 py-4 text-center text-zinc-500 dark:text-zinc-400">
+                  <td colSpan={6} className="px-3 py-4 text-center text-navy-400">
                     No agent runs recorded yet.
                   </td>
                 </tr>
@@ -191,15 +191,15 @@ export default async function AnalyticsPage() {
             </tbody>
           </table>
         </div>
-        <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">Total cache-write tokens: {totalCacheWriteTokens.toLocaleString()}.</p>
+        <p className="mt-1 text-xs text-navy-400">Total cache-write tokens: {totalCacheWriteTokens.toLocaleString()}.</p>
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold text-black dark:text-zinc-50">Guardrail trigger frequency</h2>
-        <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">Which guardrail fires most tells you where the model struggles (PROJECT_BRIEF.md §13.3).</p>
-        <div className="mt-2 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+        <h2 className="text-sm font-semibold text-navy-900">Guardrail trigger frequency</h2>
+        <p className="mt-1 text-xs text-navy-400">Which guardrail fires most tells you where the model struggles (PROJECT_BRIEF.md §13.3).</p>
+        <div className="mt-2 overflow-x-auto rounded-lg border border-sand-200">
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-zinc-200 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            <thead className="border-b border-sand-200 text-navy-400">
               <tr>
                 <th className="px-3 py-2 font-medium">Guardrail</th>
                 <th className="px-3 py-2 font-medium">Layer</th>
@@ -209,18 +209,18 @@ export default async function AnalyticsPage() {
             </thead>
             <tbody>
               {guardrailRows.map(([name, g]) => (
-                <tr key={name} className="border-b border-zinc-100 last:border-0 dark:border-zinc-900">
-                  <td className="px-3 py-2 text-black dark:text-zinc-50">{name}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{g.layer}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">
+                <tr key={name} className="border-b border-sand-100 last:border-0">
+                  <td className="px-3 py-2 text-navy-900">{name}</td>
+                  <td className="px-3 py-2 text-navy-700">{g.layer}</td>
+                  <td className="px-3 py-2 text-navy-700">
                     {g.triggered} / {g.total}
                   </td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{pct(g.triggered, g.total)}</td>
+                  <td className="px-3 py-2 text-navy-700">{pct(g.triggered, g.total)}</td>
                 </tr>
               ))}
               {guardrailRows.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="px-3 py-4 text-center text-zinc-500 dark:text-zinc-400">
+                  <td colSpan={4} className="px-3 py-4 text-center text-navy-400">
                     No guardrail events recorded yet.
                   </td>
                 </tr>
@@ -231,10 +231,10 @@ export default async function AnalyticsPage() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold text-black dark:text-zinc-50">Workflow failures by category</h2>
-        <div className="mt-2 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+        <h2 className="text-sm font-semibold text-navy-900">Workflow failures by category</h2>
+        <div className="mt-2 overflow-x-auto rounded-lg border border-sand-200">
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-zinc-200 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            <thead className="border-b border-sand-200 text-navy-400">
               <tr>
                 <th className="px-3 py-2 font-medium">State</th>
                 <th className="px-3 py-2 font-medium">Count</th>
@@ -243,15 +243,15 @@ export default async function AnalyticsPage() {
             </thead>
             <tbody>
               {[...failuresByState.entries()].map(([state, count]) => (
-                <tr key={state} className="border-b border-zinc-100 last:border-0 dark:border-zinc-900">
-                  <td className="px-3 py-2 text-black dark:text-zinc-50">{state}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{count}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{pct(count, workflowSteps.length)}</td>
+                <tr key={state} className="border-b border-sand-100 last:border-0">
+                  <td className="px-3 py-2 text-navy-900">{state}</td>
+                  <td className="px-3 py-2 text-navy-700">{count}</td>
+                  <td className="px-3 py-2 text-navy-700">{pct(count, workflowSteps.length)}</td>
                 </tr>
               ))}
               {totalFailures === 0 && (
                 <tr>
-                  <td colSpan={3} className="px-3 py-4 text-center text-zinc-500 dark:text-zinc-400">
+                  <td colSpan={3} className="px-3 py-4 text-center text-navy-400">
                     No failure transitions recorded ({workflowSteps.length} total transitions).
                   </td>
                 </tr>
@@ -262,11 +262,11 @@ export default async function AnalyticsPage() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold text-black dark:text-zinc-50">Eval pass rate over time</h2>
-        <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">Most recent {evalRuns.length} run(s) (`npm run eval:scenarios` / `npm run eval:intake` / `npm run eval:retrieval`).</p>
-        <div className="mt-2 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+        <h2 className="text-sm font-semibold text-navy-900">Eval pass rate over time</h2>
+        <p className="mt-1 text-xs text-navy-400">Most recent {evalRuns.length} run(s) (`npm run eval:scenarios` / `npm run eval:intake` / `npm run eval:retrieval`).</p>
+        <div className="mt-2 overflow-x-auto rounded-lg border border-sand-200">
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-zinc-200 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            <thead className="border-b border-sand-200 text-navy-400">
               <tr>
                 <th className="px-3 py-2 font-medium">Run</th>
                 <th className="px-3 py-2 font-medium">When</th>
@@ -275,17 +275,17 @@ export default async function AnalyticsPage() {
             </thead>
             <tbody>
               {evalRuns.map((run, i) => (
-                <tr key={i} className="border-b border-zinc-100 last:border-0 dark:border-zinc-900">
-                  <td className="px-3 py-2 text-black dark:text-zinc-50">{run.label}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">{run.createdAt ? new Date(run.createdAt).toLocaleString() : "—"}</td>
-                  <td className="px-3 py-2 text-zinc-600 dark:text-zinc-300">
+                <tr key={i} className="border-b border-sand-100 last:border-0">
+                  <td className="px-3 py-2 text-navy-900">{run.label}</td>
+                  <td className="px-3 py-2 text-navy-700">{run.createdAt ? new Date(run.createdAt).toLocaleString() : "—"}</td>
+                  <td className="px-3 py-2 text-navy-700">
                     {run.passed} / {run.total} ({pct(run.passed, run.total)})
                   </td>
                 </tr>
               ))}
               {evalRuns.length === 0 && (
                 <tr>
-                  <td colSpan={3} className="px-3 py-4 text-center text-zinc-500 dark:text-zinc-400">
+                  <td colSpan={3} className="px-3 py-4 text-center text-navy-400">
                     No eval runs recorded yet.
                   </td>
                 </tr>
@@ -300,10 +300,10 @@ export default async function AnalyticsPage() {
 
 function StatCard({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
-    <div className="rounded-lg border border-zinc-200 px-4 py-3 dark:border-zinc-800">
-      <div className="text-xs text-zinc-500 dark:text-zinc-400">{label}</div>
-      <div className="mt-1 text-xl font-semibold text-black dark:text-zinc-50">{value}</div>
-      <div className="mt-0.5 text-xs text-zinc-400 dark:text-zinc-500">{sub}</div>
+    <div className="rounded-lg border border-sand-200 px-4 py-3">
+      <div className="text-xs text-navy-400">{label}</div>
+      <div className="mt-1 text-xl font-semibold text-navy-900">{value}</div>
+      <div className="mt-0.5 text-xs text-navy-400">{sub}</div>
     </div>
   );
 }

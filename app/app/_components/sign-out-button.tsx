@@ -23,11 +23,11 @@ export function SignOutButton() {
   return (
     <div className="flex items-center gap-2">
       {error ? (
-        <span className="text-sm text-red-600 dark:text-red-400">{error}</span>
+        <span className="text-sm text-red-600">{error}</span>
       ) : null}
       <button
         onClick={handleSignOut}
-        className="text-sm text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+        className="text-sm text-navy-400 hover:text-teal-700"
       >
         Sign out
       </button>
