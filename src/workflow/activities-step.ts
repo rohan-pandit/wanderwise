@@ -45,7 +45,7 @@ import {
   type ScheduledActivity,
 } from "@/src/domain/feasibility";
 import type { RoomGroup } from "@/src/domain/rooms";
-import { scheduleActivities } from "@/src/domain/scheduling";
+import { scheduleActivities, type PreferredWindow } from "@/src/domain/scheduling";
 import { deriveHotelStayDates } from "@/src/domain/stay";
 import { estimateCostUsd } from "@/src/observability/pricing";
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
@@ -73,6 +73,18 @@ const AGENT_NAME = "activities_step";
 const CURATOR_AGENT_NAME = "destination_and_activity_curator";
 const WRITER_AGENT_NAME = "itinerary_writer";
 const ACTIVITY_TOP_K = 10;
+
+/**
+ * Meal-time bias for `category: "food"` activities (`src/domain/scheduling.ts`'s
+ * `preferredWindows`, docs/IMPLEMENTATION_PLAN.md §5 — the "lightweight
+ * heuristics on top of the same first-fit structure" option, chosen over a
+ * heavier repair pass or real optimizer). Tried in this order — lunch before
+ * dinner — across the whole date range before the scheduler falls back to
+ * placing the activity anywhere it fits.
+ */
+const LUNCH_WINDOW: PreferredWindow = { startMinutes: 11 * 60 + 30, endMinutes: 14 * 60 };
+const DINNER_WINDOW: PreferredWindow = { startMinutes: 18 * 60, endMinutes: 21 * 60 };
+const MEAL_WINDOWS: PreferredWindow[] = [LUNCH_WINDOW, DINNER_WINDOW];
 
 export { FlightStepNotConfirmedError } from "./hotel-step";
 
@@ -363,6 +375,7 @@ export async function proposeActivitiesStep(
       durationMinutes: a.duration_minutes,
       openingHours: a.opening_hours as OpeningHours | null,
       closedDays: a.closed_days,
+      preferredWindows: a.category === "food" ? MEAL_WINDOWS : undefined,
     })),
     dateRange: dateRange(ctx.checkIn, ctx.checkOut),
     earliestStartByDate,

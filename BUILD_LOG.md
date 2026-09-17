@@ -1163,3 +1163,23 @@ Replaced the one-shot overfetch with a widen-and-retry loop: if the post-filter 
 **Known limitations / assumptions:** Unchanged from what's tracked in `docs/IMPLEMENTATION_PLAN.md` §5, minus the availability half of this item — the room-type-variety half remains open and tracked, by explicit choice.
 
 **Next recommended task:** One architectural item remains, needing its own scoping conversation: the naive (first-fit, non-optimizing) activity scheduler. The 10 un-automated §19 eval scenarios remain the lowest-priority, biggest-lift item.
+
+---
+
+## 2026-09-17 — Meal-time scheduling bias: the "lightweight heuristics" tier for the activity scheduler
+
+**What I built:** Closed the last remaining architectural item — the naive, first-fit activity scheduler. The user asked what "naive" actually meant before deciding anything; laid out five options at increasing effort (lightweight heuristics on the same first-fit structure / a repair pass after the first placement / a real optimizer with a scored objective / geographic clustering / leave it as-is), noting geographic clustering is blocked on data regardless of algorithm choice (`activities.location` is a free-text neighborhood string, not coordinates). The user chose the smallest tier.
+
+`src/domain/scheduling.ts`'s `SchedulableActivity` gained an optional `preferredWindows: PreferredWindow[]` — a generic list of minute-of-day ranges. `scheduleActivities` tries each window in order (each as its own full forward pass across the date range) before falling back to the existing unconstrained earliest-fit search — still a single deterministic pass per window, no backtracking, no change to the module's actual algorithmic character. The module stays domain-agnostic on purpose: it has no idea what "food" means, just a list of preferred ranges. `activities-step.ts` supplies the domain knowledge — a `category: "food"` activity gets `[LUNCH_WINDOW (11:30-14:00), DINNER_WINDOW (18:00-21:00)]`.
+
+**Why:** Last item on the tracked architectural backlog (`docs/IMPLEMENTATION_PLAN.md` §5).
+
+**Decisions made:** Lightweight-heuristics tier only, per the user's explicit choice after seeing the effort/payoff breakdown for all five options.
+
+**What didn't work / dead ends:** The first version of a new `scheduling.test.ts` case (the "falls back to the unconstrained search" test) used opening hours (`08:00-10:00`) that, combined with the scheduler's existing default 10:00 start-of-day floor, left literally zero fittable minutes — not a bug in the new code, just a bad choice of test numbers that happened to expose how the *pre-existing* default-start floor interacts with a tight opening window. Fixed by picking opening hours (`06:00-11:00`) that leave room after the 10:00 floor.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` (341/341, up from 337) all clean. 4 new tests in `scheduling.test.ts` (placement inside a window, trying windows in order, falling back to the unconstrained search, and the window search still respecting `closedDays`/`openingHours`/per-date transfer buffers). No schema change, so no migration — live-verified anyway with a throwaway script (not committed, cleaned up after) against real seed data: a real Lisbon trip's curated activity set included "Alfama Walking Food Tour" (`category: "food"`), and it landed at 13:50 — inside the lunch window, not wherever the first-fit scan happened to land it.
+
+**Known limitations / assumptions:** `docs/IMPLEMENTATION_PLAN.md` §5 now tracks the remaining, deliberately-not-built tiers (backtracking/repair pass, real optimizer, geographic clustering) as open by explicit choice, not oversight.
+
+**Next recommended task:** The architectural backlog from this session is now fully worked through. What's left: the 10 un-automated §19 eval scenarios (lowest priority, biggest lift — needs new RLS/JWT or fault-injection test infrastructure) and the demo walkthrough recording (a manual step for the user, not something a coding agent can do). Otherwise, the project is in a portfolio-ready state.

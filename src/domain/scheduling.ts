@@ -13,9 +13,18 @@
  * the Curator's `rankedIds` order), placing each at the first day/time slot
  * that respects `closedDays` and `openingHours`, back-to-back with a fixed
  * gap. Good enough to make `validateItineraryFeasibility` a real, exercised
- * guardrail; revisit with something smarter (time-of-day preferences,
- * geographic clustering, meal-time awareness) once the Itinerary Writer
- * (Phase 7) needs a more natural-feeling schedule.
+ * guardrail; still a single deterministic forward pass with no backtracking
+ * or lookahead (docs/IMPLEMENTATION_PLAN.md §5) — revisit with something
+ * heavier (geographic clustering, a real repair/optimization pass) if a
+ * future phase needs it.
+ *
+ * One lightweight heuristic layered on top of that same first-fit structure,
+ * not a step toward an optimizer: an activity can carry `preferredWindows`
+ * (e.g. a food activity biased toward lunch/dinner — the caller decides what
+ * counts as "preferred," this module stays domain-agnostic). Each window is
+ * tried in order, across the whole date range, before falling back to the
+ * unconstrained earliest-fit search — still one forward pass per window, not
+ * a search over placements.
  */
 import { toEpochDay, weekdayOf } from "./dates";
 
@@ -27,12 +36,20 @@ const DEFAULT_DURATION_MINUTES = 60;
 /** Weekday name (lowercase) -> "HH:MM-HH:MM". A day with no entry is treated as not open that day (distinct from `closedDays`, which marks a day closed explicitly). */
 export type OpeningHours = Record<string, string>;
 
+/** A minute-of-day range an activity should be tried against before falling back to the unconstrained earliest-fit search (e.g. a meal window). */
+export interface PreferredWindow {
+  startMinutes: number;
+  endMinutes: number;
+}
+
 export interface SchedulableActivity {
   id: string;
   /** Falls back to a 60-minute default if not known. */
   durationMinutes?: number | null;
   openingHours?: OpeningHours | null;
   closedDays?: string[] | null;
+  /** Tried in order, each across the whole date range, before the unconstrained fallback. Omit for no preference. */
+  preferredWindows?: PreferredWindow[];
 }
 
 export interface ScheduleParams {
@@ -134,25 +151,45 @@ export function scheduleActivities(params: ScheduleParams): ScheduleResult {
   const scheduled: ScheduledSlot[] = [];
   const unscheduled: string[] = [];
 
-  for (const activity of params.activities) {
-    const duration = activity.durationMinutes ?? DEFAULT_DURATION_MINUTES;
-    let placed = false;
-
+  /**
+   * One forward pass over `dates` for a single activity, optionally capped
+   * to a preferred window on top of the day's usual boundaries. Returns the
+   * slot it placed (and records it) or `null` if nothing in `dates` fit
+   * within the window — the caller decides what to try next.
+   */
+  function tryPlace(activity: SchedulableActivity, duration: number, window?: PreferredWindow): ScheduledSlot | null {
     for (const date of dates) {
       const weekday = weekdayOf(date);
       if ((activity.closedDays ?? []).includes(weekday)) continue;
 
       const earliestStart = params.earliestStartByDate?.[date] ?? defaultStart;
-      const earliestCandidate = Math.max(nextAvailableMinute.get(date) ?? defaultStart, earliestStart);
-      const dayCeiling = Math.min(params.latestEndByDate?.[date] ?? MINUTES_PER_DAY, MINUTES_PER_DAY);
+      let earliestCandidate = Math.max(nextAvailableMinute.get(date) ?? defaultStart, earliestStart);
+      let dayCeiling = Math.min(params.latestEndByDate?.[date] ?? MINUTES_PER_DAY, MINUTES_PER_DAY);
+      if (window) {
+        earliestCandidate = Math.max(earliestCandidate, window.startMinutes);
+        dayCeiling = Math.min(dayCeiling, window.endMinutes);
+      }
+
       const start = earliestFeasibleStart(activity.openingHours, weekday, earliestCandidate, duration, dayCeiling);
       if (start === null) continue;
 
-      scheduled.push({ id: activity.id, date, startMinutes: start, durationMinutes: duration });
+      const slot: ScheduledSlot = { id: activity.id, date, startMinutes: start, durationMinutes: duration };
+      scheduled.push(slot);
       nextAvailableMinute.set(date, start + duration + gap);
-      placed = true;
-      break;
+      return slot;
     }
+    return null;
+  }
+
+  for (const activity of params.activities) {
+    const duration = activity.durationMinutes ?? DEFAULT_DURATION_MINUTES;
+    let placed: ScheduledSlot | null = null;
+
+    for (const window of activity.preferredWindows ?? []) {
+      placed = tryPlace(activity, duration, window);
+      if (placed) break;
+    }
+    if (!placed) placed = tryPlace(activity, duration);
 
     if (!placed) unscheduled.push(activity.id);
   }

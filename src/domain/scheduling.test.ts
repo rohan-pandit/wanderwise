@@ -145,4 +145,59 @@ describe("scheduleActivities", () => {
     expect(result.scheduled).toEqual([]);
     expect(result.unscheduled).toEqual(["a1"]);
   });
+
+  describe("preferredWindows", () => {
+    const LUNCH = { startMinutes: 11 * 60 + 30, endMinutes: 14 * 60 };
+    const DINNER = { startMinutes: 18 * 60, endMinutes: 21 * 60 };
+
+    it("places an all-day-open activity inside its preferred window instead of the default 10:00 start", () => {
+      const result = scheduleActivities(
+        baseParams({
+          activities: [{ id: "lunch-spot", durationMinutes: 60, preferredWindows: [LUNCH] }],
+        }),
+      );
+      expect(result.scheduled).toEqual([{ id: "lunch-spot", date: "2026-10-06", startMinutes: LUNCH.startMinutes, durationMinutes: 60 }]);
+    });
+
+    it("tries windows in order — dinner only if lunch doesn't fit anywhere in range", () => {
+      const result = scheduleActivities(
+        baseParams({
+          // Lunch window fully consumed by something else on every day in range.
+          dateRange: { start: "2026-10-06", end: "2026-10-06" },
+          activities: [
+            { id: "blocks-lunch", durationMinutes: 150 }, // 10:00-12:30, eats into the lunch window
+            { id: "food", durationMinutes: 60, preferredWindows: [LUNCH, DINNER] },
+          ],
+        }),
+      );
+      const food = result.scheduled.find((s) => s.id === "food");
+      expect(food?.startMinutes).toBe(DINNER.startMinutes);
+    });
+
+    it("falls back to the unconstrained earliest-fit search when no preferred window fits anywhere in range", () => {
+      const result = scheduleActivities(
+        baseParams({
+          dateRange: { start: "2026-10-06", end: "2026-10-06" },
+          activities: [{ id: "odd-hours", durationMinutes: 60, openingHours: { tuesday: "06:00-11:00" }, preferredWindows: [LUNCH, DINNER] }],
+        }),
+      );
+      // 2026-10-06 is a Tuesday, open 06:00-11:00 — closes before the lunch
+      // window even opens, so neither preferred window fits, but the
+      // activity still gets placed via the fallback pass (at the default
+      // 10:00 start), not left unscheduled.
+      expect(result.scheduled).toEqual([{ id: "odd-hours", date: "2026-10-06", startMinutes: 10 * 60, durationMinutes: 60 }]);
+      expect(result.unscheduled).toEqual([]);
+    });
+
+    it("still respects closedDays/openingHours and per-date buffers while searching within a preferred window", () => {
+      const result = scheduleActivities(
+        baseParams({
+          dateRange: { start: "2026-10-06", end: "2026-10-06" },
+          activities: [{ id: "food", durationMinutes: 60, preferredWindows: [LUNCH] }],
+          earliestStartByDate: { "2026-10-06": 13 * 60 }, // arrival-day transfer buffer, later than lunch's own start
+        }),
+      );
+      expect(result.scheduled).toEqual([{ id: "food", date: "2026-10-06", startMinutes: 13 * 60, durationMinutes: 60 }]);
+    });
+  });
 });
