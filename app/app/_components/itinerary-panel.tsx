@@ -32,7 +32,7 @@
  * `advanceOrRefreshChain` call) could otherwise trigger a second, redundant
  * Curator call before the handler's own response comes back.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createClient } from "@/src/config/supabase/client";
 import {
   STEP_DECISION_FIELDS,
@@ -41,6 +41,7 @@ import {
   type ChainDecision,
   type ChainStep,
 } from "@/src/domain/chain";
+import { parseMarkdownLite, type InlineSegment } from "@/src/domain/markdown-lite";
 import type { Flight } from "@/src/repositories/flights";
 import type { Hotel } from "@/src/repositories/hotels";
 import {
@@ -98,6 +99,43 @@ function formatFlightTime(iso: string, timeZone: string | null): string {
   } catch {
     return iso;
   }
+}
+
+function renderInline(segments: InlineSegment[], keyPrefix: string): ReactNode[] {
+  return segments.map((segment, i) => {
+    const key = `${keyPrefix}-${i}`;
+    if (segment.type === "bold") return <strong key={key}>{segment.text}</strong>;
+    if (segment.type === "italic") return <em key={key}>{segment.text}</em>;
+    return segment.text;
+  });
+}
+
+/** Renders the Itinerary Writer agent's free-text output (`src/domain/markdown-lite.ts` — a narrow Markdown subset, not a general renderer). */
+function ItineraryText({ text }: { text: string }) {
+  return (
+    <div className="flex flex-col gap-3 text-sm text-navy-700">
+      {parseMarkdownLite(text).map((block, i) => {
+        const key = `md-${i}`;
+        if (block.type === "heading") {
+          const className = "font-serif font-semibold text-navy-900";
+          if (block.level === 1) return <h3 key={key} className={`${className} text-base`}>{renderInline(block.inline, key)}</h3>;
+          if (block.level === 2) return <h4 key={key} className={`${className} text-sm`}>{renderInline(block.inline, key)}</h4>;
+          return <h5 key={key} className={`${className} text-sm`}>{renderInline(block.inline, key)}</h5>;
+        }
+        if (block.type === "list") {
+          const ListTag = block.ordered ? "ol" : "ul";
+          return (
+            <ListTag key={key} className={block.ordered ? "list-decimal space-y-1 pl-5" : "list-disc space-y-1 pl-5"}>
+              {block.items.map((item, j) => (
+                <li key={`${key}-${j}`}>{renderInline(item, `${key}-${j}`)}</li>
+              ))}
+            </ListTag>
+          );
+        }
+        return <p key={key}>{renderInline(block.inline, key)}</p>;
+      })}
+    </div>
+  );
 }
 
 const OPTIMISTIC_ID_PREFIX = "optimistic:";
@@ -627,7 +665,7 @@ export function ItineraryPanel({
             </p>
           ) : null}
 
-          {itineraryText ? <div className="whitespace-pre-wrap text-sm text-navy-700">{itineraryText}</div> : null}
+          {itineraryText ? <ItineraryText text={itineraryText} /> : null}
 
           {activeStep === "complete" ? (
             finalized ? (

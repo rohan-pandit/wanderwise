@@ -917,3 +917,21 @@ Also added two entries to `docs/IMPLEMENTATION_PLAN.md` §5 that a straight Phas
 **What I noticed but didn't fix:** The confirmed itinerary's narrative text (`itineraryText`, written by the Itinerary Writer agent) renders literal `**bold**`/`*italic*` markdown asterisks instead of formatted text (`itinerary-panel.tsx`'s `whitespace-pre-wrap` block never parses it as markdown). Out of scope for a color/typography pass — flagged as a separate follow-up task (`task_2a5c1559`) rather than silently expanding this session's scope to add a markdown-rendering dependency.
 
 **Next up:** Final README pass + demo walkthrough recording — the last Phase 9 item.
+
+---
+
+## 2026-09-17 — Render the Itinerary Writer's markdown instead of raw asterisks
+
+**What I built:** `src/domain/markdown-lite.ts` (new) — a minimal, deterministic parser for the narrow Markdown subset the Itinerary Writer agent's (`src/agents/itinerary-writer.ts`) unconstrained free-text output actually uses in practice (plain paragraphs, `**bold**`/`*italic*` emphasis, occasional bullet/numbered lists, occasional `#`-style headings) — not a general CommonMark implementation. `parseInline` tokenizes a line into bold/italic/text segments; `parseMarkdownLite` groups lines into paragraph/heading/list blocks, splitting on blank lines. 14 unit tests covering both, including two cases found by reasoning about ambiguity rather than observation alone: a whole-line `*emphasis*` (a single-asterisk "day header" style the Writer actually produces) must not be mistaken for a bullet, since a real bullet requires a space right after the `-`/`*` marker.
+
+Wired into `app/app/_components/itinerary-panel.tsx`: a new local `ItineraryText` component renders `parseMarkdownLite`'s blocks to real JSX elements (`<strong>`/`<em>`/`<ul>`/`<ol>`/`<h3-5>`/`<p>`, all serif-styled headings to match the Phase 9 palette) in place of the old `<div className="whitespace-pre-wrap">{itineraryText}</div>` that printed raw `**`/`*` characters. Scoped to this one render site only, per the ask.
+
+**Why:** Found live while verifying the Phase 9 visual design pass — a real confirmed itinerary showed literal `**Flights**`/`*Monday, October 6*` asterisks instead of formatted text. Flagged as a separate follow-up rather than folded into that pass (color/typography vs. content rendering are different concerns), then asked for directly.
+
+**Decisions made:** Hand-rolled a narrow parser instead of adding a Markdown library (e.g. `react-markdown`) — `package.json` has only 7 runtime dependencies, all load-bearing SDKs/framework, and the input is one agent's fairly bounded prose style, not arbitrary user-supplied Markdown, so a general parser's much larger transitive dependency tree (remark/unified/mdast) wasn't justified for this. Renders to real React elements (never `dangerouslySetInnerHTML`), so this introduces no HTML-injection surface regardless of what the model outputs — its text content is always escaped by React the same as any other JSX child.
+
+**What didn't work / dead ends:** None — the parser's test suite passed on the first real run, and the live-verification pass (see below) matched what the unit tests predicted with no surprises.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` (337/337, up from 323) all clean. Live-verified via the same throwaway dev-signin pattern as the visual design pass (admin-generated OTP session, removed after use along with its `proxy.ts` exception, not committed): drove a real trip through intake → flight/hotel confirmation → activities confirmation, and the resulting itinerary rendered real bold section headings ("Flights," "Hotel," "Day-by-Day Itinerary"), a real bullet list for outbound/return flights, and real italicized day headers — no stray asterisks anywhere. Deleted the throwaway auth user afterward.
+
+**Next up:** Final README pass + demo walkthrough recording — the last Phase 9 item, unchanged from the prior entry.
