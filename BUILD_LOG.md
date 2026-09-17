@@ -1021,3 +1021,50 @@ Asked the user which of two designs to build, since §9.3 explicitly requires "c
 **Verification:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` (342/342, up from 340) all clean. Ran the real `npm run eval:scenarios` suite (10/10 passed, no regressions from touching `intake-orchestrator.ts`, a heavily-exercised file). Applied the migration to the real hosted project and live-verified the actual behavior with a throwaway script (not committed, cleaned up after): two `processIntakeTurn` calls with the same correlation ID against the real Anthropic API persisted exactly 2 messages total, not 4 — confirmed by listing the session's messages directly. Also confirmed, as expected from this design, that the persisted assistant message reflects attempt 1's text even though attempt 2's live-returned response differed (a real second LLM call did happen and produced different output) — documented as a known, accepted asymmetry rather than a surprise.
 
 **Next up:** Continuing down the tracked open-items list, in priority order.
+
+---
+
+## 2026-09-17 — Session close: Phase 9 complete, three open items closed
+
+**What changed this session:** Completed Phase 9 (portfolio polish) end to end, then started working down the tracked open-items backlog (`docs/IMPLEMENTATION_PLAN.md` §5) one item at a time, per the user's explicit request. In order:
+
+1. Resolved the telemetry retention/redaction policy question and wrote up **ADR-006** (evaluation strategy) and **ADR-007** (observability) as standalone files.
+2. Added the **architecture diagram** (`docs/architecture/architecture-diagram.md`, two Mermaid diagrams).
+3. Did the **visual design pass** — a warm editorial travel palette (sand/navy/teal/terracotta), Fraunces display serif for headings, applied across every page.
+4. Fixed the itinerary panel rendering raw `**markdown**` asterisks (found live while verifying #3) — a hand-rolled minimal Markdown parser (`src/domain/markdown-lite.ts`), not a new dependency.
+5. Did the **final README pass** (full §21 portfolio narrative) and wrote a **demo walkthrough script** (`docs/DEMO_WALKTHROUGH.md`) — the recording itself is a manual step for the user.
+6. Enforced the **§9.1 budget-ceiling guardrail at finalize time** — an explicit-override banner, per the user's choice between that and a hard block.
+7. Made **`startTrip` idempotency-keyed** (`trips.correlation_id`, migration 0008).
+8. Guarded **chat-message writes against a retried intake turn** (`messages.correlation_id`, migration 0009) — scoped narrower than the original tracked wording after a mid-implementation trade-off discussion with the user (a genuine retry's second real LLM call is left un-deduplicated in `agent_runs`/`tool_calls`/`guardrail_events`, since that's real, separately-costed telemetry, not a duplicate).
+
+**Files changed:** Too many individual files to list here usefully — see the eight commits from `c676f08` through `c6ead0c` (`git log`) for the full per-slice diffs; each commit message and this file's corresponding entries above give the reasoning per change.
+
+**Database migrations added:** `0008_trips_idempotency.sql` (`trips.correlation_id` + partial unique index), `0009_messages_correlation_id.sql` (`messages.correlation_id`, no unique index). Both applied to the real hosted Supabase project this session (the user supplied the DB password once, reused for both pushes).
+
+**Tests run and results:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` all clean after every slice (342/342 unit tests passing at session end, up from 323 at session start). `npm run eval:scenarios` run live against the real Anthropic/Supabase stack twice this session (10/10 passed both times, including `over_budget_request` passing for the first time ever). Every DB-touching fix was also live-verified with a throwaway script or browser session against the real hosted project, cleaned up after each time.
+
+**Decisions made this session** (each asked of the user rather than picked unilaterally): telemetry retention/redaction approach; visual design palette and scope (all pages); budget-ceiling fix design (explicit override vs. hard block); retry-idempotency fix depth (guard-each-write vs. full result caching, then further narrowed to messages-only after surfacing the cost-dashboard trade-off).
+
+**Known limitations / assumptions:** Unchanged from what's tracked in `docs/IMPLEMENTATION_PLAN.md` §5, minus the three items closed above. See that section for the full, current list with rationale for each.
+
+**Next recommended task — resume point for a fresh session:** Continue down `docs/IMPLEMENTATION_PLAN.md` §5's **"Known bugs/gaps — unresolved"** list, one item at a time, per the user's standing request this session ("let's go down the list and tackle one by one"). As of this session's end, in the order last presented to the user:
+
+*Smaller, self-contained (suggested next):*
+- Curator's malformed tool calls aren't logged at the same guardrail layer as Intake's (line ~445 in that section as of this entry).
+- The `"blocked"` workflow state is unreachable (latent, not an active bug).
+- One-way trips aren't supported (needs a small product decision on default trip length — ask before implementing).
+- Budget's night-count can drift ~1 day from actual hotel-stay dates.
+- Flight→hotel cascade's "dates changed" branch is only unit-tested, not live-verified (seed-data limitation — may not be practically closable without adding more seed data).
+
+*Bigger, more architectural (expect a scoping conversation before implementing, same pattern as this session's budget/idempotency items):*
+- Destination identity via plain city-name string instead of a foreign key.
+- Activity retrieval's overfetch heuristic (fine at current scale; low priority).
+- Hotels model one room type per property (no multi-room-type bookings).
+- Itinerary scheduling is a naive first-fit placer, not an optimizer.
+- Only the top 5 candidate combinations are tried before declaring infeasibility.
+
+*Out of Phase 8 entirely, needs new test infrastructure (RLS/JWT sessions or fault injection) — bigger lift, probably lowest priority for one-at-a-time work:* the remaining 10 of 16 §19 eval scenarios, and prompt-injection/malformed-inventory adversarial cases.
+
+A fresh session should re-read `docs/IMPLEMENTATION_PLAN.md` §5 directly rather than trusting this list verbatim, since it's copied here only as a resume pointer — that file is the live, authoritative source and may have shifted if anything changes before the next session starts.
+
+Also outstanding, unrelated to the open-items list: the user still needs to actually record the demo walkthrough (`docs/DEMO_WALKTHROUGH.md`) — not something a coding agent can do.
