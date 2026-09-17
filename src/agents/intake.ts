@@ -92,9 +92,14 @@ export interface IntakeAgentInput {
   currentDecisions?: { field: string; value: unknown }[];
 }
 
-export interface MalformedToolCall {
+/** One entry per physical tool call the model made — the full audit trail a caller persists as `tool_calls` rows (PROJECT_BRIEF.md §6.4: "log tool call name, args, and result, not just raw text") and uses to detect Layer 2 guardrail triggers (§9.1: malformed/invalid tool output). */
+export interface ToolCallLogEntry {
   toolName: string;
-  error: string;
+  input: unknown;
+  status: "success" | "error";
+  /** The validated/parsed output for a successful call (e.g. counts extracted, or the parsed clarification/revision). */
+  result?: unknown;
+  error?: string;
 }
 
 export interface IntakeAgentResult {
@@ -103,8 +108,7 @@ export interface IntakeAgentResult {
   clarification: ClarificationRequest | null;
   revisionProposal: RevisionProposal | null;
   assistantMessage: string;
-  /** Tool calls the model made that failed validation — a guardrail signal, not a crash. Callers should log these (PROJECT_BRIEF.md §13.2) rather than trust anything from them. */
-  malformedToolCalls: MalformedToolCall[];
+  toolCallLog: ToolCallLogEntry[];
   usage: ModelCompletionUsage;
   /** Anthropic's `stop_reason` for this turn (e.g. "end_turn", "max_tokens", "refusal"). Callers should treat anything other than "end_turn"/"tool_use" as a signal the result may be incomplete rather than a clean empty turn. */
   stopReason: string;
@@ -175,7 +179,7 @@ export async function runIntakeAgent(
     clarification: null,
     revisionProposal: null,
     assistantMessage: response.text,
-    malformedToolCalls: [],
+    toolCallLog: [],
     usage: response.usage,
     stopReason: response.stopReason,
   };
@@ -185,29 +189,45 @@ export async function runIntakeAgent(
       const parsed = parseRecordExtractionCall(call.input);
       result.requirements.push(...parsed.requirements);
       result.preferences.push(...parsed.preferences);
-      for (const error of parsed.errors) {
-        result.malformedToolCalls.push({ toolName: call.toolName, error });
-      }
+      result.toolCallLog.push({
+        toolName: call.toolName,
+        input: call.input,
+        status: parsed.errors.length === 0 ? "success" : "error",
+        result: { requirementsExtracted: parsed.requirements.length, preferencesExtracted: parsed.preferences.length },
+        error: parsed.errors.length > 0 ? parsed.errors.join("; ") : undefined,
+      });
     } else if (call.toolName === TOOL_NAMES.requestClarification) {
       const parsed = ClarificationRequest.safeParse(call.input);
       if (!parsed.success) {
-        result.malformedToolCalls.push({ toolName: call.toolName, error: parsed.error.message });
+        result.toolCallLog.push({ toolName: call.toolName, input: call.input, status: "error", error: parsed.error.message });
       } else if (result.clarification) {
-        result.malformedToolCalls.push({ toolName: call.toolName, error: "duplicate request_clarification call in one turn" });
+        result.toolCallLog.push({
+          toolName: call.toolName,
+          input: call.input,
+          status: "error",
+          error: "duplicate request_clarification call in one turn",
+        });
       } else {
         result.clarification = parsed.data;
+        result.toolCallLog.push({ toolName: call.toolName, input: call.input, status: "success", result: parsed.data });
       }
     } else if (call.toolName === TOOL_NAMES.proposeTripRevision) {
       const parsed = RevisionProposal.safeParse(call.input);
       if (!parsed.success) {
-        result.malformedToolCalls.push({ toolName: call.toolName, error: parsed.error.message });
+        result.toolCallLog.push({ toolName: call.toolName, input: call.input, status: "error", error: parsed.error.message });
       } else if (result.revisionProposal) {
-        result.malformedToolCalls.push({ toolName: call.toolName, error: "duplicate propose_trip_revision call in one turn" });
+        result.toolCallLog.push({
+          toolName: call.toolName,
+          input: call.input,
+          status: "error",
+          error: "duplicate propose_trip_revision call in one turn",
+        });
       } else {
         result.revisionProposal = parsed.data;
+        result.toolCallLog.push({ toolName: call.toolName, input: call.input, status: "success", result: parsed.data });
       }
     } else {
-      result.malformedToolCalls.push({ toolName: call.toolName, error: "unknown tool" });
+      result.toolCallLog.push({ toolName: call.toolName, input: call.input, status: "error", error: "unknown tool" });
     }
   }
 

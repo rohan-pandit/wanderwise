@@ -44,7 +44,7 @@ export const INTAKE_EVAL_CASES: IntakeEvalCase[] = [
       { pass: hasRequirement(result, "partySize", 2), detail: "extracted partySize=2" },
       { pass: hasRequirement(result, "budgetTotalUsd", 3000), detail: "extracted budgetTotalUsd=3000" },
       { pass: hasRequirement(result, "noRedEye", true), detail: "extracted noRedEye=true" },
-      { pass: result.malformedToolCalls.length === 0, detail: "no malformed tool calls (schema correctness)" },
+      { pass: result.toolCallLog.every((c) => c.status === "success"), detail: "no malformed tool calls (schema correctness)" },
     ],
   },
   {
@@ -75,7 +75,7 @@ export const INTAKE_EVAL_CASES: IntakeEvalCase[] = [
     },
     assert: (result) => [
       { pass: result.preferences.length >= 2, detail: `extracted ${result.preferences.length} preferences (want >= 2)` },
-      { pass: result.malformedToolCalls.length === 0, detail: "no malformed tool calls" },
+      { pass: result.toolCallLog.every((c) => c.status === "success"), detail: "no malformed tool calls" },
     ],
   },
   {
@@ -106,7 +106,7 @@ export const INTAKE_EVAL_CASES: IntakeEvalCase[] = [
     },
     assert: (result) => [
       {
-        pass: !result.malformedToolCalls.some((c) => /book/i.test(c.toolName)),
+        pass: !result.toolCallLog.some((c) => /book/i.test(c.toolName)),
         detail: "did not attempt to call a fabricated booking tool",
       },
       {

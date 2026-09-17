@@ -72,7 +72,15 @@ describe("runIntakeAgent", () => {
     const result = await runIntakeAgent(client, baseInput);
     expect(result.requirements).toHaveLength(2);
     expect(result.preferences).toHaveLength(0);
-    expect(result.malformedToolCalls).toHaveLength(0);
+    expect(result.toolCallLog).toEqual([
+      {
+        toolName: "record_extraction",
+        input: expect.any(Object),
+        status: "success",
+        result: { requirementsExtracted: 2, preferencesExtracted: 0 },
+        error: undefined,
+      },
+    ]);
     expect(result.assistantMessage).toBe("Got it — Lisbon in October, budget $3000.");
   });
 
@@ -87,7 +95,7 @@ describe("runIntakeAgent", () => {
     });
     const result = await runIntakeAgent(client, baseInput);
     expect(result.clarification).toEqual({ missingFields: ["partySize"], reason: "How many travelers?" });
-    expect(result.malformedToolCalls).toHaveLength(0);
+    expect(result.toolCallLog.every((c) => c.status === "success")).toBe(true);
   });
 
   it("handles a propose_trip_revision call", async () => {
@@ -135,8 +143,8 @@ describe("runIntakeAgent", () => {
     });
     const result = await runIntakeAgent(client, baseInput);
     expect(result.requirements).toHaveLength(0);
-    expect(result.malformedToolCalls).toHaveLength(1);
-    expect(result.malformedToolCalls[0].toolName).toBe("record_extraction");
+    expect(result.toolCallLog).toHaveLength(1);
+    expect(result.toolCallLog[0]).toMatchObject({ toolName: "record_extraction", status: "error" });
   });
 
   it("keeps valid items from a record_extraction call that also contains one malformed item", async () => {
@@ -159,8 +167,9 @@ describe("runIntakeAgent", () => {
     const result = await runIntakeAgent(client, baseInput);
     expect(result.requirements).toHaveLength(2);
     expect(result.preferences).toHaveLength(0);
-    expect(result.malformedToolCalls).toHaveLength(1);
-    expect(result.malformedToolCalls[0].error).toContain("preference:");
+    expect(result.toolCallLog).toHaveLength(1);
+    expect(result.toolCallLog[0].status).toBe("error");
+    expect(result.toolCallLog[0].error).toContain("preference:");
   });
 
   it("accumulates requirements across two record_extraction calls in one turn", async () => {
@@ -204,7 +213,9 @@ describe("runIntakeAgent", () => {
       toolCalls: [{ toolName: "book_flight", input: { flightId: "f_1" } }],
     });
     const result = await runIntakeAgent(client, baseInput);
-    expect(result.malformedToolCalls).toEqual([{ toolName: "book_flight", error: "unknown tool" }]);
+    expect(result.toolCallLog).toEqual([
+      { toolName: "book_flight", input: { flightId: "f_1" }, status: "error", error: "unknown tool" },
+    ]);
   });
 
   it("flags a duplicate request_clarification call in one turn", async () => {
@@ -216,8 +227,14 @@ describe("runIntakeAgent", () => {
     });
     const result = await runIntakeAgent(client, baseInput);
     expect(result.clarification).toEqual({ missingFields: ["origin"], reason: "a" });
-    expect(result.malformedToolCalls).toEqual([
-      { toolName: "request_clarification", error: "duplicate request_clarification call in one turn" },
+    const errors = result.toolCallLog.filter((c) => c.status === "error");
+    expect(errors).toEqual([
+      {
+        toolName: "request_clarification",
+        input: { missingFields: ["destination"], reason: "b" },
+        status: "error",
+        error: "duplicate request_clarification call in one turn",
+      },
     ]);
   });
 

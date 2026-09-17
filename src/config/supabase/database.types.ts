@@ -407,6 +407,104 @@ export interface Database {
         Relationships: [];
         Update: Partial<Database["public"]["Tables"]["activities"]["Insert"]>;
       };
+      agent_runs: {
+        Row: {
+          id: string;
+          session_id: string | null;
+          trip_id: string | null;
+          workflow_run_id: string | null;
+          agent_name: string;
+          prompt_version: string | null;
+          model: string | null;
+          input_state_version: number | null;
+          output_state_version: number | null;
+          input_tokens: number | null;
+          output_tokens: number | null;
+          cache_read_tokens: number | null;
+          cache_write_tokens: number | null;
+          latency_ms: number | null;
+          cost_usd: number | null;
+          status: "success" | "error" | "guardrail_blocked";
+          error_message: string | null;
+          correlation_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          session_id?: string | null;
+          trip_id?: string | null;
+          workflow_run_id?: string | null;
+          agent_name: string;
+          prompt_version?: string | null;
+          model?: string | null;
+          input_state_version?: number | null;
+          output_state_version?: number | null;
+          input_tokens?: number | null;
+          output_tokens?: number | null;
+          cache_read_tokens?: number | null;
+          cache_write_tokens?: number | null;
+          latency_ms?: number | null;
+          cost_usd?: number | null;
+          status: "success" | "error" | "guardrail_blocked";
+          error_message?: string | null;
+          correlation_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+        Update: Partial<Database["public"]["Tables"]["agent_runs"]["Insert"]>;
+      };
+      tool_calls: {
+        Row: {
+          id: string;
+          agent_run_id: string;
+          tool_name: string;
+          arguments: Json;
+          result: Json | null;
+          duration_ms: number | null;
+          status: "success" | "error";
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          agent_run_id: string;
+          tool_name: string;
+          arguments: Json;
+          result?: Json | null;
+          duration_ms?: number | null;
+          status: "success" | "error";
+          created_at?: string;
+        };
+        Relationships: [];
+        Update: Partial<Database["public"]["Tables"]["tool_calls"]["Insert"]>;
+      };
+      guardrail_events: {
+        Row: {
+          id: string;
+          session_id: string | null;
+          trip_id: string | null;
+          agent_name: string | null;
+          guardrail_name: string;
+          layer: "input_scope" | "output_validation" | "domain_validation" | "workflow_authorization";
+          triggered: boolean;
+          detail: string | null;
+          workflow_run_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          session_id?: string | null;
+          trip_id?: string | null;
+          agent_name?: string | null;
+          guardrail_name: string;
+          layer: "input_scope" | "output_validation" | "domain_validation" | "workflow_authorization";
+          triggered: boolean;
+          detail?: string | null;
+          workflow_run_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+        Update: Partial<Database["public"]["Tables"]["guardrail_events"]["Insert"]>;
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

@@ -39,15 +39,15 @@ Tracks decisions under the five ADR areas defined in `PROJECT_BRIEF.md` §5. Per
 
 - [x] Custom workflow controller (not a framework) — adopted from brief §4.3, no deviation.
 - [x] Workflow state machine — adopted from brief §8.1, no deviation; implementation is a Phase 3 task.
-- [ ] Retry and recovery policy — adopted in principle (brief §8.3–§8.4); concrete policy (backoff, retry limits) is a Phase 3 implementation detail, not yet an ADR.
-- [ ] Cancellation behavior — same as above.
-- [ ] Idempotency strategy — same as above.
-- [ ] Checkpointing and replay — same as above.
+- [x] Retry and recovery policy — implemented for the transition layer (`advanceTrip`'s per-write correlation-ID guards, Phase 3) and reused for multi-hop transitions within one orchestrator turn (Phase 6, `src/workflow/intake-orchestrator.ts`'s event-name-keyed chaining — an index-keyed version of this had a real retry-breaking bug, found and fixed during Phase 6's review). **Known gap, tracked** (`docs/IMPLEMENTATION_PLAN.md` §5): a retry of a whole orchestrator turn isn't yet idempotent across the non-transition writes (`messages`/`agent_runs`/`tool_calls`/`guardrail_events`) the way transition mirrors are.
+- [x] Cancellation behavior — adopted from brief §8.2/§8.4 (Phase 2's wildcard-`from` `cancel` rule); no dedicated cancellation caller exists yet (Phase 7+).
+- [x] Idempotency strategy — `correlationId`-based, per §8.3; see the retry/recovery item above for the one known gap.
+- [ ] Checkpointing and replay — adopted in principle (brief §8.3–§8.4); not yet a distinct concern from idempotency above.
 - [x] Revision and finalization flow — adopted from brief §8.2, §8.7, no deviation.
 
 ## Area 4 — Validation and Evaluation
 
-- [x] Guardrail layers — adopted from brief §9.1, no deviation.
+- [x] Guardrail layers — adopted from brief §9.1, no deviation; all four layers actually wired end to end for the Intake agent in Phase 6 (`src/workflow/intake-orchestrator.ts`, writing real `guardrail_events` rows), not just adopted in principle.
 - [x] Budget model — adopted from brief §9.3, no deviation.
 - [x] Itinerary feasibility model — adopted from brief §9.2, no deviation.
 - [ ] Deterministic vs. LLM-based grading — adopted in principle (brief §9.6, prefer deterministic); concrete eval harness design is a Phase 8 task.
@@ -57,7 +57,7 @@ Tracks decisions under the five ADR areas defined in `PROJECT_BRIEF.md` §5. Per
 ## Area 5 — Observability and Measurement
 
 - [x] Event taxonomy — adopted from brief §8.5, §13.1, no deviation.
-- [x] Trace and correlation IDs — adopted from brief §13.1, no deviation (schema already includes `correlation_id`/`workflow_run_id` columns).
+- [x] Trace and correlation IDs — adopted from brief §13.1, no deviation (schema already includes `correlation_id`/`workflow_run_id` columns); `agent_runs`/`tool_calls`/`guardrail_events` are now actually populated (Phase 6), not just schema-ready.
 - [ ] Telemetry retention and redaction policy — not yet decided, needed before Phase 3 is complete.
 - [ ] Engineering dashboard — deferred to Phase 8.
 - [ ] Product metrics — deferred to Phase 8.

@@ -1,0 +1,495 @@
+/**
+ * The Orchestrator (PROJECT_BRIEF.md §6.2/§6.3), scoped for Phase 6 to the
+ * one agent that exists so far — the Intake and Revision Interpreter
+ * (`src/agents/intake.ts`). Wiring later agents (Curator, Explanation
+ * Writer) in Phase 5/7 follows the same shape: load the state slice an
+ * agent needs, call it through a `ModelClient`, validate its output,
+ * persist what's valid, log telemetry/guardrails, drive the workflow
+ * controller.
+ *
+ * This module is what §6.3 describes the orchestrator doing and *not*
+ * doing: it loads trip state, invokes the agent, persists validated state
+ * changes, emits workflow events, enforces transition gates (by only ever
+ * calling `advanceTrip`, never writing `trips.status`/`trip_state_versions`
+ * directly) — and it never computes a budget, never queries inventory
+ * tables, and the completeness gate that actually decides `requirements_ready`
+ * is deterministic code (`checkRequirementsComplete`), not the model's own
+ * claim that it's done.
+ */
+import { createHash, randomUUID } from "node:crypto";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database, Json } from "@/src/config/supabase/database.types";
+import { runIntakeAgent, type IntakeAgentResult } from "@/src/agents/intake";
+import type { ModelClient } from "@/src/agents/model-client";
+import {
+  ExtractedPreference,
+  ExtractedRequirement,
+  checkRequirementsComplete,
+  type ClarificationRequest,
+  type ExtractionSource,
+  type PreferenceFieldName,
+  type PreferenceRecord,
+  type RequirementFieldName,
+  type RequirementRecord,
+  type RevisionProposal,
+} from "@/src/domain/extraction";
+import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
+import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
+import { appendMessage } from "@/src/repositories/messages";
+import {
+  appendTripPreference,
+  listActiveTripPreferences,
+  retireActiveTripPreferencesForField,
+  type TripPreferenceRow,
+} from "@/src/repositories/trip-preferences";
+import {
+  appendTripRequirement,
+  listActiveTripRequirements,
+  retireActiveTripRequirementsForField,
+  type TripRequirementRow,
+} from "@/src/repositories/trip-requirements";
+import { getLatestTripState } from "@/src/repositories/trip-state";
+import { getTrip } from "@/src/repositories/trips";
+import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
+import { advanceTrip } from "./controller";
+import type { WorkflowEvent, WorkflowState } from "./state-machine";
+
+const AGENT_NAME = "intake_and_revision_interpreter";
+const MAX_MESSAGE_LENGTH = 4000;
+
+export class InputGuardrailRejectedError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "InputGuardrailRejectedError";
+  }
+}
+
+/**
+ * The only caller today (`app/app/actions.ts`) always derives `sessionId`
+ * from the trip it looked up, so this never fires in practice — but nothing
+ * inside this module enforced that on its own before this check existed. A
+ * future caller (a Route Handler, a test, a second Server Action) passing a
+ * mismatched pair would otherwise append chat messages and stamp telemetry
+ * against a session that has nothing to do with the trip, with no error.
+ */
+export class SessionTripMismatchError extends Error {
+  constructor(tripId: string, sessionId: string) {
+    super(`Trip ${tripId} does not belong to session ${sessionId}.`);
+    this.name = "SessionTripMismatchError";
+  }
+}
+
+export class OrchestrationTransitionError extends Error {
+  constructor(tripId: string, event: WorkflowEvent, reason: string) {
+    super(`Trip ${tripId}: transition "${event}" was rejected: ${reason}`);
+    this.name = "OrchestrationTransitionError";
+  }
+}
+
+/** Distinct from `OrchestrationTransitionError`: a conflict means another writer won a race on the same trip, not that the transition itself is invalid — per `advanceTrip`'s own contract (PROJECT_BRIEF.md §7.7), it's safe (and expected) to retry the whole turn, not a terminal failure. */
+export class OrchestrationConflictError extends Error {
+  constructor(tripId: string, event: WorkflowEvent) {
+    super(`Trip ${tripId}: transition "${event}" conflicted with a concurrent write — safe to retry the whole turn.`);
+    this.name = "OrchestrationConflictError";
+  }
+}
+
+/**
+ * Derives a stable, valid-format UUID from a base correlation ID plus a step
+ * label, so a single user turn that needs more than one workflow transition
+ * (e.g. `clarification_resolved` immediately followed by
+ * `requirements_complete`) gets a distinct, retry-stable correlation ID per
+ * step — a retry of the whole turn with the same base ID reproduces the same
+ * per-step IDs, preserving `advanceTrip`'s idempotency guarantee across the
+ * chain, not just within one call.
+ */
+function deriveCorrelationId(base: string, label: string): string {
+  const hex = createHash("sha256").update(`${base}:${label}`).digest("hex").slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+function requirementRecordFromRow(row: TripRequirementRow): RequirementRecord {
+  return {
+    id: row.id,
+    field: row.field as RequirementFieldName,
+    value: row.value,
+    source: row.source as ExtractionSource,
+    confidence: row.confidence ?? 1,
+    status: row.status as RequirementRecord["status"],
+    createdAt: row.created_at,
+  };
+}
+
+/** Keeps only the last item per field — if `record_extraction` and/or `propose_trip_revision` both target the same field in one turn, the last one in call order wins, matching how the same field reported twice across multiple `record_extraction` calls already behaves. Without this, the retire-then-append loop would still leave the DB correct (each retire clears the prior insert), but the in-memory rows from earlier, now-superseded iterations would leak into the returned snapshot. */
+function lastByField<T extends { field: string }>(items: T[]): T[] {
+  const byField = new Map<string, T>();
+  for (const item of items) byField.set(item.field, item);
+  return [...byField.values()];
+}
+
+function preferenceRecordFromRow(row: TripPreferenceRow): PreferenceRecord {
+  return {
+    id: row.id,
+    field: row.field as PreferenceFieldName,
+    value: row.value as string | string[],
+    source: row.source as ExtractionSource,
+    confidence: row.confidence ?? 1,
+    status: row.status as PreferenceRecord["status"],
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Decides which workflow events (in order) this turn's outcome authorizes —
+ * the Layer 4 gate itself still lives in `validateStateTransition` via
+ * `advanceTrip`; this only decides what to *propose*. Deliberately narrow:
+ * the only way out of `awaiting_clarification` is full completeness (which
+ * also immediately satisfies `requirements_ready`, so both hops apply in the
+ * same turn) — whether the model happened to ask another clarifying question
+ * this turn doesn't drive a state transition, only what's shown to the user.
+ */
+function decideNextEvents(
+  workflowState: WorkflowState,
+  ready: boolean,
+  clarification: ClarificationRequest | null,
+): WorkflowEvent[] {
+  if (workflowState === "collecting_requirements") {
+    if (ready) return ["requirements_complete"];
+    if (clarification) return ["clarification_needed"];
+    return [];
+  }
+  if (workflowState === "awaiting_clarification") {
+    if (ready) return ["clarification_resolved", "requirements_complete"];
+    return [];
+  }
+  return [];
+}
+
+/**
+ * Turns a validated `propose_trip_revision` call into an extraction item the
+ * same persistence path as `record_extraction` can apply — a revision is
+ * structurally just a new value for a field, re-validated against that
+ * field's own schema since `RevisionProposal.value` is untyped
+ * (`src/domain/extraction.ts` deliberately leaves this to whoever applies
+ * the revision). `revisionType: "decision"` has nothing to apply against
+ * yet — no `trip_decisions` repository exists before Phase 5/7's
+ * search/curation work creates actual decisions — so it's logged as a
+ * domain-validation guardrail trigger rather than silently dropped or
+ * crashing.
+ */
+async function applyRevisionProposal(
+  supabase: SupabaseClient<Database>,
+  tripId: string,
+  workflowRunId: string,
+  proposal: RevisionProposal,
+): Promise<{ requirement?: ExtractedRequirement; preference?: ExtractedPreference }> {
+  if (proposal.revisionType === "decision") {
+    await recordGuardrailEvent(supabase, {
+      tripId,
+      agentName: AGENT_NAME,
+      guardrailName: "decision_revision_unsupported",
+      layer: "domain_validation",
+      triggered: true,
+      detail: `No decisions exist yet to revise (target "${proposal.target}") — decision revisions aren't wired until Phase 5/7's search/curation work creates actual decisions.`,
+      workflowRunId,
+    });
+    return {};
+  }
+
+  const candidate = { field: proposal.target, value: proposal.value, source: "user_explicit" as const, confidence: 1 };
+  const schema = proposal.revisionType === "requirement" ? ExtractedRequirement : ExtractedPreference;
+  const parsed = schema.safeParse(candidate);
+  if (!parsed.success) {
+    await recordGuardrailEvent(supabase, {
+      tripId,
+      agentName: AGENT_NAME,
+      guardrailName: "revision_schema_validation",
+      layer: "output_validation",
+      triggered: true,
+      detail: `${proposal.revisionType} revision for "${proposal.target}": ${parsed.error.message}`,
+      workflowRunId,
+    });
+    return {};
+  }
+  return proposal.revisionType === "requirement"
+    ? { requirement: parsed.data as ExtractedRequirement }
+    : { preference: parsed.data as ExtractedPreference };
+}
+
+export interface ProcessIntakeTurnParams {
+  tripId: string;
+  sessionId: string;
+  userMessage: string;
+  /** Idempotency key for this turn — a retry with the same ID must be safe (PROJECT_BRIEF.md §8.3). Defaults to a fresh UUID if omitted, which means a caller that wants retry safety across its own request boundary must generate and pass one itself. */
+  correlationId?: string;
+}
+
+export interface ProcessIntakeTurnResult {
+  workflowState: WorkflowState;
+  assistantMessage: string;
+  clarification: ClarificationRequest | null;
+  ready: boolean;
+  requirements: RequirementRecord[];
+  preferences: PreferenceRecord[];
+}
+
+export async function processIntakeTurn(
+  supabase: SupabaseClient<Database>,
+  modelClient: ModelClient,
+  params: ProcessIntakeTurnParams,
+): Promise<ProcessIntakeTurnResult> {
+  const correlationId = params.correlationId ?? randomUUID();
+  const trimmed = params.userMessage.trim();
+
+  // Layer 1 guardrail (PROJECT_BRIEF.md §9.1): input/scope controls, before any model call.
+  const inputGuardrailReason =
+    trimmed.length === 0
+      ? "empty_message"
+      : trimmed.length > MAX_MESSAGE_LENGTH
+        ? "message_too_long"
+        : null;
+  await recordGuardrailEvent(supabase, {
+    tripId: params.tripId,
+    sessionId: params.sessionId,
+    agentName: AGENT_NAME,
+    guardrailName: inputGuardrailReason ?? "input_scope_check",
+    layer: "input_scope",
+    triggered: inputGuardrailReason !== null,
+  });
+  if (inputGuardrailReason) {
+    throw new InputGuardrailRejectedError(
+      inputGuardrailReason === "empty_message"
+        ? "Message is empty."
+        : `Message exceeds ${MAX_MESSAGE_LENGTH} characters.`,
+    );
+  }
+
+  const trip = await getTrip(supabase, params.tripId);
+  if (!trip || trip.session_id !== params.sessionId) {
+    throw new SessionTripMismatchError(params.tripId, params.sessionId);
+  }
+
+  const [, currentState] = await Promise.all([
+    appendMessage(supabase, { sessionId: params.sessionId, role: "user", content: trimmed }),
+    getLatestTripState(supabase, params.tripId),
+  ]);
+  if (!currentState) {
+    throw new Error(`Trip ${params.tripId} has no state history — call startTrip first.`);
+  }
+
+  let workflowState = currentState.state.workflowState;
+  if (workflowState === "created") {
+    const started = await advanceTrip(supabase, {
+      tripId: params.tripId,
+      event: "start_intake",
+      actor: "user",
+      correlationId: deriveCorrelationId(correlationId, "start_intake"),
+    });
+    await recordGuardrailEvent(supabase, {
+      tripId: params.tripId,
+      agentName: AGENT_NAME,
+      guardrailName: "workflow_transition_authorization",
+      layer: "workflow_authorization",
+      triggered: started.status !== "applied" && started.status !== "replayed",
+      detail: started.status === "rejected" ? started.reason : started.status === "conflict" ? "conflict" : null,
+    });
+    if (started.status === "conflict") {
+      throw new OrchestrationConflictError(params.tripId, "start_intake");
+    }
+    if (started.status !== "applied" && started.status !== "replayed") {
+      throw new OrchestrationTransitionError(params.tripId, "start_intake", started.reason ?? "was rejected");
+    }
+    workflowState = started.toState;
+  }
+
+  const [requirementRows, preferenceRows] = await Promise.all([
+    listActiveTripRequirements(supabase, params.tripId),
+    listActiveTripPreferences(supabase, params.tripId),
+  ]);
+  const currentRequirements = requirementRows.map(requirementRecordFromRow);
+  const currentPreferences = preferenceRows.map(preferenceRecordFromRow);
+
+  const run = await getOrCreateActiveWorkflowRun(supabase, params.tripId);
+  const startedAt = Date.now();
+  let agentResult: IntakeAgentResult;
+  try {
+    agentResult = await runIntakeAgent(modelClient, {
+      userMessage: trimmed,
+      currentRequirements,
+      currentPreferences,
+    });
+  } catch (err) {
+    await recordAgentRun(supabase, {
+      tripId: params.tripId,
+      sessionId: params.sessionId,
+      workflowRunId: run.id,
+      agentName: AGENT_NAME,
+      model: modelClient.model,
+      inputStateVersion: currentState.version,
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+      latencyMs: Date.now() - startedAt,
+      status: "error",
+      errorMessage: err instanceof Error ? err.message : String(err),
+      correlationId,
+    });
+    throw err;
+  }
+  const latencyMs = Date.now() - startedAt;
+
+  // A turn cut off by max_tokens or declined by a safety refusal produced
+  // whatever partial output it produced — that's not the same as a clean
+  // completion, even if every tool call it did make happened to validate.
+  const incompleteStopReason = agentResult.stopReason !== "end_turn" && agentResult.stopReason !== "tool_use";
+  const anyToolCallFailed = agentResult.toolCallLog.some((c) => c.status === "error");
+  const agentRun = await recordAgentRun(supabase, {
+    tripId: params.tripId,
+    sessionId: params.sessionId,
+    workflowRunId: run.id,
+    agentName: AGENT_NAME,
+    model: modelClient.model,
+    inputStateVersion: currentState.version,
+    usage: agentResult.usage,
+    latencyMs,
+    status: anyToolCallFailed || incompleteStopReason ? "error" : "success",
+    errorMessage: incompleteStopReason ? `stop_reason: ${agentResult.stopReason}` : null,
+    correlationId,
+  });
+
+  await recordToolCalls(
+    supabase,
+    agentRun.id,
+    agentResult.toolCallLog.map((call) => ({
+      toolName: call.toolName,
+      arguments: call.input as Json,
+      result: (call.result ?? null) as Json,
+      status: call.status,
+    })),
+  );
+
+  // Layer 2 guardrail: a malformed tool call is a model-output-validation trigger, one row each — independent writes, safe to run concurrently.
+  await Promise.all(
+    agentResult.toolCallLog
+      .filter((call) => call.status === "error")
+      .map((call) =>
+        recordGuardrailEvent(supabase, {
+          tripId: params.tripId,
+          agentName: AGENT_NAME,
+          guardrailName: "tool_call_schema_validation",
+          layer: "output_validation",
+          triggered: true,
+          detail: `${call.toolName}: ${call.error}`,
+          workflowRunId: run.id,
+        }),
+      ),
+  );
+
+  const rawRequirements = [...agentResult.requirements];
+  const rawPreferences = [...agentResult.preferences];
+  if (agentResult.revisionProposal) {
+    const applied = await applyRevisionProposal(supabase, params.tripId, run.id, agentResult.revisionProposal);
+    if (applied.requirement) rawRequirements.push(applied.requirement);
+    if (applied.preference) rawPreferences.push(applied.preference);
+  }
+  const requirementsToApply = lastByField(rawRequirements);
+  const preferencesToApply = lastByField(rawPreferences);
+
+  // A field revised (or simply re-stated) this turn supersedes its prior
+  // active row rather than living alongside it — retract-then-append,
+  // sequential per item since more than one item in the same turn could
+  // target the same field (the later one in the array wins).
+  const newRequirementRows: TripRequirementRow[] = [];
+  for (const r of requirementsToApply) {
+    await retireActiveTripRequirementsForField(supabase, params.tripId, r.field);
+    newRequirementRows.push(
+      await appendTripRequirement(supabase, {
+        tripId: params.tripId,
+        field: r.field,
+        value: r.value as Json,
+        source: r.source,
+        confidence: r.confidence,
+      }),
+    );
+  }
+  const newPreferenceRows: TripPreferenceRow[] = [];
+  for (const p of preferencesToApply) {
+    await retireActiveTripPreferencesForField(supabase, params.tripId, p.field);
+    newPreferenceRows.push(
+      await appendTripPreference(supabase, {
+        tripId: params.tripId,
+        field: p.field,
+        value: p.value as Json,
+        source: p.source,
+        confidence: p.confidence,
+      }),
+    );
+  }
+
+  await appendMessage(supabase, { sessionId: params.sessionId, role: "assistant", content: agentResult.assistantMessage });
+
+  // currentRequirements/currentPreferences were loaded before this turn's
+  // retractions — drop anything just superseded so the snapshot below (and
+  // the completeness check) reflects this turn's outcome, not stale rows.
+  const touchedRequirementFields = new Set(requirementsToApply.map((r) => r.field));
+  const touchedPreferenceFields = new Set(preferencesToApply.map((p) => p.field));
+  const allRequirements = [
+    ...currentRequirements.filter((r) => !touchedRequirementFields.has(r.field)),
+    ...newRequirementRows.map(requirementRecordFromRow),
+  ];
+  const allPreferences = [
+    ...currentPreferences.filter((p) => !touchedPreferenceFields.has(p.field)),
+    ...newPreferenceRows.map(preferenceRecordFromRow),
+  ];
+
+  // Layer 3 guardrail (domain validation): the deterministic gate, never the model's own claim.
+  const completeness = checkRequirementsComplete(allRequirements);
+  await recordGuardrailEvent(supabase, {
+    tripId: params.tripId,
+    agentName: AGENT_NAME,
+    guardrailName: "requirements_completeness",
+    layer: "domain_validation",
+    triggered: !completeness.ready,
+    detail: completeness.ready ? null : `missing: ${completeness.missingFields.join(", ")}`,
+    workflowRunId: run.id,
+  });
+
+  // Layer 4 (workflow authorization): enforced inside `advanceTrip` itself; logged here either way.
+  const events = decideNextEvents(workflowState, completeness.ready, agentResult.clarification);
+  for (const event of events) {
+    const advanced = await advanceTrip(supabase, {
+      tripId: params.tripId,
+      event,
+      actor: AGENT_NAME,
+      // Keyed by event name, not position — a retry that recomputes a
+      // shorter chain (because an earlier step already durably applied
+      // before a crash) must still derive the same ID for the same event,
+      // not collide it with whatever event happened to be at that index
+      // originally.
+      correlationId: deriveCorrelationId(correlationId, `chain:${event}`),
+    });
+    await recordGuardrailEvent(supabase, {
+      tripId: params.tripId,
+      agentName: AGENT_NAME,
+      guardrailName: "workflow_transition_authorization",
+      layer: "workflow_authorization",
+      triggered: advanced.status !== "applied" && advanced.status !== "replayed",
+      detail: advanced.status === "rejected" ? advanced.reason : advanced.status === "conflict" ? "conflict" : null,
+      workflowRunId: run.id,
+    });
+    if (advanced.status === "conflict") {
+      throw new OrchestrationConflictError(params.tripId, event);
+    }
+    if (advanced.status !== "applied" && advanced.status !== "replayed") {
+      throw new OrchestrationTransitionError(params.tripId, event, advanced.reason ?? "was rejected");
+    }
+    workflowState = advanced.toState;
+  }
+
+  return {
+    workflowState,
+    assistantMessage: agentResult.assistantMessage,
+    clarification: agentResult.clarification,
+    ready: completeness.ready,
+    requirements: allRequirements,
+    preferences: allPreferences,
+  };
+}
