@@ -20,4 +20,5 @@ function resolveModel(envVar: string, fallback: AvailableModel): AvailableModel 
 
 export const AGENT_MODELS = {
   intake: resolveModel("INTAKE_AGENT_MODEL", "claude-sonnet-5"),
+  curator: resolveModel("CURATOR_AGENT_MODEL", "claude-sonnet-5"),
 } as const;

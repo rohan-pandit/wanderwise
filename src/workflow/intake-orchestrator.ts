@@ -16,7 +16,7 @@
  * is deterministic code (`checkRequirementsComplete`), not the model's own
  * claim that it's done.
  */
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/src/config/supabase/database.types";
 import { runIntakeAgent, type IntakeAgentResult } from "@/src/agents/intake";
@@ -51,8 +51,11 @@ import {
 import { getLatestTripState } from "@/src/repositories/trip-state";
 import { getTrip } from "@/src/repositories/trips";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
-import { advanceTrip } from "./controller";
+import { advanceOrThrow } from "./advance";
+import { deriveCorrelationId } from "./correlation";
 import type { WorkflowEvent, WorkflowState } from "./state-machine";
+
+export { OrchestrationConflictError, OrchestrationTransitionError } from "./orchestration-errors";
 
 const AGENT_NAME = "intake_and_revision_interpreter";
 const MAX_MESSAGE_LENGTH = 4000;
@@ -77,35 +80,6 @@ export class SessionTripMismatchError extends Error {
     super(`Trip ${tripId} does not belong to session ${sessionId}.`);
     this.name = "SessionTripMismatchError";
   }
-}
-
-export class OrchestrationTransitionError extends Error {
-  constructor(tripId: string, event: WorkflowEvent, reason: string) {
-    super(`Trip ${tripId}: transition "${event}" was rejected: ${reason}`);
-    this.name = "OrchestrationTransitionError";
-  }
-}
-
-/** Distinct from `OrchestrationTransitionError`: a conflict means another writer won a race on the same trip, not that the transition itself is invalid — per `advanceTrip`'s own contract (PROJECT_BRIEF.md §7.7), it's safe (and expected) to retry the whole turn, not a terminal failure. */
-export class OrchestrationConflictError extends Error {
-  constructor(tripId: string, event: WorkflowEvent) {
-    super(`Trip ${tripId}: transition "${event}" conflicted with a concurrent write — safe to retry the whole turn.`);
-    this.name = "OrchestrationConflictError";
-  }
-}
-
-/**
- * Derives a stable, valid-format UUID from a base correlation ID plus a step
- * label, so a single user turn that needs more than one workflow transition
- * (e.g. `clarification_resolved` immediately followed by
- * `requirements_complete`) gets a distinct, retry-stable correlation ID per
- * step — a retry of the whole turn with the same base ID reproduces the same
- * per-step IDs, preserving `advanceTrip`'s idempotency guarantee across the
- * chain, not just within one call.
- */
-function deriveCorrelationId(base: string, label: string): string {
-  const hex = createHash("sha256").update(`${base}:${label}`).digest("hex").slice(0, 32);
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 function requirementRecordFromRow(row: TripRequirementRow): RequirementRecord {
@@ -279,27 +253,13 @@ export async function processIntakeTurn(
 
   let workflowState = currentState.state.workflowState;
   if (workflowState === "created") {
-    const started = await advanceTrip(supabase, {
+    workflowState = await advanceOrThrow(supabase, {
       tripId: params.tripId,
       event: "start_intake",
       actor: "user",
       correlationId: deriveCorrelationId(correlationId, "start_intake"),
-    });
-    await recordGuardrailEvent(supabase, {
-      tripId: params.tripId,
       agentName: AGENT_NAME,
-      guardrailName: "workflow_transition_authorization",
-      layer: "workflow_authorization",
-      triggered: started.status !== "applied" && started.status !== "replayed",
-      detail: started.status === "rejected" ? started.reason : started.status === "conflict" ? "conflict" : null,
     });
-    if (started.status === "conflict") {
-      throw new OrchestrationConflictError(params.tripId, "start_intake");
-    }
-    if (started.status !== "applied" && started.status !== "replayed") {
-      throw new OrchestrationTransitionError(params.tripId, "start_intake", started.reason ?? "was rejected");
-    }
-    workflowState = started.toState;
   }
 
   const [requirementRows, preferenceRows] = await Promise.all([
@@ -455,7 +415,7 @@ export async function processIntakeTurn(
   // Layer 4 (workflow authorization): enforced inside `advanceTrip` itself; logged here either way.
   const events = decideNextEvents(workflowState, completeness.ready, agentResult.clarification);
   for (const event of events) {
-    const advanced = await advanceTrip(supabase, {
+    workflowState = await advanceOrThrow(supabase, {
       tripId: params.tripId,
       event,
       actor: AGENT_NAME,
@@ -465,23 +425,9 @@ export async function processIntakeTurn(
       // not collide it with whatever event happened to be at that index
       // originally.
       correlationId: deriveCorrelationId(correlationId, `chain:${event}`),
-    });
-    await recordGuardrailEvent(supabase, {
-      tripId: params.tripId,
       agentName: AGENT_NAME,
-      guardrailName: "workflow_transition_authorization",
-      layer: "workflow_authorization",
-      triggered: advanced.status !== "applied" && advanced.status !== "replayed",
-      detail: advanced.status === "rejected" ? advanced.reason : advanced.status === "conflict" ? "conflict" : null,
       workflowRunId: run.id,
     });
-    if (advanced.status === "conflict") {
-      throw new OrchestrationConflictError(params.tripId, event);
-    }
-    if (advanced.status !== "applied" && advanced.status !== "replayed") {
-      throw new OrchestrationTransitionError(params.tripId, event, advanced.reason ?? "was rejected");
-    }
-    workflowState = advanced.toState;
   }
 
   return {

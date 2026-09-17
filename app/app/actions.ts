@@ -26,10 +26,12 @@ import { createClient } from "@/src/config/supabase/server";
 import { createServiceClient } from "@/src/config/supabase/service";
 import { AnthropicModelClient } from "@/src/agents/providers/anthropic-model-client";
 import { AGENT_MODELS } from "@/src/config/models";
+import { VoyageEmbeddingClient } from "@/src/retrieval/providers/voyage-embedding-client";
 import { createSession } from "@/src/repositories/sessions";
 import { getTrip } from "@/src/repositories/trips";
 import { startTrip } from "@/src/workflow/controller";
 import { processIntakeTurn, type ProcessIntakeTurnResult } from "@/src/workflow/intake-orchestrator";
+import { runSearchAndCuration, type RunSearchAndCurationResult } from "@/src/workflow/search-orchestrator";
 
 export interface SendMessageInput {
   /** Omit to start a new trip (and its session) for this message. */
@@ -77,4 +79,43 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
   });
 
   return { ...result, tripId, sessionId };
+}
+
+export interface BeginSearchInput {
+  tripId: string;
+}
+
+export interface BeginSearchResult extends RunSearchAndCurationResult {
+  tripId: string;
+}
+
+/**
+ * Server Action entry point for the search/curation orchestrator
+ * (`src/workflow/search-orchestrator.ts`, Phase 6 continued). No chat UI
+ * triggers this yet (Phase 7) — a real UI would call it once
+ * `sendMessage`'s result reports `workflowState: "requirements_ready"` — but
+ * it makes the wiring reachable through the real authenticated request path,
+ * same rationale as `sendMessage` above.
+ */
+export async function beginSearch(input: BeginSearchInput): Promise<BeginSearchResult> {
+  const authClient = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await authClient.auth.getUser();
+  if (authError || !user) {
+    throw new Error("Not authenticated.");
+  }
+
+  const supabase = createServiceClient();
+  const trip = await getTrip(supabase, input.tripId);
+  if (!trip || trip.user_id !== user.id) {
+    throw new Error(`Trip ${input.tripId} not found.`);
+  }
+
+  const modelClient = new AnthropicModelClient(AGENT_MODELS.curator);
+  const embeddingClient = new VoyageEmbeddingClient();
+  const result = await runSearchAndCuration(supabase, modelClient, embeddingClient, { tripId: input.tripId });
+
+  return { ...result, tripId: input.tripId };
 }
