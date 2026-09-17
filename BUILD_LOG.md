@@ -1123,3 +1123,23 @@ Given the destination-identity item's real scope was bigger than its one-line tr
 **Known limitations / assumptions:** Unchanged from what's tracked in `docs/IMPLEMENTATION_PLAN.md` §5, minus this item and the two dead-module deletions. See that section for the full, current list.
 
 **Next recommended task:** Three architectural items remain on the open-items list, each flagged as needing its own scoping conversation: the activity-retrieval overfetch heuristic, the one-room-type-per-hotel limitation, and the naive (first-fit, non-optimizing) activity scheduler. The 10 un-automated §19 eval scenarios remain the lowest-priority, biggest-lift item.
+
+---
+
+## 2026-09-17 — Activity retrieval's overfetch heuristic: widen-and-retry instead of a single fixed overfetch
+
+**What I built:** Closed the next architectural item off the open-items list, chosen by the user. `retrieveActivities` (`src/retrieval/activities-retrieval.ts`) previously overfetched by a single fixed `OVERFETCH_FACTOR` (2x `topK`) before its closed-days post-filter, then accepted whatever survived — if more than `topK * 2` of the closest semantic matches for a destination happened to be closed on the excluded day(s), it could return fewer than `topK` results even when enough open activities existed further down the similarity ranking.
+
+Replaced the one-shot overfetch with a widen-and-retry loop: if the post-filter under-fills `topK` *and* the last fetch returned exactly as many rows as requested (meaning there could be more beyond the current `LIMIT`), it doubles `matchCount` and retries against the same pre-computed query embedding (no extra Voyage API call — the embedding is computed once up front). It stops as soon as a fetch returns fewer rows than requested, since that means every matching activity for the destination has already been seen and retrying would just repeat the same query. A new `MAX_MATCH_COUNT` (200) is a defensive ceiling on worst-case query cost, not something the doubling strategy needs to terminate — it already converges in a handful of iterations at any catalog size a real deployment would plausibly have.
+
+**Why:** Next item off the tracked architectural backlog (`docs/IMPLEMENTATION_PLAN.md` §5), chosen by the user. Smallest of the three remaining architectural items, and the one explicitly framed in its own tracked text as a fix rather than a design trade-off ("the fix would be re-querying with a larger limit when the post-filter under-fills, rather than a single fixed overfetch").
+
+**Decisions made:** None requiring a user decision this time — the tracked item's own text already specified the fix; this was a straightforward implementation of it, not a design fork.
+
+**What didn't work / dead ends:** None.
+
+**Verification:** `npx tsc --noEmit`, `npm run lint`, `npm run build`, `npm test` (335/335, up from 332) all clean. 3 new tests in `activities-retrieval.test.ts` prove the actual scenario the fix is about (a first batch of all-closed results followed by a wider fetch reaching the open ones further down the ranking, using a mocked `matchActivities` that simulates a real paginated `LIMIT`), the natural-termination case (a short first batch isn't retried, since it already proves exhaustion), and the `MAX_MATCH_COUNT` ceiling against a pathological all-closed result set. Not live-verified: this project's seed data (a handful of activities per destination) can't reach the retry path at all — a live check would only re-prove the unchanged happy path, not the new widen-and-retry logic itself, which only the synthetic unit tests can actually exercise until a larger catalog exists.
+
+**Known limitations / assumptions:** Unchanged from what's tracked in `docs/IMPLEMENTATION_PLAN.md` §5, minus this item. See that section for the full, current list.
+
+**Next recommended task:** Two architectural items remain, each needing its own scoping conversation: the one-room-type-per-hotel limitation and the naive (first-fit, non-optimizing) activity scheduler. The 10 un-automated §19 eval scenarios remain the lowest-priority, biggest-lift item.

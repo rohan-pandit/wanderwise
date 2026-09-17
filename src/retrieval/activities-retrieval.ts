@@ -24,18 +24,27 @@ import type { EmbeddingClient } from "./embedding-client";
 import { RetrievalQueryError } from "./errors";
 
 /**
- * How much to overfetch from Postgres before the closed-days post-filter, so
- * filtering out a few candidates doesn't leave fewer than `topK` results.
- * A heuristic, not a guarantee: `matchActivities`'s SQL `LIMIT` still runs
- * before this filter, so if more than `topK * OVERFETCH_FACTOR` of the
- * closest semantic matches for a destination happen to be closed on the
- * excluded day(s), `retrieveActivities` can legitimately return fewer than
- * `topK` results even though enough open ones exist further down the
- * similarity ranking. Acceptable at this project's seed-data scale
- * (a handful of activities per destination); revisit if a larger catalog
- * makes this a real gap (docs/IMPLEMENTATION_PLAN.md §5).
+ * Starting overfetch multiplier for the initial `matchActivities` call, before
+ * the closed-days post-filter (`match_activities`'s SQL `LIMIT` runs before
+ * that filter, which is applied here in application code). If the first
+ * fetch doesn't yield `topK` passing results, `retrieveActivities` widens the
+ * query and retries (see `MAX_MATCH_COUNT` below) rather than accepting a
+ * short result the ranking could have filled further down
+ * (docs/IMPLEMENTATION_PLAN.md §5).
  */
 export const OVERFETCH_FACTOR = 2;
+
+/**
+ * Upper bound on how far a single `retrieveActivities` call will widen its
+ * `matchActivities` query while retrying to fill `topK` (see the loop below).
+ * Doubling converges in very few iterations even at a much larger catalog
+ * size than this project's seed data — this cap exists purely as a
+ * defensive ceiling on worst-case query cost, not because the doubling
+ * strategy itself needs one to terminate (it already terminates naturally
+ * the moment Postgres returns fewer rows than asked for, meaning every
+ * matching activity for the destination has been seen).
+ */
+export const MAX_MATCH_COUNT = 200;
 
 export interface RetrieveActivitiesParams {
   /** Display name only now — the actual filter is `destinationId` (`docs/IMPLEMENTATION_PLAN.md` §5's destination-identifier-space fix). Still used as the embedding query-text fallback below. */
@@ -63,23 +72,43 @@ export async function retrieveActivities(
   }
 
   const { embeddings } = await embeddingClient.embed([queryText], "query");
-  const matches = await matchActivities(supabase, {
-    queryEmbedding: embeddings[0],
-    matchCount: params.excludeClosedOnDays?.length ? params.topK * OVERFETCH_FACTOR : params.topK,
-    destinationId: params.destinationId,
-    inventoryVersion: params.inventoryVersion,
-    minPriceUsd: params.minPriceUsd,
-    maxPriceUsd: params.maxPriceUsd,
-    requiredAccessibility: params.accessibilityNeeds,
-    vibeTags: params.vibeTags,
-  });
+  const queryEmbedding = embeddings[0];
+
+  const fetchMatches = (matchCount: number) =>
+    matchActivities(supabase, {
+      queryEmbedding,
+      matchCount,
+      destinationId: params.destinationId,
+      inventoryVersion: params.inventoryVersion,
+      minPriceUsd: params.minPriceUsd,
+      maxPriceUsd: params.maxPriceUsd,
+      requiredAccessibility: params.accessibilityNeeds,
+      vibeTags: params.vibeTags,
+    });
 
   if (!params.excludeClosedOnDays?.length) {
-    return matches;
+    return fetchMatches(params.topK);
   }
 
-  const { passing } = filterHardConstraints(matches, [
+  let matchCount = Math.min(params.topK * OVERFETCH_FACTOR, MAX_MATCH_COUNT);
+  let matches = await fetchMatches(matchCount);
+  let passing = filterHardConstraints(matches, [
     excludeClosedOnDaysConstraint<MatchedActivity>(params.excludeClosedOnDays),
-  ]);
+  ]).passing;
+
+  // Widen and retry while the closed-days filter has under-filled `topK` and
+  // there's reason to believe a bigger fetch would surface more: Postgres
+  // returning exactly as many rows as asked for means there could be more
+  // beyond the current LIMIT; returning fewer means every matching activity
+  // for this destination has already been seen, so retrying would just
+  // repeat the same query for no gain.
+  while (passing.length < params.topK && matches.length === matchCount && matchCount < MAX_MATCH_COUNT) {
+    matchCount = Math.min(matchCount * OVERFETCH_FACTOR, MAX_MATCH_COUNT);
+    matches = await fetchMatches(matchCount);
+    passing = filterHardConstraints(matches, [
+      excludeClosedOnDaysConstraint<MatchedActivity>(params.excludeClosedOnDays),
+    ]).passing;
+  }
+
   return passing.slice(0, params.topK);
 }

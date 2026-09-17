@@ -7,7 +7,7 @@ import { RetrievalQueryError } from "./errors";
 vi.mock("@/src/repositories/activities");
 
 import { matchActivities, type MatchedActivity } from "@/src/repositories/activities";
-import { retrieveActivities } from "./activities-retrieval";
+import { MAX_MATCH_COUNT, retrieveActivities } from "./activities-retrieval";
 
 const supabase = {} as SupabaseClient<Database>;
 
@@ -93,6 +93,65 @@ describe("retrieveActivities", () => {
       expect.objectContaining({ matchCount: 10 }), // 5 * OVERFETCH_FACTOR
     );
     expect(result.map((a) => a.id)).toEqual(["open", "open-2"]);
+  });
+
+  it("widens and retries when the first (exactly-full) batch under-fills topK, since more could exist further down the ranking", async () => {
+    const pool = [
+      ...Array.from({ length: 10 }, (_, i) => activity({ id: `closed-${i}`, closed_days: ["monday"] })),
+      ...Array.from({ length: 10 }, (_, i) => activity({ id: `open-${i}`, closed_days: [] })),
+    ];
+    vi.mocked(matchActivities).mockImplementation(async (_s, filter) => pool.slice(0, filter.matchCount));
+    const client = new FakeEmbeddingClient();
+
+    const result = await retrieveActivities(supabase, client, {
+      destination: "Lisbon",
+      destinationId: "destination-lisbon",
+      excludeClosedOnDays: ["monday"],
+      topK: 5,
+    });
+
+    // First call (matchCount 10) hits all 10 closed activities and nothing
+    // else — 0 passing, but Postgres returned exactly as many rows as asked
+    // for, so a bigger fetch might surface the open ones further down the
+    // ranking. Second call (matchCount 20) reaches them.
+    expect(matchActivities).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(matchActivities).mock.calls[0][1]).toMatchObject({ matchCount: 10 });
+    expect(vi.mocked(matchActivities).mock.calls[1][1]).toMatchObject({ matchCount: 20 });
+    expect(result.map((a) => a.id)).toEqual(["open-0", "open-1", "open-2", "open-3", "open-4"]);
+  });
+
+  it("does not retry when the first batch already came back short of matchCount (every matching activity has been seen)", async () => {
+    vi.mocked(matchActivities).mockResolvedValue([activity({ id: "only-one", closed_days: [] })]);
+    const client = new FakeEmbeddingClient();
+
+    const result = await retrieveActivities(supabase, client, {
+      destination: "Lisbon",
+      destinationId: "destination-lisbon",
+      excludeClosedOnDays: ["monday"],
+      topK: 5,
+    });
+
+    expect(matchActivities).toHaveBeenCalledTimes(1);
+    expect(result.map((a) => a.id)).toEqual(["only-one"]);
+  });
+
+  it("stops widening at MAX_MATCH_COUNT rather than retrying forever against a pathological all-closed result set", async () => {
+    vi.mocked(matchActivities).mockImplementation(async (_s, filter) =>
+      Array.from({ length: filter.matchCount }, (_, i) => activity({ id: `closed-${i}`, closed_days: ["monday"] })),
+    );
+    const client = new FakeEmbeddingClient();
+
+    const result = await retrieveActivities(supabase, client, {
+      destination: "Lisbon",
+      destinationId: "destination-lisbon",
+      excludeClosedOnDays: ["monday"],
+      topK: 5,
+    });
+
+    expect(result).toEqual([]);
+    const requestedCounts = vi.mocked(matchActivities).mock.calls.map((call) => call[1].matchCount);
+    expect(Math.max(...requestedCounts)).toBe(MAX_MATCH_COUNT);
+    expect(requestedCounts.every((c) => c <= MAX_MATCH_COUNT)).toBe(true);
   });
 
   it("slices closed-day-filtered results down to topK even if more survive", async () => {
