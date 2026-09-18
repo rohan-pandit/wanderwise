@@ -13,6 +13,7 @@
     "eval:intake": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-intake-eval.ts",
     "generate-embeddings": "node --env-file=.env.local --conditions=react-server --import tsx scripts/generate-embeddings.ts",
     "generate-large-seed-data": "node --env-file=.env.local --conditions=react-server --import tsx scripts/generate-large-seed-data.ts",
+    "generate-airport-data": "node --import tsx scripts/generate-airport-data.ts",
     "eval:retrieval": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-retrieval-eval.ts",
     "eval:scenarios": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-scenario-eval.ts",
     "eval:cache-comparison": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-cache-comparison.ts"

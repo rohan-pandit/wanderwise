@@ -32,6 +32,9 @@ export function flight(overrides: Partial<Flight> = {}): Flight {
     changeable: true,
     inventory_version: 1,
     source: "seed",
+    origin_airport_code: null,
+    destination_airport_code: null,
+    created_at: "2026-09-16T00:00:00Z",
     ...overrides,
   };
 }

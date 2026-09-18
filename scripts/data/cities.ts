@@ -8,11 +8,18 @@
  * (Lisbon, Kyoto, Tulum, Reykjavik, Cape Town, Barcelona) — those and their
  * fixtures stay untouched (`supabase/migrations/0002_seed_data.sql`).
  * City names are kept globally unique across this whole list (no two
- * countries share a city name) — `getDestinationByName`
- * (`src/repositories/destinations.ts`) resolves a trip's stated destination
- * by exact name, and a duplicate would make that lookup ambiguous.
- * `scripts/_check-cities.ts` (throwaway, not committed) verified this list
- * has no duplicate names and no country missing from `COUNTRY_PROFILES`.
+ * countries share a city name). `getDestinationByName`
+ * (`src/repositories/destinations.ts`) is now country-aware (resolved
+ * 2026-09-18) — it accepts an optional `country` to disambiguate a shared
+ * city name, parsed from the trip's free-text destination requirement by
+ * `parseDestinationQuery` (`src/domain/destination-query.ts`) — so a future
+ * duplicate name wouldn't break resolution outright the way it would have
+ * before, as long as the user's phrasing (or the model's extraction)
+ * includes the country. Kept globally unique here anyway: it's still the
+ * simpler invariant, and nothing about the real-world city list actually
+ * requires reusing a name. `scripts/_check-cities.ts` (throwaway, not
+ * committed) verified this list has no duplicate names and no country
+ * missing from `COUNTRY_PROFILES`.
  *
  * Every country key here must exist in `COUNTRY_PROFILES`
  * (`src/domain/geography.ts`) — the generator throws immediately if not.

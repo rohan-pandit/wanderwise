@@ -321,6 +321,9 @@ export interface Database {
           changeable: boolean;
           inventory_version: number;
           source: string;
+          origin_airport_code: string | null;
+          destination_airport_code: string | null;
+          created_at: string;
         };
         Insert: {
           id?: string;
@@ -343,6 +346,9 @@ export interface Database {
           changeable?: boolean;
           inventory_version?: number;
           source?: string;
+          origin_airport_code?: string | null;
+          destination_airport_code?: string | null;
+          created_at?: string;
         };
         Relationships: [
           {

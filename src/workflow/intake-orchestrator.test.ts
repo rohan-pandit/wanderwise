@@ -5,6 +5,7 @@ import type { ModelClient } from "@/src/agents/model-client";
 
 vi.mock("@/src/agents/intake");
 vi.mock("@/src/repositories/agent-runs");
+vi.mock("@/src/repositories/destinations");
 vi.mock("@/src/repositories/guardrail-events");
 vi.mock("@/src/repositories/messages");
 vi.mock("@/src/repositories/trip-decisions");
@@ -17,6 +18,7 @@ vi.mock("./controller");
 
 import { runIntakeAgent } from "@/src/agents/intake";
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
+import { getDestinationByName } from "@/src/repositories/destinations";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { appendMessage, findMessageByCorrelationId } from "@/src/repositories/messages";
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
@@ -711,5 +713,115 @@ describe("processIntakeTurn", () => {
       supabase,
       expect.objectContaining({ role: "assistant", content: result.assistantMessage }),
     );
+  });
+
+  it("builds a real question from missingFields (not the generic extraction fallback) when the model calls request_clarification with no text (observed live)", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({
+        assistantMessage: "",
+        clarification: { missingFields: ["budgetTotalUsd", "partySize"], reason: "need budget and party size" },
+      }) as never,
+    );
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "awaiting_clarification",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "I want to go to Paris from 2026-11-01 to 2026-11-08.",
+    });
+
+    expect(result.assistantMessage).not.toBe("Got it — updating your trip details now.");
+    expect(result.assistantMessage.toLowerCase()).toContain("budget");
+    expect(result.assistantMessage.toLowerCase()).toContain("how many people are traveling");
+  });
+
+  const READY_EXCEPT_AIRPORT = [
+    { field: "origin", value: "New York", source: "user_explicit", confidence: 1 },
+    { field: "destination", value: "Lisbon", source: "user_explicit", confidence: 1 },
+    { field: "departureDate", value: "2026-10-05", source: "user_explicit", confidence: 1 },
+    { field: "returnDate", value: "2026-10-12", source: "user_explicit", confidence: 1 },
+    { field: "partySize", value: 2, source: "user_explicit", confidence: 1 },
+    { field: "budgetTotalUsd", value: 3000, source: "user_explicit", confidence: 1 },
+  ];
+
+  it("blocks requirements_ready on an ambiguous origin airport when enableAirportDisambiguation is on, asking a real deterministic question", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(getDestinationByName).mockResolvedValue({ id: "d1", name: "Lisbon", country: "Portugal" } as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({ requirements: READY_EXCEPT_AIRPORT as never, assistantMessage: "Got it!" }) as never,
+    );
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "awaiting_clarification",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "NY to Lisbon, Oct 5, party of 2, budget 3000",
+      enableAirportDisambiguation: true,
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.workflowState).toBe("awaiting_clarification");
+    expect(advanceTrip).toHaveBeenCalledWith(supabase, expect.objectContaining({ event: "clarification_needed" }));
+    expect(result.assistantMessage.toLowerCase()).toContain("new york");
+    expect(result.assistantMessage).toContain("JFK");
+    expect(result.assistantMessage).toContain("LGA");
+  });
+
+  it("doesn't check airport ambiguity at all when enableAirportDisambiguation is left off (default) — existing eval callers unaffected", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(emptyAgentResult({ requirements: READY_EXCEPT_AIRPORT as never }) as never);
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "requirements_ready",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "NY to Lisbon, Oct 5, party of 2, budget 3000",
+    });
+
+    expect(result.ready).toBe(true);
+    expect(result.workflowState).toBe("requirements_ready");
+    expect(getDestinationByName).not.toHaveBeenCalled();
+  });
+
+  it("resolves once the user's reply supplies the disambiguating airport code", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("awaiting_clarification", 4) as never);
+    vi.mocked(listActiveTripRequirements).mockResolvedValue(
+      READY_EXCEPT_AIRPORT.map((r) => requirementRow(r.field, r.value)) as never,
+    );
+    vi.mocked(getDestinationByName).mockResolvedValue({ id: "d1", name: "Lisbon", country: "Portugal" } as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({
+        requirements: [{ field: "originAirportCode", value: "JFK", source: "user_explicit", confidence: 1 }] as never,
+      }) as never,
+    );
+    vi.mocked(advanceTrip)
+      .mockResolvedValueOnce({ status: "applied", fromState: "awaiting_clarification", toState: "collecting_requirements", version: 5 } as never)
+      .mockResolvedValueOnce({ status: "applied", fromState: "collecting_requirements", toState: "requirements_ready", version: 6 } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "JFK please",
+      enableAirportDisambiguation: true,
+    });
+
+    expect(result.ready).toBe(true);
+    expect(result.workflowState).toBe("requirements_ready");
   });
 });

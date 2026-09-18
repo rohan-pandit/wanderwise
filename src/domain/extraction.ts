@@ -34,6 +34,8 @@ export const REQUIREMENT_FIELDS = [
   "requiredAccessibility",
   "excludeClosedOnDays",
   "maxActivityPriceUsd",
+  "originAirportCode",
+  "destinationAirportCode",
 ] as const;
 
 export type RequirementFieldName = (typeof REQUIREMENT_FIELDS)[number];
@@ -93,6 +95,27 @@ export const ExtractedRequirement = z.discriminatedUnion("field", [
     ...provenance,
   }),
   z.object({ field: z.literal("maxActivityPriceUsd"), value: z.number().positive(), ...provenance }),
+  // Only ever meaningful once a disambiguation clarification has actually
+  // been asked (`resolveFlightAirport`, `src/workflow/step-shared.ts`) —
+  // most cities have exactly one commercial airport, silently resolved
+  // without ever needing either of these. Deliberately not in
+  // `REQUIRED_FOR_READY`: requiring it unconditionally would ask every user
+  // for an airport code even in the common unambiguous case.
+  // Case is normalized on read (`resolveFlightAirport`, `src/workflow/step-shared.ts`
+  // and `findAirportByIata`, `src/domain/airport-lookup.ts`, both `.toUpperCase()`
+  // before comparing), not here — a `.transform()` on this schema breaks
+  // `z.toJSONSchema` ("Transforms cannot be represented in JSON Schema"),
+  // which `src/agents/intake.ts` needs to build the model-facing tool schema.
+  z.object({
+    field: z.literal("originAirportCode"),
+    value: z.string().regex(/^[A-Za-z]{3}$/, "must be a 3-letter IATA airport code"),
+    ...provenance,
+  }),
+  z.object({
+    field: z.literal("destinationAirportCode"),
+    value: z.string().regex(/^[A-Za-z]{3}$/, "must be a 3-letter IATA airport code"),
+    ...provenance,
+  }),
 ]);
 export type ExtractedRequirement = z.infer<typeof ExtractedRequirement>;
 

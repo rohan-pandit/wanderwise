@@ -189,11 +189,14 @@ function proposedSignature(step: ChainStep, decisions: DecisionRow[]): string {
 export function ItineraryPanel({
   tripId,
   initialTripStatus,
+  requirementsReady,
   pendingCascade,
   onPendingCascade,
 }: {
   tripId: string;
   initialTripStatus: string;
+  /** Whether the trip's `REQUIRED_FOR_READY` fields are all present yet (`app/app/trips/[tripId]/page.tsx` computes the initial value server-side; `ChatPanel`'s `onRequirementsReady` flips it once a turn's completeness check passes). Gates the flight auto-propose effect below — searching before this is true throws `RequirementsNotReadyError` (found live 2026-09-18: an under-specified first message redirected here and the effect fired immediately with an empty decisions list, before the user had finished answering the intake agent's clarifying questions). */
+  requirementsReady: boolean;
   pendingCascade: PendingCascadeConfirmation | null;
   onPendingCascade: (pending: PendingCascadeConfirmation | null) => void;
 }) {
@@ -300,6 +303,14 @@ export function ItineraryPanel({
   // pre-emptively to avoid a redundant Curator call of its own.
   useEffect(() => {
     if (initialLoad) return;
+    // `activeStep` reads as "flight" from an empty decisions list whether
+    // the trip's requirements are actually complete or the user hasn't
+    // finished answering the intake agent's clarifying questions yet — only
+    // `requirementsReady` (not decisions/activeStep alone) can tell those
+    // apart. Hotel/activities don't need this same guard: `getCurrentChainStep`
+    // can't return either one until the flight step is confirmed, which
+    // itself can't happen before requirements are ready.
+    if (activeStep === "flight" && !requirementsReady) return;
     if (activeStep === "flight") {
       const sig = proposedSignature("flight", decisions);
       if (flightSigRef.current === sig) return;
@@ -338,7 +349,7 @@ export function ItineraryPanel({
         }
       })();
     }
-  }, [activeStep, decisions, initialLoad, tripId]);
+  }, [activeStep, decisions, initialLoad, requirementsReady, tripId]);
 
   async function handleConfirmFlight(outboundFlightId: string, returnFlightId: string) {
     setActionPending(true);
@@ -624,8 +635,10 @@ export function ItineraryPanel({
                   </li>
                 ))}
               </ul>
-            ) : (
+            ) : requirementsReady ? (
               <p className="mt-2 text-xs text-navy-400">Finding flights…</p>
+            ) : (
+              <p className="mt-2 text-xs text-navy-400">Answer the chat&apos;s questions to start planning.</p>
             )}
           </section>
 

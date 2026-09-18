@@ -31,10 +31,13 @@ export function ChatPanel({
   tripId: initialTripId,
   initialMessages,
   onPendingCascade,
+  onRequirementsReady,
 }: {
   tripId?: string;
   initialMessages: ChatMessage[];
   onPendingCascade?: (pending: PendingCascadeConfirmation) => void;
+  /** Fired once a turn's completeness check (`result.ready`) first reports the trip's requirements are complete — `ItineraryPanel` uses this to know it's safe to search, rather than guessing from an empty decisions list (see its own docstring). Never fired with `false`: going from ready back to not-ready isn't a real transition once `requirements_ready` is reached (`checkRequirementsComplete` only ever gates the one-way `collecting_requirements`/`awaiting_clarification` -> `requirements_ready` hop). */
+  onRequirementsReady?: () => void;
 }) {
   const router = useRouter();
   const [tripId, setTripId] = useState(initialTripId);
@@ -83,6 +86,9 @@ export function ChatPanel({
       }
       if (result.pendingCascadeConfirmation) {
         onPendingCascade?.(result.pendingCascadeConfirmation);
+      }
+      if (result.ready) {
+        onRequirementsReady?.();
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong — try again.");

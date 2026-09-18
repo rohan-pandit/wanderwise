@@ -34,6 +34,8 @@ import { createServiceClient } from "@/src/config/supabase/service";
 import type { Database } from "@/src/config/supabase/database.types";
 import { AnthropicModelClient } from "@/src/agents/providers/anthropic-model-client";
 import { AGENT_MODELS } from "@/src/config/models";
+import { FlightProviderError } from "@/src/repositories/flight-provider";
+import { SerpApiFlightProvider } from "@/src/repositories/providers/serpapi-flight-provider";
 import { VoyageEmbeddingClient } from "@/src/retrieval/providers/voyage-embedding-client";
 import { getCurrentChainStep, type ChainStep } from "@/src/domain/chain";
 import type { BudgetBreakdown, BudgetViolation } from "@/src/domain/budget";
@@ -81,7 +83,12 @@ import {
   type ProposedScheduledActivity,
 } from "@/src/workflow/activities-step";
 import type { WorkflowState } from "@/src/workflow/state-machine";
-import { TripCancelledError, UnknownDestinationError } from "@/src/workflow/step-shared";
+import {
+  AirportAmbiguousError,
+  TripCancelledError,
+  UnknownAirportError,
+  UnknownDestinationError,
+} from "@/src/workflow/step-shared";
 import { AmbiguousDestinationNameError } from "@/src/repositories/destinations";
 
 /**
@@ -119,12 +126,23 @@ async function requireOwnedTrip(
   return trip;
 }
 
-/** The real model/embedding clients every stepwise-chain call needs — constructed once per request, not per step. */
+/**
+ * The real model/embedding/flight-provider clients every stepwise-chain
+ * call needs — constructed once per request, not per step.
+ *
+ * `flightProvider` is always the live SerpAPI client here — the app never
+ * falls back to seed/synthetic flight data (`docs/IMPLEMENTATION_PLAN.md`'s
+ * SerpAPI-only-flights integration). Evals construct their own
+ * `stepwiseChainClients()` (`evals/lib/scenario-harness.ts`) that leaves
+ * `flightProvider` unset, keeping the deterministic seed-backed path they
+ * depend on completely unaffected.
+ */
 function stepwiseChainClients(): StepwiseChainClients {
   return {
     curatorModelClient: new AnthropicModelClient(AGENT_MODELS.curator),
     writerModelClient: new AnthropicModelClient(AGENT_MODELS.itineraryWriter),
     embeddingClient: new VoyageEmbeddingClient(),
+    flightProvider: new SerpApiFlightProvider(),
   };
 }
 
@@ -150,7 +168,20 @@ function friendlyStepErrorMessage(err: unknown): string | null {
     return "We don't have inventory for that destination yet — try a different one.";
   }
   if (err instanceof AmbiguousDestinationNameError) {
-    return "Something went wrong matching your destination — please try again.";
+    return "More than one destination matches that name — try including the country (e.g. \"Madrid, Spain\").";
+  }
+  if (err instanceof UnknownAirportError) {
+    return "We couldn't find a commercial airport for that city — try a nearby major city instead.";
+  }
+  if (err instanceof AirportAmbiguousError) {
+    // Should never actually happen live — `checkAirportReadiness` gates
+    // `requirements_ready` on this being resolved first — but a friendly
+    // fallback is cheap insurance against the "still ambiguous" bug case
+    // surfacing as Next's generic obfuscated error instead.
+    return "Which airport to search wasn't fully resolved — try asking again, naming the specific airport.";
+  }
+  if (err instanceof FlightProviderError) {
+    return "Live flight search is temporarily unavailable — try again in a moment.";
   }
   if (err instanceof TripCancelledError) {
     return "This trip has been cancelled — start a new one to keep planning.";
@@ -241,6 +272,11 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
     sessionId,
     userMessage: input.message,
     correlationId: input.turnCorrelationId,
+    // Always on: the app's flight search is SerpAPI-only (see
+    // `stepwiseChainClients()` below), which needs a real airport code, not
+    // just a city name. Evals' own `processIntakeTurn` calls leave this off
+    // — the seed-backed path they use has no airport concept at all.
+    enableAirportDisambiguation: true,
   });
 
   // Auto-chain into whatever's next, scheduled via `after()` so this

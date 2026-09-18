@@ -1,5 +1,7 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/src/config/supabase/server";
+import { REQUIRED_FOR_READY } from "@/src/domain/extraction";
+import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { type ChatMessage } from "../../_components/chat-panel";
 import { TripWorkspace } from "../../_components/trip-workspace";
 
@@ -42,5 +44,24 @@ export default async function TripPage({
     content: m.content,
   }));
 
-  return <TripWorkspace tripId={trip.id} initialMessages={initialMessages} initialTripStatus={trip.status} />;
+  // `ItineraryPanel` must not attempt to search flights before the trip's
+  // requirements are actually complete (`RequirementsNotReadyError` — found
+  // live 2026-09-18: a trip created from an under-specified first message,
+  // e.g. destination + dates but no budget, redirects here immediately, and
+  // without this check the panel would try to propose a flight step before
+  // the user had finished answering the intake agent's clarifying
+  // questions). Computed the same deterministic way `checkRequirementsComplete`
+  // does, against the fields active right now.
+  const requirementRows = await listActiveTripRequirements(supabase, trip.id);
+  const presentFields = new Set(requirementRows.map((r) => r.field));
+  const initialRequirementsReady = REQUIRED_FOR_READY.every((field) => presentFields.has(field));
+
+  return (
+    <TripWorkspace
+      tripId={trip.id}
+      initialMessages={initialMessages}
+      initialTripStatus={trip.status}
+      initialRequirementsReady={initialRequirementsReady}
+    />
+  );
 }

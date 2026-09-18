@@ -62,7 +62,7 @@ import {
 } from "@/src/domain/chain";
 import { advanceOrThrow } from "./advance";
 import { deriveCorrelationId } from "./correlation";
-import { REVISABLE_CHAIN_STEPS } from "./step-shared";
+import { REVISABLE_CHAIN_STEPS, checkAirportReadiness, type PendingAirportDisambiguation } from "./step-shared";
 import type { WorkflowEvent, WorkflowState } from "./state-machine";
 
 export interface DecisionRevisionRequested {
@@ -119,6 +119,65 @@ function lastByField<T extends { field: string }>(items: T[]): T[] {
   const byField = new Map<string, T>();
   for (const item of items) byField.set(item.field, item);
   return [...byField.values()];
+}
+
+/** Plain-language phrasing for each requirement field, keyed to `REQUIREMENT_FIELDS` — used only by `fallbackClarificationMessage` below. */
+const REQUIREMENT_FIELD_PROMPTS: Record<RequirementFieldName, string> = {
+  origin: "which city you're flying from",
+  destination: "where you'd like to go",
+  departureDate: "your departure date",
+  returnDate: "your return date",
+  partySize: "how many people are traveling",
+  roomGroups: "how you'd like rooms split up (e.g. 2 doubles, 1 twin)",
+  budgetTotalUsd: "your total budget",
+  noRedEye: "whether you want to avoid red-eye flights",
+  maxFlightPriceUsd: "your max flight price",
+  minHotelRating: "your minimum hotel rating",
+  maxHotelPriceUsd: "your max hotel price per night",
+  refundableHotel: "whether you need a refundable hotel rate",
+  requiredAccessibility: "any accessibility needs",
+  excludeClosedOnDays: "any days you'd like activities to avoid",
+  maxActivityPriceUsd: "your max price per activity",
+  // Not actually reachable through this generic fallback in practice —
+  // `checkAirportReadiness`'s clarification always names the real candidate
+  // airports directly (`buildAirportClarificationMessage` below) rather than
+  // this field-name phrase — but every `RequirementFieldName` needs an entry
+  // here regardless, since the type doesn't distinguish "reachable" fields.
+  originAirportCode: "which airport you'd like to depart from",
+  destinationAirportCode: "which airport you'd like to fly into",
+};
+
+/**
+ * Builds a real question from a `request_clarification` call's already-
+ * validated `missingFields`, for use when the model's own text is empty
+ * (see the fallback in `processIntakeTurn` below). Deterministic rather than
+ * trusting the model's own `reason` string, matching how every other
+ * guarantee this orchestrator makes about model output is backstopped in
+ * code, not prompt engineering alone.
+ */
+function fallbackClarificationMessage(clarification: ClarificationRequest): string {
+  const phrases = clarification.missingFields.map((f) => REQUIREMENT_FIELD_PROMPTS[f]);
+  const list = phrases.length === 1 ? phrases[0] : `${phrases.slice(0, -1).join(", ")} and ${phrases[phrases.length - 1]}`;
+  return `Before I can start planning, could you tell me ${list}?`;
+}
+
+/**
+ * Always fully deterministic (unlike `fallbackClarificationMessage`, which
+ * only kicks in when the model's own text is empty) — see
+ * `processIntakeTurn`'s comment on why the airport-disambiguation case
+ * always overrides whatever the model said this turn. Lists each ambiguous
+ * side's real candidate airports by name and code rather than a generic
+ * "which airport" phrase, since the whole point is the user shouldn't have
+ * to already know the airport codes themselves.
+ */
+function buildAirportClarificationMessage(pending: PendingAirportDisambiguation[]): string {
+  const parts = pending.map((p) => {
+    const label = p.field === "originAirportCode" ? `departing from ${p.cityQuery}` : `flying into ${p.cityQuery}`;
+    const options = p.candidates.map((a) => `${a.name} (${a.iata})`).join(", or ");
+    return `which airport you'd like ${label} — ${options}`;
+  });
+  const list = parts.length === 1 ? parts[0] : parts.join("; and ");
+  return `Before I can search flights, could you tell me ${list}?`;
 }
 
 function preferenceRecordFromRow(row: TripPreferenceRow): PreferenceRecord {
@@ -252,6 +311,15 @@ export interface ProcessIntakeTurnParams {
   userMessage: string;
   /** Idempotency key for this turn — a retry with the same ID must be safe (PROJECT_BRIEF.md §8.3). Defaults to a fresh UUID if omitted, which means a caller that wants retry safety across its own request boundary must generate and pass one itself. */
   correlationId?: string;
+  /**
+   * Gates the "which airport" clarification turn (`checkAirportReadiness`,
+   * `src/workflow/step-shared.ts`) — only meaningful for a caller whose
+   * flight search is airport-code-based (the real app's SerpAPI-backed
+   * path). Defaults to `false` so every existing caller (evals, which use
+   * the seed-backed path with no airport concept at all) is completely
+   * unaffected unless it opts in explicitly.
+   */
+  enableAirportDisambiguation?: boolean;
 }
 
 export interface ProcessIntakeTurnResult {
@@ -362,6 +430,24 @@ export async function processIntakeTurn(
   const activeChainStep = getCurrentChainStep(confirmedDecisionRows);
 
   const run = await getOrCreateActiveWorkflowRun(supabase, params.tripId);
+
+  // Only meaningful once the trip's basic required fields are already
+  // complete — no point asking about airports before we even know the
+  // destination. Computed from *pre-turn* requirements and given to the
+  // agent as explicit context (mirroring how `activeChainStep` already
+  // works) because `runIntakeAgent`'s input has no conversation history —
+  // without this, a bare "JFK" reply would give the model no signal about
+  // which of (possibly) two pending questions it's answering, or that it's
+  // answering one at all rather than stating a new fact.
+  const preTurnPendingAirportClarification =
+    params.enableAirportDisambiguation && checkRequirementsComplete(currentRequirements).ready
+      ? await checkAirportReadiness(
+          supabase,
+          new Map(currentRequirements.map((r) => [r.field, r.value])),
+          params.tripId,
+        )
+      : [];
+
   const startedAt = Date.now();
   let agentResult: IntakeAgentResult;
   try {
@@ -371,6 +457,7 @@ export async function processIntakeTurn(
       currentPreferences,
       currentDecisions,
       activeChainStep,
+      pendingAirportClarification: preTurnPendingAirportClarification,
     });
   } catch (err) {
     await recordAgentRun(supabase, {
@@ -489,21 +576,6 @@ export async function processIntakeTurn(
     );
   }
 
-  // The model sometimes calls a tool (most often record_extraction) with no
-  // accompanying text at all — a real, observed behavior (not a bug in this
-  // orchestrator), harmless as a bare API response but a visibly broken
-  // empty chat bubble once a real chat UI renders it (Phase 7). Backstopped
-  // here with a deterministic fallback rather than trusted to prompt
-  // engineering alone, same as every other guarantee this orchestrator
-  // makes about model output.
-  const assistantMessage = agentResult.assistantMessage.trim() || "Got it — updating your trip details now.";
-  await appendMessageOnce(supabase, {
-    sessionId: params.sessionId,
-    role: "assistant",
-    content: assistantMessage,
-    correlationId: deriveCorrelationId(correlationId, "message:assistant"),
-  });
-
   // currentRequirements/currentPreferences were loaded before this turn's
   // retractions — drop anything just superseded so the snapshot below (and
   // the completeness check) reflects this turn's outcome, not stale rows.
@@ -530,8 +602,73 @@ export async function processIntakeTurn(
     workflowRunId: run.id,
   });
 
+  // A second, later deterministic gate on top of the one above — only
+  // meaningful once basic completeness already passed (no point asking
+  // about airports before we even know the destination). Re-checked against
+  // *post-turn* requirements (not the pre-turn snapshot used to prompt the
+  // agent above), since this turn may have just supplied the very
+  // `originAirportCode`/`destinationAirportCode` answer that resolves it.
+  const postTurnPendingAirportClarification =
+    params.enableAirportDisambiguation && completeness.ready
+      ? await checkAirportReadiness(supabase, new Map(allRequirements.map((r) => [r.field, r.value])), params.tripId)
+      : [];
+  await recordGuardrailEvent(supabase, {
+    tripId: params.tripId,
+    agentName: AGENT_NAME,
+    guardrailName: "airport_disambiguation",
+    layer: "domain_validation",
+    triggered: postTurnPendingAirportClarification.length > 0,
+    detail:
+      postTurnPendingAirportClarification.length > 0
+        ? `pending: ${postTurnPendingAirportClarification.map((p) => p.field).join(", ")}`
+        : null,
+    workflowRunId: run.id,
+  });
+  const airportClarification: ClarificationRequest | null =
+    postTurnPendingAirportClarification.length > 0
+      ? {
+          missingFields: postTurnPendingAirportClarification.map((p) => p.field),
+          reason: `Ambiguous airport for: ${postTurnPendingAirportClarification.map((p) => p.cityQuery).join(", ")}`,
+        }
+      : null;
+  const effectiveReady = completeness.ready && !airportClarification;
+  const effectiveClarification = airportClarification ?? agentResult.clarification;
+
+  // The model sometimes calls a tool (most often record_extraction) with no
+  // accompanying text at all — a real, observed behavior (not a bug in this
+  // orchestrator), harmless as a bare API response but a visibly broken
+  // empty chat bubble once a real chat UI renders it (Phase 7). Backstopped
+  // here with a deterministic fallback rather than trusted to prompt
+  // engineering alone, same as every other guarantee this orchestrator
+  // makes about model output. Verified live (2026-09-18) that this same
+  // empty-text behavior happens for request_clarification too, not just
+  // record_extraction — the old single generic fallback ("Got it — updating
+  // your trip details now.") silently hid the fact that the agent was
+  // actually stuck waiting on specific missing fields, so the clarification
+  // case now gets its own fallback built from the already-computed
+  // `missingFields` rather than reusing the extraction-only message.
+  //
+  // The airport-disambiguation case always wins over the model's own text
+  // when both are present: it's discovered strictly *after* the model
+  // already responded (the model was never asked about it this turn), so
+  // its own text can't possibly be answering the airport question — showing
+  // it instead of (or blended with) the real question would just be
+  // confusing.
+  const assistantMessage = airportClarification
+    ? buildAirportClarificationMessage(postTurnPendingAirportClarification)
+    : agentResult.assistantMessage.trim() ||
+      (agentResult.clarification
+        ? fallbackClarificationMessage(agentResult.clarification)
+        : "Got it — updating your trip details now.");
+  await appendMessageOnce(supabase, {
+    sessionId: params.sessionId,
+    role: "assistant",
+    content: assistantMessage,
+    correlationId: deriveCorrelationId(correlationId, "message:assistant"),
+  });
+
   // Layer 4 (workflow authorization): enforced inside `advanceTrip` itself; logged here either way.
-  const events = decideNextEvents(workflowState, completeness.ready, agentResult.clarification);
+  const events = decideNextEvents(workflowState, effectiveReady, effectiveClarification);
   for (const event of events) {
     workflowState = await advanceOrThrow(supabase, {
       tripId: params.tripId,
@@ -551,8 +688,8 @@ export async function processIntakeTurn(
   return {
     workflowState,
     assistantMessage,
-    clarification: agentResult.clarification,
-    ready: completeness.ready,
+    clarification: effectiveClarification,
+    ready: effectiveReady,
     requirements: allRequirements,
     preferences: allPreferences,
     decisionRevisionRequested,

@@ -17,19 +17,28 @@ export function TripWorkspace({
   tripId,
   initialMessages,
   initialTripStatus,
+  initialRequirementsReady,
 }: {
   tripId: string;
   initialMessages: ChatMessage[];
   initialTripStatus: string;
+  initialRequirementsReady: boolean;
 }) {
   const [pendingCascade, setPendingCascade] = useState<PendingCascadeConfirmation | null>(null);
+  const [requirementsReady, setRequirementsReady] = useState(initialRequirementsReady);
 
   return (
     <div className="flex min-h-0 flex-1">
-      <ChatPanel tripId={tripId} initialMessages={initialMessages} onPendingCascade={setPendingCascade} />
+      <ChatPanel
+        tripId={tripId}
+        initialMessages={initialMessages}
+        onPendingCascade={setPendingCascade}
+        onRequirementsReady={() => setRequirementsReady(true)}
+      />
       <ItineraryPanel
         tripId={tripId}
         initialTripStatus={initialTripStatus}
+        requirementsReady={requirementsReady}
         pendingCascade={pendingCascade}
         onPendingCascade={setPendingCascade}
       />

@@ -66,12 +66,19 @@ import {
   retireProposedTripDecisionsForField,
 } from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
-import { findFlights, getFlightsByIds, type Flight } from "@/src/repositories/flights";
+import type { FlightSearchProvider } from "@/src/repositories/flight-provider";
+import { findFlights, findFlightsFromProvider, getFlightsByIds, type Flight } from "@/src/repositories/flights";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { listActiveTripRequirements, type TripRequirementRow } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { deriveCorrelationId } from "./correlation";
-import { confirmDecisionField, flightHardConstraints, requirementMap, resolveTripDestination } from "./step-shared";
+import {
+  confirmDecisionField,
+  flightHardConstraints,
+  requirementMap,
+  resolveFlightAirportOrThrow,
+  resolveTripDestination,
+} from "./step-shared";
 
 const AGENT_NAME = "flight_step";
 const MAX_FLIGHT_CANDIDATES = 3;
@@ -123,6 +130,18 @@ export interface ProposeFlightStepParams {
   excludeOutboundFlightId?: string;
   /** Excludes any pair whose return leg is this ID. */
   excludeReturnFlightId?: string;
+  /**
+   * When set, candidates come from this live provider (`findFlightsFromProvider`)
+   * instead of `findFlights`'s seed-backed search — the real app's
+   * `stepwiseChainClients()` always sets this; evals never do, so the
+   * deterministic seed/synthetic path they rely on is completely unchanged.
+   * Requires `originAirportCode`/`destinationAirportCode` to already be
+   * resolved when ambiguous — the orchestrator's `checkAirportReadiness`
+   * gate (`src/workflow/intake-orchestrator.ts`) guarantees this before
+   * `requirements_ready` is ever reached, so `resolveFlightAirportOrThrow`
+   * below should never actually hit its "still ambiguous" case in practice.
+   */
+  flightProvider?: FlightSearchProvider;
 }
 
 export interface ProposeFlightStepResult {
@@ -159,26 +178,59 @@ export async function proposeFlightStep(
     resolveTripDestination(supabase, reqs, params.tripId),
   ]);
 
-  const [outboundCandidates, returnCandidates] = await Promise.all([
-    findFlights(supabase, {
-      origin,
-      destinationId: destinationRow.id,
-      destination: destinationRow.name,
-      destinationCountry: destinationRow.country,
-      departureDate,
-      maxPriceUsd: reqs.get("maxFlightPriceUsd") as number | undefined,
-      excludeRedEye: reqs.get("noRedEye") === true,
-    }),
-    findFlights(supabase, {
-      originId: destinationRow.id,
-      origin: destinationRow.name,
-      originCountry: destinationRow.country,
-      destination: origin,
-      departureDate: returnDate,
-      maxPriceUsd: reqs.get("maxFlightPriceUsd") as number | undefined,
-      excludeRedEye: reqs.get("noRedEye") === true,
-    }),
-  ]);
+  let outboundCandidates: Flight[];
+  let returnCandidates: Flight[];
+  if (params.flightProvider) {
+    // `checkAirportReadiness` already guaranteed both sides resolve
+    // unambiguously before `requirements_ready` was reached — this reads
+    // whichever answer (single-candidate auto-resolve, or a stored
+    // disambiguation answer) that already settled.
+    const originAirport = resolveFlightAirportOrThrow(params.tripId, origin, reqs.get("originAirportCode"));
+    const destinationAirport = resolveFlightAirportOrThrow(
+      params.tripId,
+      `${destinationRow.name}, ${destinationRow.country}`,
+      reqs.get("destinationAirportCode"),
+    );
+    [outboundCandidates, returnCandidates] = await Promise.all([
+      findFlightsFromProvider(supabase, params.flightProvider, {
+        originAirportCode: originAirport.iata,
+        destinationAirportCode: destinationAirport.iata,
+        originDisplay: origin,
+        destinationDisplay: destinationRow.name,
+        destinationId: destinationRow.id,
+        departureDate,
+      }),
+      findFlightsFromProvider(supabase, params.flightProvider, {
+        originAirportCode: destinationAirport.iata,
+        destinationAirportCode: originAirport.iata,
+        originDisplay: destinationRow.name,
+        originId: destinationRow.id,
+        destinationDisplay: origin,
+        departureDate: returnDate,
+      }),
+    ]);
+  } else {
+    [outboundCandidates, returnCandidates] = await Promise.all([
+      findFlights(supabase, {
+        origin,
+        destinationId: destinationRow.id,
+        destination: destinationRow.name,
+        destinationCountry: destinationRow.country,
+        departureDate,
+        maxPriceUsd: reqs.get("maxFlightPriceUsd") as number | undefined,
+        excludeRedEye: reqs.get("noRedEye") === true,
+      }),
+      findFlights(supabase, {
+        originId: destinationRow.id,
+        origin: destinationRow.name,
+        originCountry: destinationRow.country,
+        destination: origin,
+        departureDate: returnDate,
+        maxPriceUsd: reqs.get("maxFlightPriceUsd") as number | undefined,
+        excludeRedEye: reqs.get("noRedEye") === true,
+      }),
+    ]);
+  }
 
   const constraints = flightHardConstraints(reqs);
   const outboundFilter = filterHardConstraints(outboundCandidates, constraints);

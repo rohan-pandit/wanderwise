@@ -31,7 +31,7 @@ See [`architecture-diagram.md`](architecture-diagram.md) for a visual map of the
 
 - [x] Requirements/preferences/decisions model — adopted from brief §7.1, no deviation.
 - [x] State versioning and event history — adopted from brief §7.3, no deviation.
-- [ ] Inventory normalization and freshness — adopted in principle (brief §7.4); concrete seed-data decisions are a Phase 1 task.
+- [x] Inventory normalization and freshness — adopted in principle (brief §7.4); concrete seed-data decisions were a Phase 1 task. **Deviation, decided 2026-09-18** (`docs/IMPLEMENTATION_PLAN.md`'s "LIVE FLIGHT INVENTORY: SERPAPI" section): the real app's flight search is now backed by a live external API (SerpAPI/Google Flights), unconditionally, not seed/synthetic data — hotels/activities stay purely seed-based. Deliberately scoped to leave evals on the original deterministic seed-backed path (a swappable-provider seam, same shape as `ModelClient`/`EmbeddingClient`), so `ADR-006`'s reproducible-eval story is untouched. No standalone ADR file — the IMPLEMENTATION_PLAN section is the record.
 - [x] Provenance model — adopted from brief §7.2, no deviation.
 - [x] Approval model — adopted from brief §7.6, no deviation.
 - [x] Supabase schema and RLS strategy — **ADR-003** (identity/auth); rest of schema in `supabase/migrations/0001_initial_schema.sql`.

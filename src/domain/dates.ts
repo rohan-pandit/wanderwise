@@ -66,6 +66,59 @@ export function localDateInTimeZone(isoTimestamp: string, timeZone: string): str
   }).format(new Date(isoTimestamp));
 }
 
+const LOCAL_DATETIME_SHAPE = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/;
+
+/**
+ * The inverse of `localDateInTimeZone`/`localMinutesOfDay`: given a wall-
+ * clock "YYYY-MM-DD HH:MM" as it would read on a clock in `timeZone` (no
+ * offset — this is exactly the shape SerpAPI's Google Flights API returns
+ * per-leg departure/arrival times in, e.g. `src/repositories/providers/
+ * serpapi-flight-provider.ts`), returns the UTC ISO instant it corresponds
+ * to. Standard offset-by-round-trip trick (no timezone-database dependency
+ * needed beyond what `Intl` already carries): format a first guess at the
+ * instant back through the same zone, and correct by however far that
+ * guess's displayed wall-clock time is from the one actually wanted. Exact
+ * for a real, unambiguous wall-clock time; a `timeZone`'s own DST-transition
+ * edge cases (the one hour that's skipped or repeated each year) aren't
+ * specially handled, since flight departure times essentially never land in
+ * that narrow window.
+ */
+export function zonedTimeToUtc(localDateTime: string, timeZone: string): string {
+  const match = LOCAL_DATETIME_SHAPE.exec(localDateTime);
+  if (!match) {
+    throw new Error(`zonedTimeToUtc: expected "YYYY-MM-DD HH:MM", got "${localDateTime}"`);
+  }
+  const [, yearStr, monthStr, dayStr, hourStr, minuteStr] = match;
+  const wanted = {
+    year: Number(yearStr),
+    month: Number(monthStr),
+    day: Number(dayStr),
+    hour: Number(hourStr),
+    minute: Number(minuteStr),
+  };
+
+  // First guess: treat the wall-clock numbers as if they were already UTC.
+  const guessMs = Date.UTC(wanted.year, wanted.month - 1, wanted.day, wanted.hour, wanted.minute);
+
+  // What does that instant actually display as, in the target zone?
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(guessMs));
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+  const displayedMs = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"));
+
+  // Correct the guess by however far off its displayed wall-clock time is
+  // from the one we actually wanted.
+  const correctedMs = guessMs - (displayedMs - guessMs);
+  return new Date(correctedMs).toISOString();
+}
+
 /** Minutes after local midnight a UTC timestamp falls at in `timeZone`. */
 export function localMinutesOfDay(isoTimestamp: string, timeZone: string): number {
   const parts = new Intl.DateTimeFormat("en-US", {

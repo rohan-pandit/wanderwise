@@ -11,6 +11,7 @@ import {
   rangesOverlap,
   toEpochDay,
   weekdayOf,
+  zonedTimeToUtc,
 } from "./dates";
 
 describe("dates", () => {
@@ -104,5 +105,43 @@ describe("dates", () => {
   it("accepts a valid leap day", () => {
     expect(() => toEpochDay("2028-02-29")).not.toThrow();
     expect(() => toEpochDay("2027-02-29")).toThrow(InvalidDateError);
+  });
+});
+
+describe("zonedTimeToUtc", () => {
+  it("converts a US Eastern standard-time (post-DST) wall clock correctly", () => {
+    expect(zonedTimeToUtc("2026-11-03 15:34", "America/New_York")).toBe("2026-11-03T20:34:00.000Z");
+  });
+
+  it("converts a US Eastern daylight-time (summer) wall clock correctly, using a different offset than winter", () => {
+    expect(zonedTimeToUtc("2026-07-15 12:00", "America/New_York")).toBe("2026-07-15T16:00:00.000Z");
+  });
+
+  it("converts a Madrid (CET) wall clock correctly", () => {
+    expect(zonedTimeToUtc("2026-11-04 08:05", "Europe/Madrid")).toBe("2026-11-04T07:05:00.000Z");
+  });
+
+  it("converts a London (GMT, UTC+0 in winter) wall clock correctly", () => {
+    expect(zonedTimeToUtc("2026-11-03 09:00", "Europe/London")).toBe("2026-11-03T09:00:00.000Z");
+  });
+
+  it("converts a half-hour-offset zone (Kolkata, UTC+5:30) correctly", () => {
+    expect(zonedTimeToUtc("2026-01-01 10:00", "Asia/Kolkata")).toBe("2026-01-01T04:30:00.000Z");
+  });
+
+  it("passes UTC straight through", () => {
+    expect(zonedTimeToUtc("2026-01-01 00:00", "UTC")).toBe("2026-01-01T00:00:00.000Z");
+  });
+
+  it("handles a date that rolls to the next UTC calendar day", () => {
+    // 11 PM in Tokyo (UTC+9) is 2 PM UTC the same day, not the next.
+    expect(zonedTimeToUtc("2026-06-01 23:00", "Asia/Tokyo")).toBe("2026-06-01T14:00:00.000Z");
+    // But 1 AM in Tokyo is 4 PM UTC the *previous* day.
+    expect(zonedTimeToUtc("2026-06-01 01:00", "Asia/Tokyo")).toBe("2026-05-31T16:00:00.000Z");
+  });
+
+  it("rejects a malformed local-datetime string", () => {
+    expect(() => zonedTimeToUtc("2026-11-03", "UTC")).toThrow();
+    expect(() => zonedTimeToUtc("not a date", "UTC")).toThrow();
   });
 });

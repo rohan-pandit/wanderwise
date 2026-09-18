@@ -84,9 +84,18 @@ Each turn you receive the current trip state (already-recorded requirements, pre
 
 Valid requirement fields: ${REQUIREMENT_FIELDS.join(", ")}. Never invent a field outside this list, and never fabricate a value the user didn't state or clearly imply.
 
+originAirportCode/destinationAirportCode are special: almost every trip never needs them (most cities have exactly one commercial airport, resolved automatically downstream), so never ask about or extract these unprompted. The trip state's pendingAirportClarification array is the only signal that they're needed right now — when it's non-empty, the deterministic system (not you) already asked the user which airport for each listed city+candidate-list, in the same shape you see it. If the user's latest message answers that — names one of the listed airports, by its code, its name, or a description that clearly picks one (e.g. "the one closest to Manhattan") — call record_extraction with the matching field set to that airport's exact iata code from the candidate list, never a code you're inferring on your own. If their message doesn't answer it (asks something else, or is ambiguous even against the candidate list), don't guess — leave the field unset; the same question will be asked again next turn.
+
 When calling propose_trip_revision with revisionType "decision", target must be exactly "flight" or "hotel" — the chain step being revised, not a specific leg or field ("flight" covers both the outbound and return legs together). Activities can't be revised this way yet. The currently active, not-yet-confirmed step is given to you as activeChainStep in the trip state below; you may also target an earlier step that's already confirmed if the user is asking to change something already picked.
 
 If the user's request about a decision is comparative/directional ("cheaper", "less expensive", "shorter", "higher rated") rather than an absolute threshold, don't propose a "decision" revision for it — instead propose a "requirement" revision with a concrete numeric threshold computed relative to the currently selected item's price/attribute (shown in the trip state's decisions below). For example, if the current hotel costs $158/night and the user asks for something cheaper, propose maxHotelPriceUsd around 10-15% below that (e.g. 135), not the word "cheaper" itself. If the request is instead absolute/hard ("free", "wheelchair accessible", "non-stop"), propose the matching requirement field directly at its exact value (e.g. maxActivityPriceUsd: 0 for "free") — do not invent a threshold for these.`;
+
+/** One side (origin or destination) of a pending "which airport" disambiguation — computed deterministically by `checkAirportReadiness` (`src/workflow/step-shared.ts`), not by this agent. Kept as a minimal local shape (not that module's own `PendingAirportDisambiguation`) so this file stays a pure function of (message, state slice), with no coupling to workflow-layer types. */
+export interface PendingAirportClarificationInput {
+  field: "originAirportCode" | "destinationAirportCode";
+  cityQuery: string;
+  candidates: { iata: string; name: string }[];
+}
 
 export interface IntakeAgentInput {
   userMessage: string;
@@ -96,6 +105,16 @@ export interface IntakeAgentInput {
   currentDecisions?: { field: string; value: unknown; status: string }[];
   /** The chain step (`src/domain/chain.ts`'s `ChainStep`) that's currently active/not-yet-confirmed, or "complete" once all three are — computed by the orchestrator via `getCurrentChainStep`, not by this module, to keep it free of chain-domain coupling beyond this string. Tells the model which decision-revision targets are "the active step" vs. "an already-confirmed earlier one." */
   activeChainStep?: string;
+  /**
+   * Non-empty exactly when the trip is stuck waiting on a deterministic
+   * "which airport" answer (`processIntakeTurn`'s own pre-turn check) — this
+   * agent has no conversation history, so without this a bare reply like
+   * "JFK" or "the one closest to Manhattan" would give it no signal about
+   * what's being answered, or that it's an answer at all rather than a new
+   * fact. Each entry names the real candidate airports so the model resolves
+   * the user's answer to an actual IATA code rather than guessing one.
+   */
+  pendingAirportClarification?: PendingAirportClarificationInput[];
 }
 
 export interface IntakeAgentResult {
@@ -116,6 +135,7 @@ function buildUserContent(input: IntakeAgentInput): string {
     preferences: input.currentPreferences.map((p) => ({ field: p.field, value: p.value, status: p.status })),
     decisions: input.currentDecisions ?? [],
     activeChainStep: input.activeChainStep ?? "flight",
+    pendingAirportClarification: input.pendingAirportClarification ?? [],
   };
   return `Current trip state:\n${JSON.stringify(state)}\n\nLatest user message:\n${input.userMessage}`;
 }

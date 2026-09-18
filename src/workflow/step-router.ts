@@ -24,6 +24,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/config/supabase/database.types";
 import type { ModelClient } from "@/src/agents/model-client";
 import { getCurrentChainStep, type ChainStep } from "@/src/domain/chain";
+import type { FlightSearchProvider } from "@/src/repositories/flight-provider";
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
 import type { EmbeddingClient } from "@/src/retrieval/embedding-client";
 import {
@@ -41,6 +42,8 @@ export interface StepwiseChainClients {
   /** Writes the final itinerary prose (`activities-step.ts`'s `confirmActivitiesStep`). */
   writerModelClient: ModelClient;
   embeddingClient: EmbeddingClient;
+  /** Passed straight through to `proposeFlightStep`'s own `flightProvider` — see that param's docstring (`flight-step.ts`). Unset for evals (the seed-backed path); the real app's `stepwiseChainClients()` (`app/app/actions.ts`) always sets it. */
+  flightProvider?: FlightSearchProvider;
 }
 
 export type ProposeCurrentStepResult =
@@ -57,7 +60,7 @@ export async function proposeCurrentChainStep(
 ): Promise<ProposeCurrentStepResult> {
   const step = getCurrentChainStep(await listActiveTripDecisions(supabase, tripId));
   if (step === "flight") {
-    return { step: "flight", result: await proposeFlightStep(supabase, { tripId }) };
+    return { step: "flight", result: await proposeFlightStep(supabase, { tripId, flightProvider: clients.flightProvider }) };
   }
   if (step === "hotel") {
     return { step: "hotel", result: await proposeHotelStep(supabase, { tripId }) };
@@ -99,6 +102,7 @@ export async function reviseChainStep(
       tripId,
       excludeOutboundFlightId: confirmedValue("outboundFlight"),
       excludeReturnFlightId: confirmedValue("returnFlight"),
+      flightProvider: clients.flightProvider,
     });
     return { step: "flight", result };
   }

@@ -20,10 +20,12 @@ import {
   roomAvailabilityConstraint,
   roomCapacityConstraint,
 } from "@/src/domain/constraints";
+import { findAirportsForCity, type Airport } from "@/src/domain/airport-lookup";
+import { parseDestinationQuery } from "@/src/domain/destination-query";
 import type { RequirementFieldName } from "@/src/domain/extraction";
 import { CURRENT_INVENTORY_VERSION } from "@/src/domain/inventory";
 import type { RoomGroup } from "@/src/domain/rooms";
-import { getDestinationByName, type Destination } from "@/src/repositories/destinations";
+import { AmbiguousDestinationNameError, getDestinationByName, type Destination } from "@/src/repositories/destinations";
 import type { Flight } from "@/src/repositories/flights";
 import type { Hotel } from "@/src/repositories/hotels";
 import {
@@ -78,11 +80,137 @@ export async function resolveTripDestination(
   tripId: string,
 ): Promise<Destination> {
   const destinationName = reqs.get("destination") as string;
-  const destination = await getDestinationByName(supabase, destinationName, CURRENT_INVENTORY_VERSION);
+  const { city, country } = parseDestinationQuery(destinationName);
+  const destination = await getDestinationByName(supabase, city, CURRENT_INVENTORY_VERSION, country);
   if (!destination) {
     throw new UnknownDestinationError(tripId, destinationName);
   }
   return destination;
+}
+
+/** A trip's origin or destination city has no scheduled-commercial airport in `src/domain/airport-lookup.ts`'s dataset — a genuine gap (no clarifying question can fix it), distinct from `AirportAmbiguousError` below. Only ever thrown by the SerpAPI-backed flight search; the seed-backed path (evals) has no airport concept at all. */
+export class UnknownAirportError extends Error {
+  constructor(tripId: string, cityQuery: string) {
+    super(`Trip ${tripId}: no scheduled-commercial airport found for "${cityQuery}".`);
+    this.name = "UnknownAirportError";
+  }
+}
+
+/**
+ * Resolves a free-text city (`origin`, or `destination`/`country` already
+ * resolved via `resolveTripDestination`) to a single commercial airport for
+ * the SerpAPI flight search. Three outcomes, in order:
+ * 1. Exactly one airport serves the city — resolved silently. The
+ *    overwhelmingly common case; most cities never touch the other two.
+ * 2. More than one airport matches, but `airportCodeValue` (the trip's
+ *    already-recorded `originAirportCode`/`destinationAirportCode`
+ *    requirement, if the user already answered a disambiguation question)
+ *    names one of them — resolved to that one.
+ * 3. More than one airport matches and nothing disambiguates it yet — the
+ *    caller gets `candidates` back instead of `resolved`, to turn into a
+ *    clarification (`checkAirportReadiness` below does this for the
+ *    orchestrator; a caller inside the flight step itself that somehow still
+ *    sees unresolved candidates at search time — meaning readiness was
+ *    checked with a different requirements snapshot than the one search
+ *    actually runs against — should treat that as a real bug, not something
+ *    to silently guess through).
+ * Throws `UnknownAirportError` for zero candidates — see that class's
+ * docstring for why that's not a clarification case.
+ */
+export function resolveFlightAirport(
+  tripId: string,
+  cityQuery: string,
+  airportCodeValue: unknown,
+): { resolved: Airport } | { candidates: Airport[] } {
+  const candidates = findAirportsForCity(cityQuery);
+  if (candidates.length === 0) {
+    throw new UnknownAirportError(tripId, cityQuery);
+  }
+  if (candidates.length === 1) {
+    return { resolved: candidates[0] };
+  }
+  if (typeof airportCodeValue === "string") {
+    const chosen = candidates.find((a) => a.iata === airportCodeValue.toUpperCase());
+    if (chosen) return { resolved: chosen };
+  }
+  return { candidates };
+}
+
+/** Thrown only as a bug signal, never reachable through normal use: the orchestrator's `checkAirportReadiness` gate (which runs before `requirements_ready` can ever be reached) already guarantees an unambiguous airport by the time a real search runs. Seeing this means readiness was checked against a different requirements snapshot than the one the search actually ran against. */
+export class AirportAmbiguousError extends Error {
+  constructor(tripId: string, cityQuery: string) {
+    super(`Trip ${tripId}: "${cityQuery}" is still ambiguous at search time — this should have been resolved before requirements_ready.`);
+    this.name = "AirportAmbiguousError";
+  }
+}
+
+/** `resolveFlightAirport` for a caller that needs a single definite answer right now (the actual flight search), not a value it can turn into a clarification — see `AirportAmbiguousError`. */
+export function resolveFlightAirportOrThrow(tripId: string, cityQuery: string, airportCodeValue: unknown): Airport {
+  const result = resolveFlightAirport(tripId, cityQuery, airportCodeValue);
+  if ("resolved" in result) return result.resolved;
+  throw new AirportAmbiguousError(tripId, cityQuery);
+}
+
+export interface PendingAirportDisambiguation {
+  field: "originAirportCode" | "destinationAirportCode";
+  cityQuery: string;
+  candidates: Airport[];
+}
+
+/**
+ * The deterministic gate behind the SerpAPI flight search's "which airport"
+ * clarification turn — the airport-search equivalent of
+ * `checkRequirementsComplete` (`src/domain/extraction.ts`), but this one
+ * needs a real lookup (and, for the destination side, a real DB call via
+ * `resolveTripDestination`) so it can't live in that pure module. Only ever
+ * meaningful once the trip's basic required fields are already complete
+ * (callers should check `checkRequirementsComplete` first — this assumes
+ * `origin`/`destination` are both present).
+ *
+ * Deliberately fails soft: if the destination doesn't resolve at all
+ * (`UnknownDestinationError`/`AmbiguousDestinationNameError`) this returns
+ * no pending disambiguation rather than throwing — that's a different,
+ * already-handled problem (the flight step's own error path surfaces it
+ * once it actually tries to search), and this gate has no business blocking
+ * the turn over it. Same reasoning for a genuinely airport-less city
+ * (`UnknownAirportError`): not something a clarifying question can resolve,
+ * so it's left for the flight step's own error handling too.
+ */
+export async function checkAirportReadiness(
+  supabase: SupabaseClient<Database>,
+  reqs: Map<RequirementFieldName, unknown>,
+  tripId: string,
+): Promise<PendingAirportDisambiguation[]> {
+  const origin = reqs.get("origin");
+  const destination = reqs.get("destination");
+  if (typeof origin !== "string" || typeof destination !== "string") {
+    return [];
+  }
+
+  const pending: PendingAirportDisambiguation[] = [];
+  try {
+    const originResolution = resolveFlightAirport(tripId, origin, reqs.get("originAirportCode"));
+    if ("candidates" in originResolution) {
+      pending.push({ field: "originAirportCode", cityQuery: origin, candidates: originResolution.candidates });
+    }
+  } catch (err) {
+    if (!(err instanceof UnknownAirportError)) throw err;
+  }
+
+  try {
+    const destinationRow = await resolveTripDestination(supabase, reqs, tripId);
+    const destinationQuery = `${destinationRow.name}, ${destinationRow.country}`;
+    const destinationResolution = resolveFlightAirport(tripId, destinationQuery, reqs.get("destinationAirportCode"));
+    if ("candidates" in destinationResolution) {
+      pending.push({ field: "destinationAirportCode", cityQuery: destinationQuery, candidates: destinationResolution.candidates });
+    }
+  } catch (err) {
+    if (!(err instanceof UnknownDestinationError) && !(err instanceof AmbiguousDestinationNameError) && !(err instanceof UnknownAirportError)) {
+      throw err;
+    }
+  }
+
+  return pending;
 }
 
 export function flightHardConstraints(reqs: Map<RequirementFieldName, unknown>): HardConstraint<Flight>[] {

@@ -72,7 +72,7 @@ export async function matchDestinations(
   );
 }
 
-/** Thrown by `getDestinationByName` if more than one destination shares a name at the given inventory version — an ambiguous lookup the caller must not silently resolve either way. */
+/** Thrown by `getDestinationByName` if more than one destination shares a name (and, when given, country) at the given inventory version — an ambiguous lookup the caller must not silently resolve either way. */
 export class AmbiguousDestinationNameError extends Error {
   constructor(name: string, inventoryVersion: number) {
     super(`Multiple destinations named "${name}" exist at inventory version ${inventoryVersion} — ambiguous lookup.`);
@@ -80,30 +80,50 @@ export class AmbiguousDestinationNameError extends Error {
   }
 }
 
+/** Escapes ILIKE's wildcard characters (`%`, `_`) and its own escape character (`\`) so a search term is matched literally, modulo case — without this, a city name containing one of these (rare, but not impossible) would be misinterpreted as a pattern instead of literal text. Postgres's default LIKE/ILIKE escape character is backslash, so no `ESCAPE` clause is needed alongside this. */
+function escapeIlikeLiteral(value: string): string {
+  return value.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 /**
- * Exact-match lookup by display name — the seam that resolves a trip's
- * free-text `destination` requirement to a real `destinations.id` before any
- * inventory search/guardrail check trusts it (closes the identifier-space
- * gap `docs/IMPLEMENTATION_PLAN.md` §5 tracked: `flights`/`hotels`/
- * `activities` matched destination by name alone, with no FK). Uses
- * `.limit(2)` and an explicit branch rather than `.maybeSingle()`, which
- * would otherwise throw an opaque, unhandled PostgREST error the moment two
- * destinations ever shared a name — `AmbiguousDestinationNameError` makes
- * that failure mode a typed, catchable one instead.
+ * Case-insensitive, whitespace-tolerant lookup by display name (and,
+ * optionally, country) — the seam that resolves a trip's free-text
+ * `destination` requirement to a real `destinations.id` before any inventory
+ * search/guardrail check trusts it (closes the identifier-space gap
+ * `docs/IMPLEMENTATION_PLAN.md` §5 tracked: `flights`/`hotels`/`activities`
+ * matched destination by name alone, with no FK).
+ *
+ * Found live 2026-09-18: the original version did an exact, case-sensitive
+ * `.eq("name", name)` with no `country` filter, so "Madrid, Spain" failed to
+ * resolve against a seeded row named exactly "Madrid" even though that
+ * destination has real inventory — `resolveTripDestination`
+ * (`src/workflow/step-shared.ts`) now splits the free-text requirement into
+ * city/country via `parseDestinationQuery` and passes both here. `country`
+ * stays optional (not every phrasing states one, and today's seed data has
+ * no two destinations sharing a city name at all) — when given, it narrows
+ * an otherwise-ambiguous match instead of being required.
+ *
+ * Uses `.limit(2)` and an explicit branch rather than `.maybeSingle()`,
+ * which would otherwise throw an opaque, unhandled PostgREST error the
+ * moment two destinations ever shared a name (and country) —
+ * `AmbiguousDestinationNameError` makes that failure mode a typed,
+ * catchable one instead.
  */
 export async function getDestinationByName(
   supabase: SupabaseClient<Database>,
   name: string,
   inventoryVersion: number = CURRENT_INVENTORY_VERSION,
+  country?: string | null,
 ): Promise<Destination | null> {
-  const rows = await unwrapOrThrow(
-    supabase
-      .from("destinations")
-      .select("*")
-      .eq("name", name)
-      .eq("inventory_version", inventoryVersion)
-      .limit(2),
-  );
+  let query = supabase
+    .from("destinations")
+    .select("*")
+    .ilike("name", escapeIlikeLiteral(name.trim()))
+    .eq("inventory_version", inventoryVersion);
+  if (country) {
+    query = query.ilike("country", escapeIlikeLiteral(country.trim()));
+  }
+  const rows = await unwrapOrThrow(query.limit(2));
   if (rows.length > 1) {
     throw new AmbiguousDestinationNameError(name, inventoryVersion);
   }

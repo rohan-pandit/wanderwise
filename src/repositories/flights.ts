@@ -4,6 +4,7 @@ import { CURRENT_INVENTORY_VERSION } from "@/src/domain/inventory";
 import { localDateInTimeZone } from "@/src/domain/dates";
 import { generateFlightsForDate } from "@/src/domain/flight-generator";
 import { haulMultiplier } from "@/src/domain/geography";
+import type { FlightSearchProvider } from "./flight-provider";
 import { unwrapOrThrow } from "./shared";
 
 export type Flight = Database["public"]["Tables"]["flights"]["Row"];
@@ -97,7 +98,7 @@ async function queryRealFlights(
   return data;
 }
 
-function matchesRequestedFilter(flight: Flight, filter: FlightSearchFilter): boolean {
+function matchesRequestedFilter(flight: Flight, filter: { maxPriceUsd?: number; excludeRedEye?: boolean }): boolean {
   if (filter.maxPriceUsd !== undefined && flight.price_usd > filter.maxPriceUsd) return false;
   if (filter.excludeRedEye && flight.is_red_eye) return false;
   return true;
@@ -141,6 +142,104 @@ export async function findFlights(
     destination_id: filter.destinationId ?? null,
     inventory_version: inventoryVersion,
     source: "generated",
+    ...option,
+  }));
+
+  const inserted = await unwrapOrThrow(
+    supabase.from("flights").insert(rowsToInsert).select("*").order("price_usd", { ascending: true }),
+  );
+  return inserted.filter((flight) => matchesRequestedFilter(flight, filter));
+}
+
+/**
+ * A recently-cached `source = provider.name` row is reused rather than
+ * calling out again — `findFlightsFromProvider` below is rate-limited and
+ * metered (SerpAPI's free tier: 250 searches/month, 50/hour), so treating
+ * every propose/re-propose as a guaranteed fresh call isn't viable the way
+ * it is for `findFlights`'s free synthetic generator.
+ */
+const PROVIDER_CACHE_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+export interface ProviderFlightSearchFilter {
+  originAirportCode: string;
+  destinationAirportCode: string;
+  /** Display text for the inserted/matched row's `origin`/`destination` columns (e.g. "New York") — not used for matching, which is airport-code-based. */
+  originDisplay: string;
+  destinationDisplay: string;
+  originId?: string | null;
+  destinationId?: string | null;
+  /** ISO date (YYYY-MM-DD) in the origin airport's own local time. */
+  departureDate: string;
+  maxPriceUsd?: number;
+  excludeRedEye?: boolean;
+  inventoryVersion?: number;
+}
+
+async function queryCachedProviderFlights(
+  supabase: SupabaseClient<Database>,
+  providerName: string,
+  filter: ProviderFlightSearchFilter,
+): Promise<Flight[]> {
+  const requested = new Date(`${filter.departureDate}T00:00:00Z`).getTime();
+  const data = await unwrapOrThrow(
+    supabase
+      .from("flights")
+      .select("*")
+      .eq("source", providerName)
+      .eq("origin_airport_code", filter.originAirportCode)
+      .eq("destination_airport_code", filter.destinationAirportCode)
+      .eq("inventory_version", filter.inventoryVersion ?? CURRENT_INVENTORY_VERSION)
+      // Same UTC-day-widen-then-local-filter approach as `queryRealFlights` —
+      // see that function's own comment for why a bare UTC day-boundary
+      // query isn't safe here.
+      .gte("departure_time", new Date(requested - ONE_DAY_MS).toISOString())
+      .lt("departure_time", new Date(requested + 2 * ONE_DAY_MS).toISOString())
+      .gte("created_at", new Date(Date.now() - PROVIDER_CACHE_WINDOW_MS).toISOString())
+      .order("price_usd", { ascending: true }),
+  );
+  return data.filter(
+    (flight) =>
+      localDateInTimeZone(flight.departure_time, flight.departure_time_zone ?? "UTC") === filter.departureDate &&
+      matchesRequestedFilter(flight, filter),
+  );
+}
+
+/**
+ * The live-provider equivalent of `findFlights` above, for the app's
+ * SerpAPI-only flight search (`src/workflow/flight-step.ts` calls this
+ * instead of `findFlights` when a `FlightSearchProvider` is configured —
+ * the seed-backed path evals use is completely untouched). Checks the cache
+ * first (`queryCachedProviderFlights`), and only calls the real provider
+ * (a real, metered, rate-limited HTTP request) on a genuine miss — mirrors
+ * `findFlights`'s own "insert what's found, with a `source` tag, so the
+ * same route+date is consistent afterward" pattern exactly, just backed by
+ * a real API instead of a synthetic generator.
+ */
+export async function findFlightsFromProvider(
+  supabase: SupabaseClient<Database>,
+  provider: FlightSearchProvider,
+  filter: ProviderFlightSearchFilter,
+): Promise<Flight[]> {
+  const cached = await queryCachedProviderFlights(supabase, provider.name, filter);
+  if (cached.length > 0) return cached;
+
+  const results = await provider.search({
+    originAirportCode: filter.originAirportCode,
+    destinationAirportCode: filter.destinationAirportCode,
+    departureDate: filter.departureDate,
+  });
+  if (results.length === 0) return [];
+
+  const inventoryVersion = filter.inventoryVersion ?? CURRENT_INVENTORY_VERSION;
+  const rowsToInsert: Database["public"]["Tables"]["flights"]["Insert"][] = results.map((option) => ({
+    origin: filter.originDisplay,
+    origin_id: filter.originId ?? null,
+    destination: filter.destinationDisplay,
+    destination_id: filter.destinationId ?? null,
+    origin_airport_code: filter.originAirportCode,
+    destination_airport_code: filter.destinationAirportCode,
+    inventory_version: inventoryVersion,
+    source: provider.name,
     ...option,
   }));
 

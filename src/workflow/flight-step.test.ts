@@ -11,8 +11,8 @@ vi.mock("@/src/repositories/trip-requirements");
 vi.mock("@/src/repositories/workflow-runs");
 
 import { getDestinationByName } from "@/src/repositories/destinations";
-import { findFlights, getFlightsByIds } from "@/src/repositories/flights";
-import { UnknownDestinationError } from "./step-shared";
+import { findFlights, findFlightsFromProvider, getFlightsByIds } from "@/src/repositories/flights";
+import { AirportAmbiguousError, UnknownDestinationError } from "./step-shared";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import {
   appendTripDecision,
@@ -38,7 +38,7 @@ const supabase = {} as SupabaseClient<Database>;
 const TRIP_ID = "trip-1";
 const RUN = { id: "run-1", trip_id: TRIP_ID, status: "running", started_at: "now", completed_at: null };
 const LISBON_ID = "destination-lisbon";
-const LISBON = { id: LISBON_ID, name: "Lisbon", inventory_version: 1 };
+const LISBON = { id: LISBON_ID, name: "Lisbon", country: "Portugal", inventory_version: 1 };
 
 function requirementRow(field: string, value: unknown) {
   return {
@@ -136,6 +136,70 @@ describe("proposeFlightStep", () => {
 
     await expect(proposeFlightStep(supabase, { tripId: TRIP_ID })).rejects.toThrow(UnknownDestinationError);
     expect(findFlights).not.toHaveBeenCalled();
+  });
+
+  it("splits a 'City, Country' destination requirement before resolving it (found live: \"Madrid, Spain\" failed to match a destination seeded as exactly \"Madrid\")", async () => {
+    vi.mocked(listActiveTripRequirements).mockResolvedValue(
+      READY_REQUIREMENTS.map((r) => (r.field === "destination" ? requirementRow("destination", "Madrid, Spain") : r)) as never,
+    );
+    vi.mocked(findFlights).mockResolvedValue([flight("f1")] as never);
+
+    await proposeFlightStep(supabase, { tripId: TRIP_ID });
+
+    expect(getDestinationByName).toHaveBeenCalledWith(supabase, "Madrid", 1, "Spain");
+  });
+
+  it("uses the live provider instead of findFlights when flightProvider is set, resolving real airport codes for both legs", async () => {
+    vi.mocked(listActiveTripRequirements).mockResolvedValue(
+      READY_REQUIREMENTS.map((r) => (r.field === "origin" ? requirementRow("origin", "Boston") : r)) as never, // Boston -> BOS, unambiguous
+    );
+    vi.mocked(findFlightsFromProvider).mockResolvedValue([flight("f1")] as never);
+    const provider = { name: "serpapi", search: vi.fn() };
+
+    await proposeFlightStep(supabase, { tripId: TRIP_ID, flightProvider: provider });
+
+    expect(findFlights).not.toHaveBeenCalled();
+    expect(findFlightsFromProvider).toHaveBeenCalledWith(
+      supabase,
+      provider,
+      expect.objectContaining({ originAirportCode: "BOS", destinationAirportCode: "LIS", departureDate: "2026-10-05" }),
+    );
+    expect(findFlightsFromProvider).toHaveBeenCalledWith(
+      supabase,
+      provider,
+      expect.objectContaining({ originAirportCode: "LIS", destinationAirportCode: "BOS", departureDate: "2026-10-12" }),
+    );
+  });
+
+  it("throws AirportAmbiguousError (a bug signal, not reachable through normal use) if flightProvider is set but the origin is still ambiguous at search time", async () => {
+    // "New York" (the default READY_REQUIREMENTS origin) resolves to two
+    // real airports (JFK/LGA) with no originAirportCode disambiguation
+    // stored — this should never happen in practice, since
+    // `checkAirportReadiness` gates `requirements_ready` on it, but the
+    // flight step itself must still fail loudly rather than silently guess.
+    const provider = { name: "serpapi", search: vi.fn() };
+
+    await expect(proposeFlightStep(supabase, { tripId: TRIP_ID, flightProvider: provider })).rejects.toThrow(
+      AirportAmbiguousError,
+    );
+    expect(findFlightsFromProvider).not.toHaveBeenCalled();
+  });
+
+  it("resolves an ambiguous origin via the stored originAirportCode requirement when flightProvider is set", async () => {
+    vi.mocked(listActiveTripRequirements).mockResolvedValue([
+      ...READY_REQUIREMENTS,
+      requirementRow("originAirportCode", "LGA"),
+    ] as never);
+    vi.mocked(findFlightsFromProvider).mockResolvedValue([flight("f1")] as never);
+    const provider = { name: "serpapi", search: vi.fn() };
+
+    await proposeFlightStep(supabase, { tripId: TRIP_ID, flightProvider: provider });
+
+    expect(findFlightsFromProvider).toHaveBeenCalledWith(
+      supabase,
+      provider,
+      expect.objectContaining({ originAirportCode: "LGA" }),
+    );
   });
 
   it("searches the return leg in the reversed direction", async () => {

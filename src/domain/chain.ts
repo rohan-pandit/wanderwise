@@ -72,6 +72,8 @@ export const REQUIREMENT_FIELD_STEP: Record<RequirementFieldName, ChainStep | "f
   requiredAccessibility: "activities",
   excludeClosedOnDays: "activities",
   maxActivityPriceUsd: "activities",
+  originAirportCode: "flight",
+  destinationAirportCode: "flight",
 };
 
 function stepsFrom(step: ChainStep): ChainStep[] {
