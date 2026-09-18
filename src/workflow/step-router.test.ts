@@ -12,7 +12,7 @@ vi.mock("./activities-step");
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
 import { proposeFlightStep } from "./flight-step";
 import { proposeHotelStep } from "./hotel-step";
-import { confirmActivitiesStep, proposeActivitiesStep } from "./activities-step";
+import { finalizeActivitiesStep } from "./activities-step";
 import { advanceOrRefreshChain, proposeCurrentChainStep, reviseChainStep } from "./step-router";
 
 const supabase = {} as SupabaseClient<Database>;
@@ -29,19 +29,12 @@ function decisionRow(field: string, value: unknown, status = "confirmed") {
 
 const FLIGHT_RESULT = { candidates: [{ outboundFlight: { id: "o1" }, returnFlight: { id: "r1" }, totalPriceUsd: 600 }] };
 const HOTEL_RESULT = { candidates: [{ id: "h1" }], hotelStayDates: { destinationTimeZone: "Europe/Lisbon", checkIn: "2026-10-06", checkOut: "2026-10-12" } };
-const ACTIVITIES_RESULT = {
-  scheduledActivities: [{ id: "a1", date: "2026-10-07", startMinutes: 600, durationMinutes: 90 }],
-  unscheduledActivityIds: [],
-  feasibility: { valid: true, violations: [] },
-  curation: null,
-};
 
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(proposeFlightStep).mockResolvedValue(FLIGHT_RESULT as never);
   vi.mocked(proposeHotelStep).mockResolvedValue(HOTEL_RESULT as never);
-  vi.mocked(proposeActivitiesStep).mockResolvedValue(ACTIVITIES_RESULT as never);
-  vi.mocked(confirmActivitiesStep).mockResolvedValue({ scheduledActivities: [], budget: {}, itineraryText: "hi" } as never);
+  vi.mocked(finalizeActivitiesStep).mockResolvedValue({ scheduledActivities: [], unscheduledActivityIds: [], budget: {}, itineraryText: "hi" } as never);
 });
 
 describe("proposeCurrentChainStep", () => {
@@ -63,15 +56,14 @@ describe("proposeCurrentChainStep", () => {
     expect(proposeHotelStep).toHaveBeenCalledWith(supabase, { tripId: TRIP_ID });
   });
 
-  it("proposes the activities step once flight and hotel are confirmed", async () => {
+  it("signals it's activities' turn once flight and hotel are confirmed, without auto-proposing (needs a user-submitted preference first)", async () => {
     vi.mocked(listActiveTripDecisions).mockResolvedValue([
       decisionRow("outboundFlight", "o1"),
       decisionRow("returnFlight", "r1"),
       decisionRow("hotel", "h1"),
     ] as never);
     const result = await proposeCurrentChainStep(supabase, TRIP_ID, clients);
-    expect(result).toEqual({ step: "activities", result: ACTIVITIES_RESULT });
-    expect(proposeActivitiesStep).toHaveBeenCalledWith(supabase, clients.curatorModelClient, clients.embeddingClient, { tripId: TRIP_ID });
+    expect(result).toEqual({ step: "activities" });
   });
 
   it("proposes nothing once the chain is already complete", async () => {
@@ -85,7 +77,6 @@ describe("proposeCurrentChainStep", () => {
     expect(result).toEqual({ step: "complete" });
     expect(proposeFlightStep).not.toHaveBeenCalled();
     expect(proposeHotelStep).not.toHaveBeenCalled();
-    expect(proposeActivitiesStep).not.toHaveBeenCalled();
   });
 });
 
@@ -115,13 +106,9 @@ describe("reviseChainStep", () => {
     expect(proposeHotelStep).toHaveBeenCalledWith(supabase, { tripId: TRIP_ID, excludeHotelId: "h-old" });
   });
 
-  it("re-proposes activities with no exclusion (a full re-curation)", async () => {
+  it("throws for \"activities\" — chat-driven revision isn't supported for it (REVISABLE_CHAIN_STEPS already excludes it upstream; this is just the defensive invariant)", async () => {
     vi.mocked(listActiveTripDecisions).mockResolvedValue([]);
-
-    const result = await reviseChainStep(supabase, TRIP_ID, "activities", clients);
-
-    expect(result).toEqual({ step: "activities", result: ACTIVITIES_RESULT });
-    expect(proposeActivitiesStep).toHaveBeenCalledWith(supabase, clients.curatorModelClient, clients.embeddingClient, { tripId: TRIP_ID });
+    await expect(reviseChainStep(supabase, TRIP_ID, "activities", clients)).rejects.toThrow(/activities/);
   });
 });
 
@@ -135,27 +122,22 @@ describe("advanceOrRefreshChain", () => {
     const result = await advanceOrRefreshChain(supabase, TRIP_ID, clients);
 
     expect(result).toEqual({ step: "hotel", result: HOTEL_RESULT });
-    expect(confirmActivitiesStep).not.toHaveBeenCalled();
+    expect(finalizeActivitiesStep).not.toHaveBeenCalled();
   });
 
-  it("refreshes budget/itineraryText with the same schedule when the chain is already complete", async () => {
-    const scheduled = [{ id: "a1", date: "2026-10-07", startMinutes: 600, durationMinutes: 90 }];
+  it("refreshes budget/itineraryText by re-finalizing when the chain is already complete", async () => {
     vi.mocked(listActiveTripDecisions).mockResolvedValue([
       decisionRow("outboundFlight", "o1"),
       decisionRow("returnFlight", "r1"),
       decisionRow("hotel", "h1"),
-      decisionRow("activities", scheduled),
+      decisionRow("activities", [{ id: "a1", name: "Old activity", category: "food", priceUsd: 10, date: "2026-10-07", startMinutes: 600, durationMinutes: 90 }]),
     ] as never);
 
     const result = await advanceOrRefreshChain(supabase, TRIP_ID, clients);
 
     expect(result).toEqual({ step: "refreshed" });
-    expect(confirmActivitiesStep).toHaveBeenCalledWith(supabase, clients.writerModelClient, {
-      tripId: TRIP_ID,
-      scheduledActivities: scheduled,
-    });
+    expect(finalizeActivitiesStep).toHaveBeenCalledWith(supabase, clients.writerModelClient, { tripId: TRIP_ID });
     expect(proposeFlightStep).not.toHaveBeenCalled();
     expect(proposeHotelStep).not.toHaveBeenCalled();
-    expect(proposeActivitiesStep).not.toHaveBeenCalled();
   });
 });

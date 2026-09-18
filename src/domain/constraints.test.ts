@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { activity, flight, hotel } from "@/src/repositories/fixtures";
 import {
+  categoryConstraint,
   excludeClosedOnDaysConstraint,
   filterHardConstraints,
   maxActivityPriceConstraint,
@@ -118,6 +119,14 @@ describe("activity constraints", () => {
     expect(constraint.isSatisfiedBy(activity({ closed_days: ["monday"] }))).toBe(false);
     expect(constraint.isSatisfiedBy(activity({ closed_days: ["tuesday"] }))).toBe(true);
     expect(constraint.isSatisfiedBy(activity({ closed_days: null }))).toBe(true);
+  });
+
+  it("restricts activities to a chosen set of categories, case-insensitively", () => {
+    const constraint = categoryConstraint(["Food", "spa"]);
+    expect(constraint.isSatisfiedBy(activity({ category: "food" }))).toBe(true);
+    expect(constraint.isSatisfiedBy(activity({ category: "spa" }))).toBe(true);
+    expect(constraint.isSatisfiedBy(activity({ category: "nightlife" }))).toBe(false);
+    expect(constraint.isSatisfiedBy(activity({ category: null }))).toBe(false);
   });
 
   it("enforces a maximum activity price", () => {

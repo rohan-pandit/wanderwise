@@ -84,6 +84,8 @@ Each turn you receive the current trip state (already-recorded requirements, pre
 
 Valid requirement fields: ${REQUIREMENT_FIELDS.join(", ")}. Never invent a field outside this list, and never fabricate a value the user didn't state or clearly imply.
 
+The trip state below includes today, today's real date (YYYY-MM-DD) — you have no other way to know it. When the user states a date without a year (e.g. "October 2nd", "next Tuesday"), resolve it relative to today to the correct upcoming occurrence, never a date that's already in the past relative to today. Only use a different year than that inference would produce if the user explicitly states one.
+
 originAirportCode/destinationAirportCode are special: almost every trip never needs them (most cities have exactly one commercial airport, resolved automatically downstream), so never ask about or extract these unprompted. The trip state's pendingAirportClarification array is the only signal that they're needed right now — when it's non-empty, the deterministic system (not you) already asked the user which airport for each listed city+candidate-list, in the same shape you see it. If the user's latest message answers that — names one of the listed airports, by its code, its name, or a description that clearly picks one (e.g. "the one closest to Manhattan") — call record_extraction with the matching field set to that airport's exact iata code from the candidate list, never a code you're inferring on your own. If their message doesn't answer it (asks something else, or is ambiguous even against the candidate list), don't guess — leave the field unset; the same question will be asked again next turn.
 
 When calling propose_trip_revision with revisionType "decision", target must be exactly "flight" or "hotel" — the chain step being revised, not a specific leg or field ("flight" covers both the outbound and return legs together). Activities can't be revised this way yet. The currently active, not-yet-confirmed step is given to you as activeChainStep in the trip state below; you may also target an earlier step that's already confirmed if the user is asking to change something already picked.
@@ -99,10 +101,22 @@ export interface PendingAirportClarificationInput {
 
 export interface IntakeAgentInput {
   userMessage: string;
+  /** Today's real date (YYYY-MM-DD), computed once by the orchestrator (`processIntakeTurn`) and passed straight through — this agent has no other way to know it, and needs it to resolve a year-less date the user states (e.g. "October 2nd") to the correct upcoming date instead of guessing (found live 2026-09-18: guessed the wrong year with no grounding at all, docs/IMPLEMENTATION_PLAN.md). Required, not optional, so it can never be silently omitted. */
+  today: string;
   currentRequirements: RequirementRecord[];
   currentPreferences: PreferenceRecord[];
-  /** Minimal decision summaries — present once selections exist, which is what shifts the model into revision framing. Confirmed decisions only (the caller filters out merely-"proposed" candidates). */
-  currentDecisions?: { field: string; value: unknown; status: string }[];
+  /**
+   * Minimal decision summaries — present once selections exist, which is
+   * what shifts the model into revision framing. Confirmed decisions only
+   * (the caller filters out merely-"proposed" candidates). `priceUsd` (for
+   * `outboundFlight`/`returnFlight`/`hotel`) is what lets the model actually
+   * follow its own instruction below to compute a concrete threshold for a
+   * comparative revision request ("a cheaper hotel") — found live
+   * 2026-09-18 (`docs/IMPLEMENTATION_PLAN.md`): without it, the model
+   * correctly noticed it had nothing to compute a relative threshold from
+   * and asked for clarification instead of ever proposing the revision.
+   */
+  currentDecisions?: { field: string; value: unknown; status: string; priceUsd?: number; airline?: string | null; name?: string }[];
   /** The chain step (`src/domain/chain.ts`'s `ChainStep`) that's currently active/not-yet-confirmed, or "complete" once all three are — computed by the orchestrator via `getCurrentChainStep`, not by this module, to keep it free of chain-domain coupling beyond this string. Tells the model which decision-revision targets are "the active step" vs. "an already-confirmed earlier one." */
   activeChainStep?: string;
   /**
@@ -131,6 +145,7 @@ export interface IntakeAgentResult {
 
 function buildUserContent(input: IntakeAgentInput): string {
   const state = {
+    today: input.today,
     requirements: input.currentRequirements.map((r) => ({ field: r.field, value: r.value, status: r.status })),
     preferences: input.currentPreferences.map((p) => ({ field: p.field, value: p.value, status: p.status })),
     decisions: input.currentDecisions ?? [],

@@ -6,19 +6,25 @@
  * dropping the old module's auto-confirm-the-top-pick behavior. The user
  * confirms a specific candidate via a Server Action (`app/app/actions.ts`'s
  * `confirm*Candidate` functions), which call `flight-step.ts`/
- * `hotel-step.ts`/`activities-step.ts`'s `confirm*Step` directly — this
- * module never calls any of those.
+ * `hotel-step.ts`'s `confirm*Step` directly — this module never calls
+ * either of those.
  *
  * `proposeCurrentChainStep`/`advanceOrRefreshChain` return what they did
  * (which step, with what candidates) rather than `void` — the itinerary
  * panel consumes this directly to populate its candidate-card state, rather
  * than redundantly re-calling `propose*Step` itself once Realtime delivers
- * the resulting `trip_decisions` rows. This matters most for the
- * hotel-confirmed -> activities-proposed transition: `proposeActivitiesStep`
- * makes a real Curator LLM call, and without threading the result through
- * like this, both this server-side call *and* a naive client-side reactive
- * re-fetch would each trigger their own Curator call for the same
- * transition.
+ * the resulting `trip_decisions` rows.
+ *
+ * Activities is the one step this module doesn't route propose calls for
+ * (`docs/IMPLEMENTATION_PLAN.md`'s "ACTIVITIES: PREFERENCE-DRIVEN
+ * MULTI-SELECT" redesign) — `proposeActivitiesStep` now needs a real
+ * user-submitted preference that doesn't exist at the moment hotel
+ * confirms, so `proposeCurrentChainStep` just signals `{step: "activities"}`
+ * with no candidates; `app/app/actions.ts`'s `proposeActivityCandidates`
+ * calls `proposeActivitiesStep`/`confirmActivitySelection` directly once the
+ * user submits the preference form, bypassing this module entirely. This
+ * module still calls `finalizeActivitiesStep` (the chain's terminal step) —
+ * see `advanceOrRefreshChain` below.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/config/supabase/database.types";
@@ -27,20 +33,16 @@ import { getCurrentChainStep, type ChainStep } from "@/src/domain/chain";
 import type { FlightSearchProvider } from "@/src/repositories/flight-provider";
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
 import type { EmbeddingClient } from "@/src/retrieval/embedding-client";
-import {
-  confirmActivitiesStep,
-  proposeActivitiesStep,
-  type ProposeActivitiesStepResult,
-  type ProposedScheduledActivity,
-} from "./activities-step";
+import { finalizeActivitiesStep } from "./activities-step";
 import { proposeFlightStep, type ProposeFlightStepResult } from "./flight-step";
 import { proposeHotelStep, type ProposeHotelStepResult } from "./hotel-step";
 
 export interface StepwiseChainClients {
-  /** Ranks activity candidates (`activities-step.ts`'s `proposeActivitiesStep`). */
+  /** Ranks activity candidates — used directly by `app/app/actions.ts`'s `proposeActivityCandidates` (`activities-step.ts`'s `proposeActivitiesStep`), not by this module. */
   curatorModelClient: ModelClient;
-  /** Writes the final itinerary prose (`activities-step.ts`'s `confirmActivitiesStep`). */
+  /** Writes the final itinerary prose (`activities-step.ts`'s `finalizeActivitiesStep`). */
   writerModelClient: ModelClient;
+  /** Used directly by `app/app/actions.ts`'s `proposeActivityCandidates`, not by this module. */
   embeddingClient: EmbeddingClient;
   /** Passed straight through to `proposeFlightStep`'s own `flightProvider` — see that param's docstring (`flight-step.ts`). Unset for evals (the seed-backed path); the real app's `stepwiseChainClients()` (`app/app/actions.ts`) always sets it. */
   flightProvider?: FlightSearchProvider;
@@ -49,7 +51,17 @@ export interface StepwiseChainClients {
 export type ProposeCurrentStepResult =
   | { step: "flight"; result: ProposeFlightStepResult }
   | { step: "hotel"; result: ProposeHotelStepResult }
-  | { step: "activities"; result: ProposeActivitiesStepResult }
+  /**
+   * No `result` — unlike flight/hotel, activities can't be auto-proposed the
+   * moment it becomes the active step: `proposeActivitiesStep` now needs a
+   * real user-submitted preference (category chips + optional free text,
+   * `docs/IMPLEMENTATION_PLAN.md`'s "ACTIVITIES: PREFERENCE-DRIVEN
+   * MULTI-SELECT" redesign) that doesn't exist yet at the moment hotel just
+   * confirmed. This just signals "it's activities' turn" so the UI shows the
+   * preference form; the client calls `proposeActivityCandidates`
+   * (`app/app/actions.ts`) directly once the user submits it.
+   */
+  | { step: "activities" }
   | { step: "complete" };
 
 /** Proposes whichever chain step is currently active — a no-op (`{step: "complete"}`) if the chain is already complete. */
@@ -66,18 +78,14 @@ export async function proposeCurrentChainStep(
     return { step: "hotel", result: await proposeHotelStep(supabase, { tripId }) };
   }
   if (step === "activities") {
-    return {
-      step: "activities",
-      result: await proposeActivitiesStep(supabase, clients.curatorModelClient, clients.embeddingClient, { tripId }),
-    };
+    return { step: "activities" };
   }
   return { step: "complete" };
 }
 
 export type ReviseChainStepResult =
   | { step: "flight"; result: ProposeFlightStepResult }
-  | { step: "hotel"; result: ProposeHotelStepResult }
-  | { step: "activities"; result: ProposeActivitiesStepResult };
+  | { step: "hotel"; result: ProposeHotelStepResult };
 
 /**
  * Re-proposes a specific step, excluding whatever it's currently confirmed
@@ -86,6 +94,12 @@ export type ReviseChainStepResult =
  * picks a card from the fresh candidate list this writes (and this
  * function's own return value already carries, for the UI's direct-click
  * "Change" flow — see `app/app/actions.ts`'s `confirmCascadeAndRevise`).
+ *
+ * Never called with `step: "activities"` — `REVISABLE_CHAIN_STEPS`
+ * (`step-shared.ts`) excludes it, since activities revision is UI-driven
+ * (re-submit the preference form, `proposeActivitiesStep` directly) rather
+ * than chat-driven like flight/hotel. Throws rather than silently
+ * proposing with no preferences if that invariant is ever violated.
  */
 export async function reviseChainStep(
   supabase: SupabaseClient<Database>,
@@ -95,7 +109,7 @@ export async function reviseChainStep(
 ): Promise<ReviseChainStepResult> {
   const decisions = await listActiveTripDecisions(supabase, tripId);
   const confirmedValue = (field: string) =>
-    decisions.find((d) => d.field === field && d.status === "confirmed")?.value as string | undefined;
+    decisions.find((d) => d.status === "confirmed" && d.field === field)?.value as string | undefined;
 
   if (step === "flight") {
     const result = await proposeFlightStep(supabase, {
@@ -110,8 +124,7 @@ export async function reviseChainStep(
     const result = await proposeHotelStep(supabase, { tripId, excludeHotelId: confirmedValue("hotel") });
     return { step: "hotel", result };
   }
-  const result = await proposeActivitiesStep(supabase, clients.curatorModelClient, clients.embeddingClient, { tripId });
-  return { step: "activities", result };
+  throw new Error(`reviseChainStep: "activities" isn't chat-revisable — this should be unreachable (trip ${tripId}).`);
 }
 
 export type AdvanceOrRefreshResult = ProposeCurrentStepResult | { step: "refreshed" };
@@ -123,13 +136,13 @@ export type AdvanceOrRefreshResult = ProposeCurrentStepResult | { step: "refresh
  * trip — the normal forward-flow case. If the chain is (still) complete —
  * meaning this was a revision of an already-confirmed earlier step that
  * didn't invalidate what's downstream (design rules 2/3: a same-dates
- * flight swap, or any hotel change), this instead refreshes budget/
- * itineraryText by re-running `confirmActivitiesStep` with the *same*
- * already-confirmed schedule — no re-search/re-curation/re-scheduling, just
- * recomputing the two fields that actually depend on the flight/hotel's
- * price/name (the slice-3 "stale budget after a hotel-only revision" bug,
- * generalized here to a same-dates flight revision too, since flight price
- * also feeds the budget).
+ * flight swap, or any hotel change), this instead re-runs
+ * `finalizeActivitiesStep` — which re-schedules the *same already-confirmed
+ * `"activity"` picks* against the (possibly-shifted) flight/hotel dates and
+ * recomputes budget/itineraryText, rather than reusing stale date/time slots
+ * from the old schedule (the slice-3 "stale budget after a hotel-only
+ * revision" bug, generalized here to a same-dates flight revision too,
+ * since flight price also feeds the budget).
  */
 export async function advanceOrRefreshChain(
   supabase: SupabaseClient<Database>,
@@ -142,9 +155,6 @@ export async function advanceOrRefreshChain(
   }
   const activitiesDecision = decisions.find((d) => d.field === "activities" && d.status === "confirmed");
   if (!activitiesDecision) return { step: "complete" };
-  await confirmActivitiesStep(supabase, clients.writerModelClient, {
-    tripId,
-    scheduledActivities: activitiesDecision.value as unknown as ProposedScheduledActivity[],
-  });
+  await finalizeActivitiesStep(supabase, clients.writerModelClient, { tripId });
   return { step: "refreshed" };
 }

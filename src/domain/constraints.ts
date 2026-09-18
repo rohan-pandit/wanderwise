@@ -169,6 +169,26 @@ export function excludeClosedOnDaysConstraint<T extends { closed_days: string[] 
   };
 }
 
+/**
+ * Restricts activity candidates to a user-chosen set of categories (e.g.
+ * "food", "spa", "nightlife" — `src/domain/curation.ts`'s activity
+ * preference UI, `docs/IMPLEMENTATION_PLAN.md`). A post-filter, not a SQL
+ * parameter, same reasoning as `excludeClosedOnDaysConstraint` above:
+ * `match_activities` doesn't filter by category, so this runs in
+ * `retrieveActivities` afterward instead of adding a new SQL function
+ * parameter for one more filter. Case-insensitive since the seed data's
+ * `category` values are consistently lowercase, but user-supplied category
+ * keys shouldn't have to match that exactly to be trusted.
+ */
+export function categoryConstraint<T extends { category: string | null }>(categories: string[]): HardConstraint<T> {
+  const allowed = new Set(categories.map((c) => c.toLowerCase()));
+  return {
+    code: "ACTIVITY_CATEGORY",
+    describe: () => `Activity category must be one of: ${categories.join(", ")}.`,
+    isSatisfiedBy: (activity) => activity.category !== null && allowed.has(activity.category.toLowerCase()),
+  };
+}
+
 export function maxActivityPriceConstraint(maxPriceUsd: number): HardConstraint<Activity> {
   return {
     code: "MAX_ACTIVITY_PRICE",

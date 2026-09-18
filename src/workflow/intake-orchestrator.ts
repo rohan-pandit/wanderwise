@@ -24,6 +24,7 @@ import type { ModelClient } from "@/src/agents/model-client";
 import {
   ExtractedPreference,
   ExtractedRequirement,
+  checkDatesNotInThePast,
   checkRequirementsComplete,
   type ClarificationRequest,
   type ExtractionSource,
@@ -34,6 +35,8 @@ import {
   type RevisionProposal,
 } from "@/src/domain/extraction";
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
+import { getFlightsByIds } from "@/src/repositories/flights";
+import { getHotelsByIds } from "@/src/repositories/hotels";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { estimateCostUsd } from "@/src/observability/pricing";
 import { appendMessage, findMessageByCorrelationId, type NewMessage } from "@/src/repositories/messages";
@@ -49,7 +52,7 @@ import {
   retireActiveTripRequirementsForField,
   type TripRequirementRow,
 } from "@/src/repositories/trip-requirements";
-import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
+import { listActiveTripDecisions, type TripDecisionRow } from "@/src/repositories/trip-decisions";
 import { getLatestTripState } from "@/src/repositories/trip-state";
 import { getTrip } from "@/src/repositories/trips";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
@@ -178,6 +181,61 @@ function buildAirportClarificationMessage(pending: PendingAirportDisambiguation[
   });
   const list = parts.length === 1 ? parts[0] : parts.join("; and ");
   return `Before I can search flights, could you tell me ${list}?`;
+}
+
+/** Always fully deterministic, same reasoning as `buildAirportClarificationMessage` — discovered strictly after the model already responded, so its own text can't possibly be addressing it. */
+function buildPastDateClarificationMessage(fields: RequirementFieldName[], today: string): string {
+  const labels = fields.map((f) => (f === "departureDate" ? "departure date" : "return date"));
+  const list = labels.length === 1 ? labels[0] : labels.join(" and ");
+  const verb = labels.length === 1 ? "is" : "are";
+  const suffix = labels.length === 1 ? "" : "s";
+  return `Your ${list} ${verb} already in the past (today is ${today}) — could you give me the correct date${suffix}?`;
+}
+
+/**
+ * Enriches confirmed flight/hotel decisions with their real price (and a
+ * couple of other display attributes) before showing them to the Intake
+ * agent — found live 2026-09-18 (a component eval, `evals/cases/intake.ts`'s
+ * `revision_request` case): the system prompt tells the model to compute a
+ * concrete threshold for a comparative request ("a cheaper hotel") relative
+ * to "the currently selected item's price... shown in the trip state's
+ * decisions below," but `currentDecisions` only ever carried a bare
+ * `{field, value: "<id>", status}` — the model correctly recognized it
+ * couldn't follow its own instruction with no price to compute from, and
+ * asked for clarification instead of ever proposing the revision at all.
+ * `activity`/`activities`/`budget`/`itineraryText` decisions aren't
+ * flight/hotel ids and pass through unchanged — `activities` can't be
+ * revised this way at all (`REVISABLE_CHAIN_STEPS` excludes it), and
+ * `budget`/`itineraryText` are already rich values, not bare ids.
+ */
+async function enrichCurrentDecisions(
+  supabase: SupabaseClient<Database>,
+  confirmedDecisionRows: TripDecisionRow[],
+): Promise<{ field: string; value: unknown; status: string; priceUsd?: number; airline?: string | null; name?: string }[]> {
+  const flightIds = confirmedDecisionRows
+    .filter((d) => d.field === "outboundFlight" || d.field === "returnFlight")
+    .map((d) => d.value as string);
+  const hotelIds = confirmedDecisionRows.filter((d) => d.field === "hotel").map((d) => d.value as string);
+
+  const [flightRows, hotelRows] = await Promise.all([
+    flightIds.length > 0 ? getFlightsByIds(supabase, flightIds) : Promise.resolve([]),
+    hotelIds.length > 0 ? getHotelsByIds(supabase, hotelIds) : Promise.resolve([]),
+  ]);
+  const flightById = new Map(flightRows.map((f) => [f.id, f]));
+  const hotelById = new Map(hotelRows.map((h) => [h.id, h]));
+
+  return confirmedDecisionRows.map((d) => {
+    const base = { field: d.field, value: d.value, status: d.status };
+    if (d.field === "outboundFlight" || d.field === "returnFlight") {
+      const flight = flightById.get(d.value as string);
+      if (flight) return { ...base, priceUsd: flight.price_usd, airline: flight.airline };
+    }
+    if (d.field === "hotel") {
+      const hotel = hotelById.get(d.value as string);
+      if (hotel) return { ...base, priceUsd: hotel.price_per_night_usd, name: hotel.name };
+    }
+    return base;
+  });
 }
 
 function preferenceRecordFromRow(row: TripPreferenceRow): PreferenceRecord {
@@ -320,6 +378,15 @@ export interface ProcessIntakeTurnParams {
    * unaffected unless it opts in explicitly.
    */
   enableAirportDisambiguation?: boolean;
+  /**
+   * Today's real date (YYYY-MM-DD) — given to the Intake agent (which has
+   * no other way to know it, `src/agents/intake.ts`) and used by the
+   * deterministic `checkDatesNotInThePast` guardrail below. Defaults to the
+   * real system date if omitted (every real caller); overridable so a test
+   * can exercise the past-date gate against a fixed date instead of
+   * depending on when the test happens to run.
+   */
+  today?: string;
 }
 
 export interface ProcessIntakeTurnResult {
@@ -361,6 +428,7 @@ export async function processIntakeTurn(
 ): Promise<ProcessIntakeTurnResult> {
   const correlationId = params.correlationId ?? randomUUID();
   const trimmed = params.userMessage.trim();
+  const today = params.today ?? new Date().toISOString().slice(0, 10);
 
   // Layer 1 guardrail (PROJECT_BRIEF.md §9.1): input/scope controls, before any model call.
   const inputGuardrailReason =
@@ -426,7 +494,7 @@ export async function processIntakeTurn(
   // "proposed" candidate rows (stepwise chain redesign slice 4), which
   // aren't decisions the user has actually made yet.
   const confirmedDecisionRows = decisionRows.filter((d) => d.status === "confirmed");
-  const currentDecisions = confirmedDecisionRows.map((d) => ({ field: d.field, value: d.value, status: d.status }));
+  const currentDecisions = await enrichCurrentDecisions(supabase, confirmedDecisionRows);
   const activeChainStep = getCurrentChainStep(confirmedDecisionRows);
 
   const run = await getOrCreateActiveWorkflowRun(supabase, params.tripId);
@@ -453,6 +521,7 @@ export async function processIntakeTurn(
   try {
     agentResult = await runIntakeAgent(modelClient, {
       userMessage: trimmed,
+      today,
       currentRequirements,
       currentPreferences,
       currentDecisions,
@@ -602,14 +671,43 @@ export async function processIntakeTurn(
     workflowRunId: run.id,
   });
 
-  // A second, later deterministic gate on top of the one above — only
-  // meaningful once basic completeness already passed (no point asking
-  // about airports before we even know the destination). Re-checked against
-  // *post-turn* requirements (not the pre-turn snapshot used to prompt the
-  // agent above), since this turn may have just supplied the very
-  // `originAirportCode`/`destinationAirportCode` answer that resolves it.
+  // A second deterministic gate on top of the one above — only meaningful
+  // once basic completeness already passed. A stated departureDate/
+  // returnDate that's already in the past must never reach
+  // requirements_ready, regardless of how confidently the model extracted
+  // it (checkDatesNotInThePast's own docstring, src/domain/extraction.ts —
+  // found live 2026-09-18: the model has no inherent sense of "today," so a
+  // year-less date like "October 2nd" resolved to the wrong year with
+  // nothing to catch it before it reached a real flight search). Checked
+  // before airport disambiguation below: fixing a bad date matters before
+  // spending effort resolving which airport to search for a trip whose
+  // dates are already known to be wrong.
+  const pastDateFields = completeness.ready
+    ? checkDatesNotInThePast(new Map(allRequirements.map((r) => [r.field, r.value])), today)
+    : [];
+  await recordGuardrailEvent(supabase, {
+    tripId: params.tripId,
+    agentName: AGENT_NAME,
+    guardrailName: "dates_not_in_past",
+    layer: "domain_validation",
+    triggered: pastDateFields.length > 0,
+    detail: pastDateFields.length > 0 ? `past date(s) relative to today (${today}): ${pastDateFields.join(", ")}` : null,
+    workflowRunId: run.id,
+  });
+  const pastDateClarification: ClarificationRequest | null =
+    pastDateFields.length > 0
+      ? { missingFields: pastDateFields, reason: `Stated date(s) already in the past relative to today (${today}): ${pastDateFields.join(", ")}.` }
+      : null;
+
+  // A third deterministic gate on top of both above — only meaningful once
+  // completeness AND dates already passed (no point asking about airports
+  // for a trip whose dates are already known to be wrong). Re-checked
+  // against *post-turn* requirements (not the pre-turn snapshot used to
+  // prompt the agent above), since this turn may have just supplied the
+  // very `originAirportCode`/`destinationAirportCode` answer that resolves
+  // it.
   const postTurnPendingAirportClarification =
-    params.enableAirportDisambiguation && completeness.ready
+    params.enableAirportDisambiguation && completeness.ready && !pastDateClarification
       ? await checkAirportReadiness(supabase, new Map(allRequirements.map((r) => [r.field, r.value])), params.tripId)
       : [];
   await recordGuardrailEvent(supabase, {
@@ -631,8 +729,8 @@ export async function processIntakeTurn(
           reason: `Ambiguous airport for: ${postTurnPendingAirportClarification.map((p) => p.cityQuery).join(", ")}`,
         }
       : null;
-  const effectiveReady = completeness.ready && !airportClarification;
-  const effectiveClarification = airportClarification ?? agentResult.clarification;
+  const effectiveReady = completeness.ready && !pastDateClarification && !airportClarification;
+  const effectiveClarification = pastDateClarification ?? airportClarification ?? agentResult.clarification;
 
   // The model sometimes calls a tool (most often record_extraction) with no
   // accompanying text at all — a real, observed behavior (not a bug in this
@@ -648,18 +746,20 @@ export async function processIntakeTurn(
   // case now gets its own fallback built from the already-computed
   // `missingFields` rather than reusing the extraction-only message.
   //
-  // The airport-disambiguation case always wins over the model's own text
-  // when both are present: it's discovered strictly *after* the model
-  // already responded (the model was never asked about it this turn), so
-  // its own text can't possibly be answering the airport question — showing
-  // it instead of (or blended with) the real question would just be
+  // The past-date and airport-disambiguation cases always win over the
+  // model's own text when present: both are discovered strictly *after*
+  // the model already responded (it was never asked about either this
+  // turn), so its own text can't possibly be addressing them — showing it
+  // instead of (or blended with) the real question would just be
   // confusing.
-  const assistantMessage = airportClarification
-    ? buildAirportClarificationMessage(postTurnPendingAirportClarification)
-    : agentResult.assistantMessage.trim() ||
-      (agentResult.clarification
-        ? fallbackClarificationMessage(agentResult.clarification)
-        : "Got it — updating your trip details now.");
+  const assistantMessage = pastDateClarification
+    ? buildPastDateClarificationMessage(pastDateFields, today)
+    : airportClarification
+      ? buildAirportClarificationMessage(postTurnPendingAirportClarification)
+      : agentResult.assistantMessage.trim() ||
+        (agentResult.clarification
+          ? fallbackClarificationMessage(agentResult.clarification)
+          : "Got it — updating your trip details now.");
   await appendMessageOnce(supabase, {
     sessionId: params.sessionId,
     role: "assistant",

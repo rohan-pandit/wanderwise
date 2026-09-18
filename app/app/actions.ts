@@ -76,11 +76,16 @@ import {
   type ProposeHotelStepResult,
 } from "@/src/workflow/hotel-step";
 import {
-  confirmActivitiesStep,
+  ActivityNotSelectedError,
+  HotelStepNotConfirmedError,
+  InvalidActivitiesSelectionError,
+  confirmActivitySelection as confirmActivitySelectionStep,
+  finalizeActivitiesStep,
   proposeActivitiesStep,
-  type ConfirmActivitiesStepResult,
+  removeActivitySelection as removeActivitySelectionStep,
+  type ConfirmActivitySelectionResult,
+  type FinalizeActivitiesStepResult,
   type ProposeActivitiesStepResult,
-  type ProposedScheduledActivity,
 } from "@/src/workflow/activities-step";
 import type { WorkflowState } from "@/src/workflow/state-machine";
 import {
@@ -182,6 +187,17 @@ function friendlyStepErrorMessage(err: unknown): string | null {
   }
   if (err instanceof FlightProviderError) {
     return "Live flight search is temporarily unavailable — try again in a moment.";
+  }
+  if (err instanceof HotelStepNotConfirmedError) {
+    return "Confirm a hotel first — activities aren't ready to search yet.";
+  }
+  if (err instanceof InvalidActivitiesSelectionError) {
+    return "That activity selection didn't go through — try again.";
+  }
+  if (err instanceof ActivityNotSelectedError) {
+    // Not really an error the user caused — a double-click racing itself,
+    // or a stale UI state after a reload. Friendly rather than a raw throw.
+    return "That activity wasn't in your itinerary — it may have already been removed.";
   }
   if (err instanceof TripCancelledError) {
     return "This trip has been cancelled — start a new one to keep planning.";
@@ -441,47 +457,105 @@ export async function confirmHotelCandidate(input: ConfirmHotelCandidateInput): 
   }
 }
 
-export interface ProposeActivitiesCandidateInput {
+export interface ProposeActivityCandidatesInput {
   tripId: string;
+  /** Category chips selected in the UI preference form (`activities.category` values) — see `proposeActivitiesStep`'s own docstring. */
+  categories?: string[];
+  /** Optional free-text supplement from the same form. */
+  criteria?: string;
 }
 
-export async function proposeActivitiesCandidate(input: ProposeActivitiesCandidateInput): Promise<ProposeActivitiesStepResult> {
+/** The UI-driven activity-preference form's submit action (`docs/IMPLEMENTATION_PLAN.md`'s "ACTIVITIES: PREFERENCE-DRIVEN MULTI-SELECT" redesign) — retrieves+curates candidates for the given preference, ranked, with real names/categories/prices. Not scheduled yet; the user picks via `confirmActivitySelection` below. */
+export async function proposeActivityCandidates(
+  input: ProposeActivityCandidatesInput,
+): Promise<ProposeActivitiesStepResult | StepActionError> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId);
   const clients = stepwiseChainClients();
-  return proposeActivitiesStep(supabase, clients.curatorModelClient, clients.embeddingClient, { tripId: input.tripId });
-}
-
-export interface ConfirmActivitiesCandidateInput {
-  tripId: string;
-  scheduledActivities: ProposedScheduledActivity[];
-}
-
-/** Confirms the schedule (activities is the chain's last step, so this also computes budget/itineraryText), then fires the one-time `chain_completed` transition if the whole chain is now confirmed — idempotent, and skipped if the trip has already moved past `requirements_ready` (e.g. a later re-confirm after finalization). */
-export async function confirmActivitiesCandidate(input: ConfirmActivitiesCandidateInput): Promise<ConfirmActivitiesStepResult> {
-  const supabase = createServiceClient();
-  await requireOwnedTrip(supabase, input.tripId);
-  const clients = stepwiseChainClients();
-  const result = await confirmActivitiesStep(supabase, clients.writerModelClient, {
-    tripId: input.tripId,
-    scheduledActivities: input.scheduledActivities,
-  });
-
-  const decisions = await listActiveTripDecisions(supabase, input.tripId);
-  if (getCurrentChainStep(decisions) === "complete") {
-    const currentState = await getLatestTripState(supabase, input.tripId);
-    if (currentState?.state.workflowState === "requirements_ready") {
-      await advanceOrThrow(supabase, {
-        tripId: input.tripId,
-        event: "chain_completed",
-        actor: "system",
-        correlationId: deriveCorrelationId(input.tripId, "chain_completed"),
-        agentName: "activities_step",
-      });
-    }
+  try {
+    return await proposeActivitiesStep(supabase, clients.curatorModelClient, clients.embeddingClient, {
+      tripId: input.tripId,
+      categories: input.categories,
+      criteria: input.criteria,
+    });
+  } catch (err) {
+    const friendly = friendlyStepErrorMessage(err);
+    if (friendly) return { error: friendly };
+    throw err;
   }
+}
 
-  return result;
+export interface ConfirmActivitySelectionInput {
+  tripId: string;
+  activityId: string;
+}
+
+/** Adds one activity to the trip (see `confirmActivitySelection`'s own docstring, `activities-step.ts`) — the multi-select equivalent of `confirmFlightCandidate`/`confirmHotelCandidate`, callable as many times as the user wants to add activities. */
+export async function confirmActivitySelection(
+  input: ConfirmActivitySelectionInput,
+): Promise<ConfirmActivitySelectionResult | StepActionError> {
+  const supabase = createServiceClient();
+  await requireOwnedTrip(supabase, input.tripId);
+  try {
+    return await confirmActivitySelectionStep(supabase, { tripId: input.tripId, activityId: input.activityId });
+  } catch (err) {
+    const friendly = friendlyStepErrorMessage(err);
+    if (friendly) return { error: friendly };
+    throw err;
+  }
+}
+
+export interface RemoveActivitySelectionInput {
+  tripId: string;
+  activityId: string;
+}
+
+/** The inverse of `confirmActivitySelection` — removes one previously-added activity. */
+export async function removeActivitySelection(input: RemoveActivitySelectionInput): Promise<{ ok: true } | StepActionError> {
+  const supabase = createServiceClient();
+  await requireOwnedTrip(supabase, input.tripId);
+  try {
+    await removeActivitySelectionStep(supabase, { tripId: input.tripId, activityId: input.activityId });
+    return { ok: true };
+  } catch (err) {
+    const friendly = friendlyStepErrorMessage(err);
+    if (friendly) return { error: friendly };
+    throw err;
+  }
+}
+
+export interface FinalizeActivitiesInput {
+  tripId: string;
+}
+
+/** Schedules every currently-selected activity, computes budget/itineraryText (activities is the chain's last step), then fires the one-time `chain_completed` transition if the whole chain is now confirmed — idempotent, and skipped if the trip has already moved past `requirements_ready` (e.g. a later re-finalize after finalization). */
+export async function finalizeActivities(input: FinalizeActivitiesInput): Promise<FinalizeActivitiesStepResult | StepActionError> {
+  const supabase = createServiceClient();
+  await requireOwnedTrip(supabase, input.tripId);
+  const clients = stepwiseChainClients();
+  try {
+    const result = await finalizeActivitiesStep(supabase, clients.writerModelClient, { tripId: input.tripId });
+
+    const decisions = await listActiveTripDecisions(supabase, input.tripId);
+    if (getCurrentChainStep(decisions) === "complete") {
+      const currentState = await getLatestTripState(supabase, input.tripId);
+      if (currentState?.state.workflowState === "requirements_ready") {
+        await advanceOrThrow(supabase, {
+          tripId: input.tripId,
+          event: "chain_completed",
+          actor: "system",
+          correlationId: deriveCorrelationId(input.tripId, "chain_completed"),
+          agentName: "activities_step",
+        });
+      }
+    }
+
+    return result;
+  } catch (err) {
+    const friendly = friendlyStepErrorMessage(err);
+    if (friendly) return { error: friendly };
+    throw err;
+  }
 }
 
 export interface ConfirmCascadeAndReviseInput {

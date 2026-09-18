@@ -32,18 +32,22 @@ import {
   listActiveTripDecisions,
   retireActiveTripDecisionsForField,
   retireProposedTripDecisionsForField,
+  retireTripDecisionById,
 } from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
-import { listActiveTripPreferences } from "@/src/repositories/trip-preferences";
+import { appendTripPreference, listActiveTripPreferences, retireActiveTripPreferencesForField } from "@/src/repositories/trip-preferences";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { retrieveActivities } from "@/src/retrieval/activities-retrieval";
 import {
+  ActivityNotSelectedError,
   FlightStepNotConfirmedError,
   HotelStepNotConfirmedError,
   InvalidActivitiesSelectionError,
-  confirmActivitiesStep,
+  confirmActivitySelection,
+  finalizeActivitiesStep,
   proposeActivitiesStep,
+  removeActivitySelection,
 } from "./activities-step";
 import { UnknownDestinationError } from "./step-shared";
 
@@ -71,8 +75,8 @@ const READY_REQUIREMENTS = [
   requirementRow("budgetTotalUsd", 3000),
 ];
 
-function decisionRow(field: string, value: unknown, status = "confirmed") {
-  return { id: `dec_${field}`, trip_id: TRIP_ID, field, value, status, source: "user_explicit", created_at: "now" };
+function decisionRow(field: string, value: unknown, status = "confirmed", id = `dec_${field}`) {
+  return { id, trip_id: TRIP_ID, field, value, status, source: "user_explicit", created_at: "now" };
 }
 
 const CONFIRMED_UPSTREAM_DECISIONS = [
@@ -130,9 +134,12 @@ function activity(id: string, overrides: Record<string, unknown> = {}) {
     destination: "Lisbon",
     destination_id: LISBON_ID,
     name: `Activity ${id}`,
-    category: "culture",
+    category: "cultural",
+    description: "A lovely thing to do.",
     price_usd: 20,
     duration_minutes: 90,
+    location: "Alfama",
+    reservation_required: false,
     opening_hours: null,
     closed_days: [],
     inventory_version: 1,
@@ -169,7 +176,6 @@ beforeEach(() => {
   vi.mocked(getDestinationByName).mockResolvedValue(LISBON as never);
   vi.mocked(listActiveTripDecisions).mockResolvedValue(CONFIRMED_UPSTREAM_DECISIONS as never);
   vi.mocked(listActiveTripRequirements).mockResolvedValue(READY_REQUIREMENTS as never);
-  vi.mocked(listActiveTripPreferences).mockResolvedValue([]);
   vi.mocked(getOrCreateActiveWorkflowRun).mockResolvedValue(RUN as never);
   vi.mocked(getFlightsByIds).mockImplementation(async (_s, ids) => (ids[0] === "o1" ? [outboundFlight()] : [returnFlight()]) as never);
   vi.mocked(getHotelsByIds).mockResolvedValue([hotel()] as never);
@@ -184,6 +190,10 @@ beforeEach(() => {
   vi.mocked(appendTripDecision).mockResolvedValue({} as never);
   vi.mocked(retireActiveTripDecisionsForField).mockResolvedValue(undefined as never);
   vi.mocked(retireProposedTripDecisionsForField).mockResolvedValue(undefined as never);
+  vi.mocked(retireTripDecisionById).mockResolvedValue(undefined as never);
+  vi.mocked(appendTripPreference).mockResolvedValue({} as never);
+  vi.mocked(retireActiveTripPreferencesForField).mockResolvedValue(undefined as never);
+  vi.mocked(listActiveTripPreferences).mockResolvedValue([]);
 });
 
 describe("proposeActivitiesStep", () => {
@@ -213,7 +223,7 @@ describe("proposeActivitiesStep", () => {
     expect(retrieveActivities).not.toHaveBeenCalled();
   });
 
-  it("retrieves, curates, and schedules activities into the confirmed flight's derived stay dates", async () => {
+  it("retrieves and curates candidates, returning them richly (name/category/price) rather than just ids", async () => {
     const result = await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
 
     expect(retrieveActivities).toHaveBeenCalledWith(
@@ -222,15 +232,103 @@ describe("proposeActivitiesStep", () => {
       expect.objectContaining({ destination: "Lisbon", destinationId: LISBON_ID }),
     );
     expect(runCuratorAgent).toHaveBeenCalled();
-    expect(result.scheduledActivities.map((a) => a.id)).toEqual(["a1"]);
-    expect(result.scheduledActivities[0].date >= "2026-10-06" && result.scheduledActivities[0].date <= "2026-10-12").toBe(true);
-    expect(result.feasibility.valid).toBe(true);
+    expect(result.candidates).toEqual([
+      expect.objectContaining({ id: "a1", name: "Activity a1", category: "cultural", priceUsd: 20, description: "A lovely thing to do." }),
+    ]);
     expect(result.curation?.rankedIds).toEqual(["a1"]);
-    expect(retireProposedTripDecisionsForField).toHaveBeenCalledWith(supabase, TRIP_ID, "activities");
+    expect(retireProposedTripDecisionsForField).toHaveBeenCalledWith(supabase, TRIP_ID, "activityCandidate");
     expect(appendTripDecision).toHaveBeenCalledWith(
       supabase,
-      expect.objectContaining({ field: "activities", status: "proposed", source: "system_computed" }),
+      expect.objectContaining({ field: "activityCandidate", value: "a1", status: "proposed", source: "system_computed" }),
     );
+  });
+
+  it("does NOT schedule candidates — no date/time on the returned candidates", async () => {
+    const result = await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
+    expect(result.candidates[0]).not.toHaveProperty("date");
+    expect(result.candidates[0]).not.toHaveProperty("startMinutes");
+  });
+
+  it("persists submitted category chips as the activityInterests preference and passes them as a hard filter", async () => {
+    await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID, categories: ["food", "spa"] });
+
+    expect(retireActiveTripPreferencesForField).toHaveBeenCalledWith(supabase, TRIP_ID, "activityInterests");
+    expect(appendTripPreference).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "activityInterests", value: ["food", "spa"], source: "user_explicit" }),
+    );
+    expect(retrieveActivities).toHaveBeenCalledWith(supabase, embeddingClient, expect.objectContaining({ categories: ["food", "spa"] }));
+  });
+
+  it("persists free-text criteria as the activityNotes preference and uses it as the retrieval query", async () => {
+    await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID, criteria: "nothing too touristy" });
+
+    expect(appendTripPreference).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "activityNotes", value: "nothing too touristy" }),
+    );
+    expect(retrieveActivities).toHaveBeenCalledWith(supabase, embeddingClient, expect.objectContaining({ query: "nothing too touristy" }));
+  });
+
+  it("doesn't persist a preference row when no categories/criteria are given", async () => {
+    await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
+    expect(appendTripPreference).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a previously-stored preference when categories/criteria are omitted (a reload's auto-re-propose)", async () => {
+    vi.mocked(listActiveTripPreferences).mockResolvedValue([
+      { id: "p1", trip_id: TRIP_ID, field: "activityInterests", value: ["nightlife"], source: "user_explicit", confidence: 1, status: "active", created_at: "now" },
+      { id: "p2", trip_id: TRIP_ID, field: "activityNotes", value: "somewhere lively", source: "user_explicit", confidence: 1, status: "active", created_at: "now" },
+    ] as never);
+
+    await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
+
+    expect(retrieveActivities).toHaveBeenCalledWith(
+      supabase,
+      embeddingClient,
+      expect.objectContaining({ categories: ["nightlife"], query: "somewhere lively" }),
+    );
+    // A fallback reuse, not a new submission — nothing should be re-persisted.
+    expect(appendTripPreference).not.toHaveBeenCalled();
+  });
+
+  it("an explicit (even empty) categories/criteria argument overrides the stored preference rather than falling back to it", async () => {
+    vi.mocked(listActiveTripPreferences).mockResolvedValue([
+      { id: "p1", trip_id: TRIP_ID, field: "activityInterests", value: ["nightlife"], source: "user_explicit", confidence: 1, status: "active", created_at: "now" },
+    ] as never);
+
+    await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID, categories: ["spa"] });
+
+    expect(retrieveActivities).toHaveBeenCalledWith(supabase, embeddingClient, expect.objectContaining({ categories: ["spa"] }));
+    expect(appendTripPreference).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "activityInterests", value: ["spa"] }),
+    );
+  });
+
+  it("returns already-selected activities richly detailed, for a reload's 'already in your itinerary' display", async () => {
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([...CONFIRMED_UPSTREAM_DECISIONS, decisionRow("activity", "a9")] as never);
+    vi.mocked(getActivitiesByIds).mockImplementation(async (_s, ids) => ids.map((id) => activity(id)) as never);
+    vi.mocked(retrieveActivities).mockResolvedValue([activity("a1")] as never);
+
+    const result = await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
+
+    expect(result.alreadySelected).toEqual([expect.objectContaining({ id: "a9", name: "Activity a9" })]);
+  });
+
+  it("excludes already-confirmed activities from the candidate list automatically", async () => {
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([...CONFIRMED_UPSTREAM_DECISIONS, decisionRow("activity", "a1")] as never);
+    vi.mocked(retrieveActivities).mockResolvedValue([activity("a1"), activity("a2")] as never);
+    vi.mocked(runCuratorAgent).mockResolvedValue(curationResult({ curation: { rankedIds: ["a2"], excludedIds: [], rationale: "x" } }) as never);
+
+    const result = await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
+
+    // a1 must never even reach the Curator, since it's already confirmed.
+    expect(runCuratorAgent).toHaveBeenCalledWith(
+      modelClient,
+      expect.objectContaining({ candidates: [expect.objectContaining({ id: "a2" })] }),
+    );
+    expect(result.candidates.map((c) => c.id)).toEqual(["a2"]);
   });
 
   it("skips the Curator call and returns null curation when there are no activity candidates", async () => {
@@ -240,10 +338,10 @@ describe("proposeActivitiesStep", () => {
 
     expect(runCuratorAgent).not.toHaveBeenCalled();
     expect(result.curation).toBeNull();
-    expect(result.scheduledActivities).toEqual([]);
+    expect(result.candidates).toEqual([]);
   });
 
-  it("excludes an activity the Curator explicitly left out of rankedIds from the schedule", async () => {
+  it("excludes an activity the Curator explicitly left out of rankedIds", async () => {
     vi.mocked(retrieveActivities).mockResolvedValue([activity("a1"), activity("a2")] as never);
     vi.mocked(runCuratorAgent).mockResolvedValue(
       curationResult({ curation: { rankedIds: ["a1"], excludedIds: [{ id: "a2", reason: "not a fit" }], rationale: "x" } }) as never,
@@ -251,16 +349,7 @@ describe("proposeActivitiesStep", () => {
 
     const result = await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
 
-    expect(result.scheduledActivities.map((a) => a.id)).toEqual(["a1"]);
-  });
-
-  it("logs an itinerary_feasibility guardrail event", async () => {
-    await proposeActivitiesStep(supabase, modelClient, embeddingClient, { tripId: TRIP_ID });
-
-    expect(recordGuardrailEvent).toHaveBeenCalledWith(
-      supabase,
-      expect.objectContaining({ guardrailName: "itinerary_feasibility" }),
-    );
+    expect(result.candidates.map((c) => c.id)).toEqual(["a1"]);
   });
 
   it("logs a tool_call_schema_validation output_validation guardrail event for a malformed Curator tool call", async () => {
@@ -306,16 +395,85 @@ describe("proposeActivitiesStep", () => {
   });
 });
 
-describe("confirmActivitiesStep", () => {
-  const SCHEDULED = [{ id: "a1", date: "2026-10-07", startMinutes: 600, durationMinutes: 90 }];
+describe("confirmActivitySelection", () => {
+  it("adds one activity as its own confirmed 'activity' decision row", async () => {
+    const result = await confirmActivitySelection(supabase, { tripId: TRIP_ID, activityId: "a1" });
 
-  it("persists activities/budget/itineraryText as confirmed decisions", async () => {
-    const result = await confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: SCHEDULED });
+    expect(appendTripDecision).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({ field: "activity", value: "a1", status: "confirmed", source: "user_explicit" }),
+    );
+    expect(result.activity).toEqual(expect.objectContaining({ id: "a1", name: "Activity a1" }));
+  });
 
+  it("is a no-op (not an error) if the activity is already selected", async () => {
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([...CONFIRMED_UPSTREAM_DECISIONS, decisionRow("activity", "a1")] as never);
+
+    await confirmActivitySelection(supabase, { tripId: TRIP_ID, activityId: "a1" });
+
+    expect(appendTripDecision).not.toHaveBeenCalled();
+  });
+
+  it("throws InvalidActivitiesSelectionError when the activity id doesn't resolve to real inventory", async () => {
+    vi.mocked(getActivitiesByIds).mockResolvedValue([]);
+    await expect(confirmActivitySelection(supabase, { tripId: TRIP_ID, activityId: "ghost" })).rejects.toThrow(
+      InvalidActivitiesSelectionError,
+    );
+  });
+
+  it("throws InvalidActivitiesSelectionError when the activity belongs to a different destination", async () => {
+    vi.mocked(getActivitiesByIds).mockResolvedValue([activity("a1", { destination_id: "destination-paris" })] as never);
+    await expect(confirmActivitySelection(supabase, { tripId: TRIP_ID, activityId: "a1" })).rejects.toThrow(
+      InvalidActivitiesSelectionError,
+    );
+  });
+
+  it("throws InvalidActivitiesSelectionError for a stale inventory version", async () => {
+    vi.mocked(getActivitiesByIds).mockResolvedValue([activity("a1", { inventory_version: 0 })] as never);
+    await expect(confirmActivitySelection(supabase, { tripId: TRIP_ID, activityId: "a1" })).rejects.toThrow(
+      InvalidActivitiesSelectionError,
+    );
+  });
+});
+
+describe("removeActivitySelection", () => {
+  it("retires the specific confirmed 'activity' row matching the given id", async () => {
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([
+      ...CONFIRMED_UPSTREAM_DECISIONS,
+      decisionRow("activity", "a1", "confirmed", "dec_activity_a1"),
+      decisionRow("activity", "a2", "confirmed", "dec_activity_a2"),
+    ] as never);
+
+    await removeActivitySelection(supabase, { tripId: TRIP_ID, activityId: "a1" });
+
+    expect(retireTripDecisionById).toHaveBeenCalledWith(supabase, TRIP_ID, "dec_activity_a1");
+    expect(retireTripDecisionById).not.toHaveBeenCalledWith(supabase, TRIP_ID, "dec_activity_a2");
+  });
+
+  it("throws ActivityNotSelectedError when the activity isn't currently selected", async () => {
+    await expect(removeActivitySelection(supabase, { tripId: TRIP_ID, activityId: "never-added" })).rejects.toThrow(
+      ActivityNotSelectedError,
+    );
+    expect(retireTripDecisionById).not.toHaveBeenCalled();
+  });
+});
+
+describe("finalizeActivitiesStep", () => {
+  beforeEach(() => {
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([...CONFIRMED_UPSTREAM_DECISIONS, decisionRow("activity", "a1")] as never);
+  });
+
+  it("schedules every confirmed activity selection and persists activities/budget/itineraryText, now with names", async () => {
+    const result = await finalizeActivitiesStep(supabase, modelClient, { tripId: TRIP_ID });
+
+    expect(result.scheduledActivities).toEqual([
+      expect.objectContaining({ id: "a1", name: "Activity a1", category: "cultural", priceUsd: 20 }),
+    ]);
+    expect(result.scheduledActivities[0].date >= "2026-10-06" && result.scheduledActivities[0].date <= "2026-10-12").toBe(true);
     expect(retireActiveTripDecisionsForField).toHaveBeenCalledWith(supabase, TRIP_ID, "activities");
     expect(appendTripDecision).toHaveBeenCalledWith(
       supabase,
-      expect.objectContaining({ field: "activities", value: SCHEDULED, status: "confirmed" }),
+      expect.objectContaining({ field: "activities", status: "confirmed" }),
     );
     expect(appendTripDecision).toHaveBeenCalledWith(supabase, expect.objectContaining({ field: "budget", status: "confirmed" }));
     expect(appendTripDecision).toHaveBeenCalledWith(
@@ -327,62 +485,46 @@ describe("confirmActivitiesStep", () => {
     expect(appendTripEvent).toHaveBeenCalledWith(supabase, expect.objectContaining({ eventType: "activities_step_confirmed" }));
   });
 
-  it("throws InvalidActivitiesSelectionError when an activity id doesn't resolve to real inventory", async () => {
+  it("throws InvalidActivitiesSelectionError when a confirmed activity id no longer resolves to real inventory", async () => {
     vi.mocked(getActivitiesByIds).mockResolvedValue([]);
-
-    await expect(
-      confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: SCHEDULED }),
-    ).rejects.toThrow(InvalidActivitiesSelectionError);
+    await expect(finalizeActivitiesStep(supabase, modelClient, { tripId: TRIP_ID })).rejects.toThrow(InvalidActivitiesSelectionError);
     expect(appendTripDecision).not.toHaveBeenCalled();
   });
 
-  it("throws InvalidActivitiesSelectionError when an activity belongs to a different destination", async () => {
+  it("throws InvalidActivitiesSelectionError when a confirmed activity belongs to a different destination", async () => {
     vi.mocked(getActivitiesByIds).mockResolvedValue([activity("a1", { destination: "Paris", destination_id: "destination-paris" })] as never);
-
-    await expect(
-      confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: SCHEDULED }),
-    ).rejects.toThrow(InvalidActivitiesSelectionError);
+    await expect(finalizeActivitiesStep(supabase, modelClient, { tripId: TRIP_ID })).rejects.toThrow(InvalidActivitiesSelectionError);
   });
 
-  it("throws InvalidActivitiesSelectionError when an activity shares the trip's destination NAME but belongs to a different destination id (the identifier-space gap docs/IMPLEMENTATION_PLAN.md §5 tracked)", async () => {
-    vi.mocked(getActivitiesByIds).mockResolvedValue([
-      activity("a1", { destination: "Lisbon", destination_id: "destination-a-different-lisbon" }),
-    ] as never);
-
-    await expect(
-      confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: SCHEDULED }),
-    ).rejects.toThrow(InvalidActivitiesSelectionError);
-  });
-
-  it("throws InvalidActivitiesSelectionError when an activity is a stale inventory version (docs/IMPLEMENTATION_PLAN.md §5 defense-in-depth)", async () => {
+  it("throws InvalidActivitiesSelectionError for a stale inventory version (defense in depth)", async () => {
     vi.mocked(getActivitiesByIds).mockResolvedValue([activity("a1", { inventory_version: 0 })] as never);
-
-    await expect(
-      confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: SCHEDULED }),
-    ).rejects.toThrow(InvalidActivitiesSelectionError);
+    await expect(finalizeActivitiesStep(supabase, modelClient, { tripId: TRIP_ID })).rejects.toThrow(InvalidActivitiesSelectionError);
   });
 
   it("throws UnknownDestinationError when the trip's destination doesn't resolve to any real destination", async () => {
     vi.mocked(getDestinationByName).mockResolvedValue(null as never);
-
-    await expect(
-      confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: SCHEDULED }),
-    ).rejects.toThrow(UnknownDestinationError);
+    await expect(finalizeActivitiesStep(supabase, modelClient, { tripId: TRIP_ID })).rejects.toThrow(UnknownDestinationError);
   });
 
-  it("throws InvalidActivitiesSelectionError when the given schedule is no longer feasible (e.g. before the arrival transfer buffer)", async () => {
-    const tooEarly = [{ id: "a1", date: "2026-10-06", startMinutes: 0, durationMinutes: 90 }];
+  it("reports activities that couldn't be scheduled rather than silently dropping them", async () => {
+    // The trip's stay (derived from the confirmed flights) spans several
+    // days (Oct 6 - Oct 12) — far more 10-hour activities than available
+    // days are needed to force a genuine overflow.
+    const ids = Array.from({ length: 12 }, (_, i) => `a${i + 1}`);
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([
+      ...CONFIRMED_UPSTREAM_DECISIONS,
+      ...ids.map((id, i) => decisionRow("activity", id, "confirmed", `dec_activity_${i}`)),
+    ] as never);
+    vi.mocked(getActivitiesByIds).mockResolvedValue(ids.map((id) => activity(id, { duration_minutes: 600 })) as never);
 
-    await expect(
-      confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: tooEarly }),
-    ).rejects.toThrow(InvalidActivitiesSelectionError);
-    expect(appendTripDecision).not.toHaveBeenCalled();
+    const result = await finalizeActivitiesStep(supabase, modelClient, { tripId: TRIP_ID });
+    expect(result.unscheduledActivityIds.length).toBeGreaterThan(0);
   });
 
   it("is non-fatal when the Itinerary Writer fails — still persists the deterministic data", async () => {
     vi.mocked(runItineraryWriterAgent).mockRejectedValue(new Error("model call failed"));
 
-    const result = await confirmActivitiesStep(supabase, modelClient, { tripId: TRIP_ID, scheduledActivities: SCHEDULED });
+    const result = await finalizeActivitiesStep(supabase, modelClient, { tripId: TRIP_ID });
 
     expect(result.itineraryText).toBeNull();
     expect(appendTripDecision).toHaveBeenCalledWith(supabase, expect.objectContaining({ field: "activities" }));

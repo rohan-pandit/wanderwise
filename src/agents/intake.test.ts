@@ -37,6 +37,7 @@ class FakeModelClient implements ModelClient {
 
 const baseInput: IntakeAgentInput = {
   userMessage: "I want to go to Lisbon from New York, October 5-12, budget $3000, party of 2.",
+  today: "2026-09-18",
   currentRequirements: [],
   currentPreferences: [],
 };

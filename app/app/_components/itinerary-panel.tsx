@@ -46,18 +46,34 @@ import type { Flight } from "@/src/repositories/flights";
 import type { Hotel } from "@/src/repositories/hotels";
 import {
   cancelTrip,
-  confirmActivitiesCandidate,
+  confirmActivitySelection,
   confirmCascadeAndRevise,
   confirmFlightCandidate,
   confirmHotelCandidate,
+  finalizeActivities,
   finalizeTrip,
-  proposeActivitiesCandidate,
+  proposeActivityCandidates,
   proposeFlightCandidates,
   proposeHotelCandidates,
+  removeActivitySelection,
   type PendingCascadeConfirmation,
 } from "../actions";
 import type { FlightStepCandidate } from "@/src/workflow/flight-step";
-import type { ProposeActivitiesStepResult, ProposedScheduledActivity } from "@/src/workflow/activities-step";
+import type { ActivityCandidate, ProposedScheduledActivity } from "@/src/workflow/activities-step";
+
+/** Real `activities.category` values (`scripts/data/inventory-templates.ts`'s `ActivityCategory`) as user-facing chip labels — the UI-driven activity-preference form's structured half (`docs/IMPLEMENTATION_PLAN.md`'s "ACTIVITIES: PREFERENCE-DRIVEN MULTI-SELECT"). Free text covers anything a chip doesn't (a pure vibe word like "relaxing", "nothing too touristy"). */
+const ACTIVITY_CATEGORY_OPTIONS: { value: string; label: string }[] = [
+  { value: "food", label: "Food & Dining" },
+  { value: "cultural", label: "Museums & Culture" },
+  { value: "tour", label: "Guided Tours" },
+  { value: "spa", label: "Spa & Relaxation" },
+  { value: "concert", label: "Concerts" },
+  { value: "show", label: "Shows & Theater" },
+  { value: "movie", label: "Movies" },
+  { value: "sporting_event", label: "Sporting Events" },
+  { value: "outdoor", label: "Outdoors & Nature" },
+  { value: "nightlife", label: "Nightlife" },
+];
 
 interface DecisionRow {
   id: string;
@@ -206,7 +222,21 @@ export function ItineraryPanel({
 
   const [flightCandidates, setFlightCandidates] = useState<FlightStepCandidate[] | null>(null);
   const [hotelCandidates, setHotelCandidates] = useState<Hotel[] | null>(null);
-  const [activitiesProposal, setActivitiesProposal] = useState<ProposeActivitiesStepResult | null>(null);
+
+  // Activities: preference form -> candidate pick-list -> finalize (see the
+  // module docstring's "ACTIVITIES: PREFERENCE-DRIVEN MULTI-SELECT" note).
+  // `activityCandidates === null` means "show the preference form"; once set
+  // (form submitted, or a reload auto-hydrated it — see the effect below),
+  // the candidate/pick-list view shows instead. `addedActivities` is a
+  // client-side name-ful mirror of the confirmed `"activity"` decision rows
+  // (which only carry an id) — seeded from a propose call's `alreadySelected`
+  // and kept in sync by `handleAddActivity`/`handleRemoveActivity`'s own
+  // results, so the "in your itinerary" list never has to show a bare id.
+  const [activityCandidates, setActivityCandidates] = useState<ActivityCandidate[] | null>(null);
+  const [addedActivities, setAddedActivities] = useState<Map<string, ActivityCandidate>>(new Map());
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [activityNotesInput, setActivityNotesInput] = useState("");
+  const [pendingActivityId, setPendingActivityId] = useState<string | null>(null);
 
   const [revisingFlightCandidates, setRevisingFlightCandidates] = useState<FlightStepCandidate[] | null>(null);
   const [revisingHotelCandidates, setRevisingHotelCandidates] = useState<Hotel[] | null>(null);
@@ -339,17 +369,100 @@ export function ItineraryPanel({
       })();
     } else if (activeStep === "activities") {
       if (activitiesLoadedRef.current) return;
+      // Only auto-hydrates on a genuine reload of a trip that already
+      // engaged with activities before (a proposed `activityCandidate` or
+      // confirmed `activity` row already exists) — a brand-new trip whose
+      // hotel just confirmed shows the preference form instead
+      // (`handleProposeActivities`, triggered by the form's own submit, not
+      // this effect), since there's no preference to search with yet.
+      const hasEngagedBefore = decisions.some((d) => d.field === "activityCandidate" || d.field === "activity");
+      if (!hasEngagedBefore) return;
       activitiesLoadedRef.current = true;
       void (async () => {
         try {
-          const result = await proposeActivitiesCandidate({ tripId });
-          setActivitiesProposal(result);
+          const result = await proposeActivityCandidates({ tripId });
+          if ("error" in result) {
+            setActionError(result.error);
+            return;
+          }
+          setActivityCandidates(result.candidates);
+          setAddedActivities(new Map(result.alreadySelected.map((a) => [a.id, a])));
         } catch (err) {
-          console.error("proposeActivitiesCandidate failed:", err);
+          console.error("proposeActivityCandidates failed:", err);
         }
       })();
     }
   }, [activeStep, decisions, initialLoad, requirementsReady, tripId]);
+
+  async function handleProposeActivities() {
+    activitiesLoadedRef.current = true;
+    setActionPending(true);
+    setActionError(null);
+    try {
+      const result = await proposeActivityCandidates({
+        tripId,
+        categories: selectedCategories,
+        criteria: activityNotesInput.trim() || undefined,
+      });
+      if ("error" in result) {
+        setActionError(result.error);
+        return;
+      }
+      setActivityCandidates(result.candidates);
+      setAddedActivities((prev) => {
+        const merged = new Map(prev);
+        for (const a of result.alreadySelected) merged.set(a.id, a);
+        return merged;
+      });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Couldn't load activities — try again.");
+    } finally {
+      setActionPending(false);
+    }
+  }
+
+  async function handleAddActivity(activityId: string) {
+    setPendingActivityId(activityId);
+    setActionError(null);
+    try {
+      const result = await confirmActivitySelection({ tripId, activityId });
+      if ("error" in result) {
+        setActionError(result.error);
+        return;
+      }
+      setAddedActivities((prev) => new Map(prev).set(result.activity.id, result.activity));
+      setActivityCandidates((prev) => (prev ? prev.filter((c) => c.id !== activityId) : prev));
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Couldn't add that activity — try again.");
+    } finally {
+      setPendingActivityId(null);
+    }
+  }
+
+  async function handleRemoveActivity(activityId: string) {
+    setPendingActivityId(activityId);
+    setActionError(null);
+    try {
+      const result = await removeActivitySelection({ tripId, activityId });
+      if ("error" in result) {
+        setActionError(result.error);
+        return;
+      }
+      setAddedActivities((prev) => {
+        const next = new Map(prev);
+        next.delete(activityId);
+        return next;
+      });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Couldn't remove that activity — try again.");
+    } finally {
+      setPendingActivityId(null);
+    }
+  }
+
+  function handleChangeActivityPreferences() {
+    setActivityCandidates(null);
+  }
 
   async function handleConfirmFlight(outboundFlightId: string, returnFlightId: string) {
     setActionPending(true);
@@ -371,10 +484,11 @@ export function ItineraryPanel({
       if (next.step === "hotel") {
         hotelSigRef.current = proposedSignature("hotel", decisions);
         setHotelCandidates(next.result.candidates);
-      } else if (next.step === "activities") {
-        activitiesLoadedRef.current = true;
-        setActivitiesProposal(next.result);
       }
+      // No `else if (next.step === "activities")` branch: unlike
+      // flight/hotel, activities has nothing to auto-hydrate — the
+      // preference form (`activityCandidates === null`) shows on its own
+      // once `activeStep` becomes "activities".
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Couldn't confirm that flight — try again.");
     } finally {
@@ -383,9 +497,6 @@ export function ItineraryPanel({
   }
 
   async function handleConfirmHotel(hotelId: string) {
-    // Set *before* awaiting — see the module docstring on why this closes
-    // the double-Curator-call race for the hotel -> activities transition.
-    activitiesLoadedRef.current = true;
     setActionPending(true);
     setActionError(null);
     try {
@@ -394,14 +505,15 @@ export function ItineraryPanel({
         setActionError(result.error);
         return;
       }
-      const { confirmed, next } = result;
+      const { confirmed } = result;
       setConfirmedHotelSummary(confirmed.hotel);
       setDecisions((prev) => optimisticConfirm(prev, "hotel", confirmed.hotel.id));
       setHotelCandidates(null);
       setRevisingHotelCandidates(null);
-      if (next.step === "activities") {
-        setActivitiesProposal(next.result);
-      }
+      // Once hotel confirms, activities becomes the active step and the
+      // preference form shows on its own (`activityCandidates` starts
+      // `null`) — no auto-propose here, per the redesign: activities needs
+      // a real user-submitted preference first (`handleProposeActivities`).
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Couldn't confirm that hotel — try again.");
     } finally {
@@ -409,20 +521,31 @@ export function ItineraryPanel({
     }
   }
 
-  async function handleConfirmActivities(scheduledActivities: ProposedScheduledActivity[]) {
+  async function handleFinalizeActivities() {
     setActionPending(true);
     setActionError(null);
     try {
-      const confirmed = await confirmActivitiesCandidate({ tripId, scheduledActivities });
+      const result = await finalizeActivities({ tripId });
+      if ("error" in result) {
+        setActionError(result.error);
+        return;
+      }
+      const confirmed = result;
       setDecisions((prev) => {
         let next = optimisticConfirm(prev, "activities", confirmed.scheduledActivities);
         next = optimisticConfirm(next, "budget", confirmed.budget);
         if (confirmed.itineraryText) next = optimisticConfirm(next, "itineraryText", confirmed.itineraryText);
         return next;
       });
-      setActivitiesProposal(null);
+      if (confirmed.unscheduledActivityIds.length > 0) {
+        setNeedsAttention(
+          `${confirmed.unscheduledActivityIds.length} selected activity/activities didn't fit into the schedule and were left out.`,
+        );
+      }
+      setActivityCandidates(null);
+      setAddedActivities(new Map());
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Couldn't confirm that schedule — try again.");
+      setActionError(err instanceof Error ? err.message : "Couldn't finalize activities — try again.");
     } finally {
       setActionPending(false);
     }
@@ -691,48 +814,137 @@ export function ItineraryPanel({
             </section>
           ) : null}
 
-          {/* Activities step */}
+          {/* Activities step — preference form -> candidate pick-list -> finalize (see the module docstring's "ACTIVITIES: PREFERENCE-DRIVEN MULTI-SELECT" note). */}
           {hotelConfirmed || confirmedActivities ? (
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-navy-400">Activities</h3>
               {confirmedActivities ? (
                 itineraryText ? null : (
-                  <ul className="mt-2 flex flex-col gap-1 text-xs text-navy-400">
+                  <ul className="mt-2 flex flex-col gap-1 text-xs">
                     {[...confirmedActivities]
                       .sort((a, b) => (a.date === b.date ? a.startMinutes - b.startMinutes : a.date < b.date ? -1 : 1))
                       .map((a) => (
                         <li key={a.id}>
-                          {a.date} · {formatTime(a.startMinutes)}
+                          <span className="font-medium text-navy-900">{a.name}</span>
+                          <span className="text-navy-400"> — {a.date} · {formatTime(a.startMinutes)}</span>
                         </li>
                       ))}
                   </ul>
                 )
-              ) : activitiesProposal ? (
-                <div className="mt-2 rounded-lg border border-sand-200 px-3 py-2 text-xs">
-                  {activitiesProposal.scheduledActivities.length === 0 ? (
-                    <p className="text-navy-400">No activities could be scheduled for this trip.</p>
-                  ) : (
-                    <ul className="flex flex-col gap-1 text-navy-700">
-                      {[...activitiesProposal.scheduledActivities]
-                        .sort((a, b) => (a.date === b.date ? a.startMinutes - b.startMinutes : a.date < b.date ? -1 : 1))
-                        .map((a) => (
-                          <li key={a.id}>
-                            {a.date} · {formatTime(a.startMinutes)}
-                          </li>
-                        ))}
-                    </ul>
-                  )}
+              ) : activityCandidates === null ? (
+                <div className="mt-2 flex flex-col gap-2 rounded-lg border border-sand-200 px-3 py-2 text-xs">
+                  <p className="text-navy-700">What would you like to do — pick anything that fits, or just describe it below.</p>
+                  <div className="flex flex-wrap gap-1">
+                    {ACTIVITY_CATEGORY_OPTIONS.map((opt) => {
+                      const selected = selectedCategories.includes(opt.value);
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() =>
+                            setSelectedCategories((prev) =>
+                              selected ? prev.filter((c) => c !== opt.value) : [...prev, opt.value],
+                            )
+                          }
+                          className={`rounded-full border px-2 py-1 transition-colors ${
+                            selected ? "border-teal-600 bg-teal-50 text-teal-800" : "border-sand-200 text-navy-700 hover:border-teal-600"
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <textarea
+                    value={activityNotesInput}
+                    onChange={(e) => setActivityNotesInput(e.target.value)}
+                    placeholder="e.g. “I want a relaxing trip” or “nothing too touristy” (optional)"
+                    rows={2}
+                    className="rounded-md border border-sand-200 px-2 py-1 text-xs text-navy-900 placeholder:text-navy-400"
+                  />
                   <button
                     type="button"
                     disabled={actionPending}
-                    onClick={() => void handleConfirmActivities(activitiesProposal.scheduledActivities)}
-                    className="mt-2 rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 transition-colors hover:bg-terracotta-700 disabled:opacity-50"
+                    onClick={() => void handleProposeActivities()}
+                    className="self-start rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 transition-colors hover:bg-terracotta-700 disabled:opacity-50"
                   >
-                    Confirm this schedule
+                    Show me activities
                   </button>
                 </div>
               ) : (
-                <p className="mt-2 text-xs text-navy-400">Planning activities…</p>
+                <div className="mt-2 flex flex-col gap-3">
+                  {addedActivities.size > 0 ? (
+                    <div>
+                      <p className="font-medium text-navy-700">In your itinerary ({addedActivities.size})</p>
+                      <ul className="mt-1 flex flex-col gap-1">
+                        {[...addedActivities.values()].map((a) => (
+                          <li key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-sand-200 px-2 py-1">
+                            <span className="text-navy-900">
+                              {a.name} — {formatMoney({ amount: a.priceUsd, currency: "USD" })}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={pendingActivityId === a.id}
+                              onClick={() => void handleRemoveActivity(a.id)}
+                              className="shrink-0 text-terracotta-600 underline hover:text-terracotta-700 disabled:opacity-50"
+                            >
+                              Remove
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {activityCandidates.length > 0 ? (
+                    <div>
+                      <p className="font-medium text-navy-700">Suggestions</p>
+                      <ul className="mt-1 flex flex-col gap-2">
+                        {activityCandidates.map((c) => (
+                          <li key={c.id} className="rounded-lg border border-sand-200 px-2 py-2">
+                            <p className="font-medium text-navy-900">
+                              {c.name} — {formatMoney({ amount: c.priceUsd, currency: "USD" })}
+                            </p>
+                            <p className="mt-0.5 text-navy-400">
+                              {c.category ?? "activity"}
+                              {c.durationMinutes ? ` · ${c.durationMinutes} min` : ""}
+                              {c.location ? ` · ${c.location}` : ""}
+                            </p>
+                            {c.description ? <p className="mt-0.5 text-navy-400">{c.description}</p> : null}
+                            <button
+                              type="button"
+                              disabled={pendingActivityId === c.id}
+                              onClick={() => void handleAddActivity(c.id)}
+                              className="mt-1 rounded-md border border-teal-600 px-2 py-1 text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+                            >
+                              Add to itinerary
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <p className="text-navy-400">No more activities match that — try different preferences.</p>
+                  )}
+
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={handleChangeActivityPreferences}
+                      className="font-medium text-teal-700 underline hover:text-teal-800"
+                    >
+                      Change preferences
+                    </button>
+                    <button
+                      type="button"
+                      disabled={actionPending}
+                      onClick={() => void handleFinalizeActivities()}
+                      className="rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 transition-colors hover:bg-terracotta-700 disabled:opacity-50"
+                    >
+                      {addedActivities.size > 0 ? `Finalize itinerary (${addedActivities.size} added)` : "Finalize with no activities"}
+                    </button>
+                  </div>
+                </div>
               )}
             </section>
           ) : null}

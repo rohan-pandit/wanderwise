@@ -113,6 +113,28 @@ export async function supersedeOtherActiveTripDecisions(
   );
 }
 
+/**
+ * Supersedes exactly one decision row by its own id — for a field where
+ * multiple rows share the same name at once (e.g. `"activity"`, one row per
+ * confirmed pick — the multi-select activities redesign,
+ * `docs/IMPLEMENTATION_PLAN.md`), the field-keyed retire helpers above would
+ * wrongly supersede every sibling row instead of just the one being removed.
+ */
+export async function retireTripDecisionById(
+  supabase: SupabaseClient<Database>,
+  tripId: string,
+  decisionId: string,
+): Promise<void> {
+  await unwrapOrThrow(
+    supabase
+      .from("trip_decisions")
+      .update({ status: "superseded" })
+      .eq("trip_id", tripId)
+      .eq("id", decisionId)
+      .select(),
+  );
+}
+
 /** Flips every currently-`"proposed"` row for these fields to `"confirmed"` — the other half of the propose/confirm lifecycle a chain step that shows a proposal before confirming it (rather than writing straight to `"confirmed"`, as the flight step originally did) uses. */
 export async function confirmTripDecisions(
   supabase: SupabaseClient<Database>,

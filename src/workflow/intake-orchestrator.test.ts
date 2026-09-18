@@ -6,6 +6,8 @@ import type { ModelClient } from "@/src/agents/model-client";
 vi.mock("@/src/agents/intake");
 vi.mock("@/src/repositories/agent-runs");
 vi.mock("@/src/repositories/destinations");
+vi.mock("@/src/repositories/flights");
+vi.mock("@/src/repositories/hotels");
 vi.mock("@/src/repositories/guardrail-events");
 vi.mock("@/src/repositories/messages");
 vi.mock("@/src/repositories/trip-decisions");
@@ -19,6 +21,8 @@ vi.mock("./controller");
 import { runIntakeAgent } from "@/src/agents/intake";
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
 import { getDestinationByName } from "@/src/repositories/destinations";
+import { getFlightsByIds } from "@/src/repositories/flights";
+import { getHotelsByIds } from "@/src/repositories/hotels";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { appendMessage, findMessageByCorrelationId } from "@/src/repositories/messages";
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
@@ -100,6 +104,8 @@ beforeEach(() => {
   vi.mocked(listActiveTripRequirements).mockResolvedValue([]);
   vi.mocked(listActiveTripPreferences).mockResolvedValue([]);
   vi.mocked(listActiveTripDecisions).mockResolvedValue([]);
+  vi.mocked(getFlightsByIds).mockResolvedValue([]);
+  vi.mocked(getHotelsByIds).mockResolvedValue([]);
   vi.mocked(retireActiveTripRequirementsForField).mockResolvedValue(undefined);
   vi.mocked(retireActiveTripPreferencesForField).mockResolvedValue(undefined);
   vi.mocked(appendTripRequirement).mockImplementation(
@@ -156,6 +162,37 @@ describe("processIntakeTurn", () => {
     );
     expect(runIntakeAgent).toHaveBeenCalledOnce();
     expect(result.workflowState).toBe("collecting_requirements");
+  });
+
+  it("enriches confirmed flight/hotel decisions with their real price before showing them to the agent (found live: the model couldn't compute a 'cheaper hotel' threshold without it)", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("requirements_ready", 3) as never);
+    vi.mocked(listActiveTripDecisions).mockResolvedValue([
+      { id: "d1", trip_id: TRIP_ID, field: "outboundFlight", value: "f1", status: "confirmed", source: "system_computed", created_at: "now" },
+      { id: "d2", trip_id: TRIP_ID, field: "returnFlight", value: "f2", status: "confirmed", source: "system_computed", created_at: "now" },
+      { id: "d3", trip_id: TRIP_ID, field: "hotel", value: "h1", status: "confirmed", source: "system_computed", created_at: "now" },
+    ] as never);
+    vi.mocked(getFlightsByIds).mockResolvedValue([
+      { id: "f1", price_usd: 500, airline: "TAP" },
+      { id: "f2", price_usd: 520, airline: "TAP" },
+    ] as never);
+    vi.mocked(getHotelsByIds).mockResolvedValue([{ id: "h1", price_per_night_usd: 158, name: "Hotel Alfama" }] as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(emptyAgentResult() as never);
+
+    await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "Can we get a cheaper hotel?",
+    });
+
+    expect(runIntakeAgent).toHaveBeenCalledWith(
+      modelClient,
+      expect.objectContaining({
+        currentDecisions: expect.arrayContaining([
+          expect.objectContaining({ field: "hotel", value: "h1", priceUsd: 158, name: "Hotel Alfama" }),
+          expect.objectContaining({ field: "outboundFlight", value: "f1", priceUsd: 500, airline: "TAP" }),
+        ]),
+      }),
+    );
   });
 
   it("writes both the user and assistant chat messages with per-role derived correlation IDs when neither exists yet", async () => {
@@ -823,5 +860,126 @@ describe("processIntakeTurn", () => {
 
     expect(result.ready).toBe(true);
     expect(result.workflowState).toBe("requirements_ready");
+  });
+
+  const READY_WITH_PAST_DATE = [
+    { field: "origin", value: "New York", source: "user_explicit", confidence: 1 },
+    { field: "destination", value: "Lisbon", source: "user_explicit", confidence: 1 },
+    { field: "departureDate", value: "2025-10-02", source: "user_explicit", confidence: 1 },
+    { field: "returnDate", value: "2025-10-10", source: "user_explicit", confidence: 1 },
+    { field: "partySize", value: 3, source: "user_explicit", confidence: 1 },
+    { field: "budgetTotalUsd", value: 7500, source: "user_explicit", confidence: 1 },
+  ];
+
+  it("blocks requirements_ready when a stated date is already in the past (found live: the model inferred the wrong year for a year-less date)", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({ requirements: READY_WITH_PAST_DATE as never, assistantMessage: "Got it!" }) as never,
+    );
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "awaiting_clarification",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "Madrid, Oct 2-10, 3 of us, $7500",
+      today: "2026-09-18",
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.workflowState).toBe("awaiting_clarification");
+    expect(advanceTrip).toHaveBeenCalledWith(supabase, expect.objectContaining({ event: "clarification_needed" }));
+    expect(result.assistantMessage).toContain("already in the past");
+    expect(result.assistantMessage).toContain("2026-09-18");
+  });
+
+  it("does not falsely flag real future dates as past", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({
+        requirements: READY_WITH_PAST_DATE.map((r) =>
+          r.field === "departureDate" ? { ...r, value: "2026-10-02" } : r.field === "returnDate" ? { ...r, value: "2026-10-10" } : r,
+        ) as never,
+      }) as never,
+    );
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "requirements_ready",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "Madrid, Oct 2-10 2026, 3 of us, $7500",
+      today: "2026-09-18",
+    });
+
+    expect(result.ready).toBe(true);
+    expect(result.workflowState).toBe("requirements_ready");
+  });
+
+  it("resolves once the user's reply corrects both past dates", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("awaiting_clarification", 4) as never);
+    vi.mocked(listActiveTripRequirements).mockResolvedValue(
+      READY_WITH_PAST_DATE.map((r) => requirementRow(r.field, r.value)) as never,
+    );
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({
+        requirements: [
+          { field: "departureDate", value: "2026-10-02", source: "user_explicit", confidence: 1 },
+          { field: "returnDate", value: "2026-10-10", source: "user_explicit", confidence: 1 },
+        ] as never,
+      }) as never,
+    );
+    vi.mocked(advanceTrip)
+      .mockResolvedValueOnce({ status: "applied", fromState: "awaiting_clarification", toState: "collecting_requirements", version: 5 } as never)
+      .mockResolvedValueOnce({ status: "applied", fromState: "collecting_requirements", toState: "requirements_ready", version: 6 } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "Oh sorry, I meant 2026",
+      today: "2026-09-18",
+    });
+
+    expect(result.ready).toBe(true);
+    expect(result.workflowState).toBe("requirements_ready");
+  });
+
+  it("still asks about a genuinely ambiguous airport once the past-date gate passes, rather than skipping straight to ready", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(getDestinationByName).mockResolvedValue({ id: "d1", name: "Lisbon", country: "Portugal" } as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({
+        requirements: READY_EXCEPT_AIRPORT.map((r) =>
+          r.field === "departureDate" ? { ...r, value: "2025-10-02" } : r,
+        ) as never,
+      }) as never,
+    );
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "awaiting_clarification",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "NY to Lisbon, Oct 2, party of 2, budget 3000",
+      enableAirportDisambiguation: true,
+      today: "2026-09-18",
+    });
+
+    // Past-date takes precedence — the airport question shouldn't even be reached yet.
+    expect(result.ready).toBe(false);
+    expect(result.assistantMessage).toContain("already in the past");
+    expect(getDestinationByName).not.toHaveBeenCalled();
   });
 });

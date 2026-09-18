@@ -15,7 +15,7 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/config/supabase/database.types";
-import { excludeClosedOnDaysConstraint, filterHardConstraints } from "@/src/domain/constraints";
+import { categoryConstraint, excludeClosedOnDaysConstraint, filterHardConstraints, type HardConstraint } from "@/src/domain/constraints";
 import {
   matchActivities,
   type MatchedActivity,
@@ -57,6 +57,8 @@ export interface RetrieveActivitiesParams {
   accessibilityNeeds?: string[];
   minPriceUsd?: number;
   maxPriceUsd?: number;
+  /** Restricts results to these `activities.category` values (e.g. "food", "spa") — a user-chosen activity-preference filter, applied the same post-filter way as `excludeClosedOnDays` (see `categoryConstraint`, `src/domain/constraints.ts`). */
+  categories?: string[];
   topK: number;
   inventoryVersion?: number;
 }
@@ -66,7 +68,7 @@ export async function retrieveActivities(
   embeddingClient: EmbeddingClient,
   params: RetrieveActivitiesParams,
 ): Promise<MatchedActivity[]> {
-  const queryText = params.query?.trim() || params.vibeTags?.join(", ") || params.destination;
+  const queryText = params.query?.trim() || params.vibeTags?.join(", ") || params.categories?.join(", ") || params.destination;
   if (!queryText) {
     throw new RetrievalQueryError("retrieveActivities requires a non-empty `query`, `vibeTags`, or `destination`.");
   }
@@ -86,17 +88,23 @@ export async function retrieveActivities(
       vibeTags: params.vibeTags,
     });
 
-  if (!params.excludeClosedOnDays?.length) {
+  const postFilterConstraints: HardConstraint<MatchedActivity>[] = [];
+  if (params.excludeClosedOnDays?.length) {
+    postFilterConstraints.push(excludeClosedOnDaysConstraint<MatchedActivity>(params.excludeClosedOnDays));
+  }
+  if (params.categories?.length) {
+    postFilterConstraints.push(categoryConstraint<MatchedActivity>(params.categories));
+  }
+
+  if (postFilterConstraints.length === 0) {
     return fetchMatches(params.topK);
   }
 
   let matchCount = Math.min(params.topK * OVERFETCH_FACTOR, MAX_MATCH_COUNT);
   let matches = await fetchMatches(matchCount);
-  let passing = filterHardConstraints(matches, [
-    excludeClosedOnDaysConstraint<MatchedActivity>(params.excludeClosedOnDays),
-  ]).passing;
+  let passing = filterHardConstraints(matches, postFilterConstraints).passing;
 
-  // Widen and retry while the closed-days filter has under-filled `topK` and
+  // Widen and retry while the post-filter has under-filled `topK` and
   // there's reason to believe a bigger fetch would surface more: Postgres
   // returning exactly as many rows as asked for means there could be more
   // beyond the current LIMIT; returning fewer means every matching activity
@@ -105,9 +113,7 @@ export async function retrieveActivities(
   while (passing.length < params.topK && matches.length === matchCount && matchCount < MAX_MATCH_COUNT) {
     matchCount = Math.min(matchCount * OVERFETCH_FACTOR, MAX_MATCH_COUNT);
     matches = await fetchMatches(matchCount);
-    passing = filterHardConstraints(matches, [
-      excludeClosedOnDaysConstraint<MatchedActivity>(params.excludeClosedOnDays),
-    ]).passing;
+    passing = filterHardConstraints(matches, postFilterConstraints).passing;
   }
 
   return passing.slice(0, params.topK);

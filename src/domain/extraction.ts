@@ -169,6 +169,33 @@ export function checkRequirementsComplete(records: RequirementRecord[]): Complet
   return { ready: missingFields.length === 0, missingFields };
 }
 
+/**
+ * Deterministic guardrail: a stated `departureDate`/`returnDate` that's
+ * already in the past relative to `today` is never valid, regardless of how
+ * confidently the model extracted it — found live 2026-09-18: the Intake
+ * agent has no inherent sense of "today," so a year-less date like "October
+ * 2nd" can resolve to the wrong year with nothing to catch it before it
+ * reaches a real (metered) flight search and gets rejected there instead
+ * (`docs/IMPLEMENTATION_PLAN.md`). Same-day (`date === today`) is allowed —
+ * this rejects strictly-past dates, not "not far enough in the future."
+ * `today` is deliberately a required parameter, not read internally via
+ * `new Date()`, so this stays pure and testable against a fixed date.
+ */
+export function checkDatesNotInThePast(
+  reqs: Map<RequirementFieldName, unknown>,
+  today: string,
+): RequirementFieldName[] {
+  const todayEpoch = toEpochDay(today);
+  const invalid: RequirementFieldName[] = [];
+  for (const field of ["departureDate", "returnDate"] as const) {
+    const value = reqs.get(field);
+    if (typeof value === "string" && toEpochDay(value) < todayEpoch) {
+      invalid.push(field);
+    }
+  }
+  return invalid;
+}
+
 // ---------------------------------------------------------------------------
 // Preferences — soft wants (PROJECT_BRIEF.md §7.1). Qualitative and
 // trade-away-able, so the field vocabulary stays looser than requirements:
@@ -184,6 +211,15 @@ export const PREFERENCE_FIELDS = [
   "timeOfDay",
   "neighborhoodVibe",
   "dateFlexibility",
+  // Written directly by the UI-driven activity-preference form
+  // (`app/app/actions.ts`'s `proposeActivityCandidates`, once the hotel step
+  // confirms — `docs/IMPLEMENTATION_PLAN.md`) rather than through the Intake
+  // agent's `record_extraction` — the schema doesn't care who writes a
+  // preference row, so these are still real, typed, durable preferences
+  // (survive a reload, visible to a later chat-driven revision) even though
+  // this particular write bypasses the model.
+  "activityInterests",
+  "activityNotes",
 ] as const;
 
 export type PreferenceFieldName = (typeof PREFERENCE_FIELDS)[number];

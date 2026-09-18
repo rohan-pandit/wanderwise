@@ -1,31 +1,51 @@
 /**
  * The activities step of the stepwise chain redesign
  * (`docs/IMPLEMENTATION_PLAN.md`'s "STEPWISE CHAIN REDESIGN" section,
- * decided 2026-09-17) — slice 3, the last step in the chain. Reuses the
- * Phase 2/5/7 domain logic the old one-shot pipeline (`itinerary-orchestrator.ts`,
- * retired this slice) already established for retrieval, scheduling,
- * feasibility, budget, and the Itinerary Writer — the seam that changed is
- * *when* it runs (per-step, against an already-confirmed flight+hotel) and
- * *what* it's invoked against (a single hotel/flight pair, not a
- * cross-joined combination search), not the underlying algorithms.
+ * decided 2026-09-17) — slice 3, the last step in the chain.
  *
- * Like the flight/hotel steps, this can only propose once the step before
- * it (hotel) is confirmed, since scheduling needs the confirmed flight's
- * derived stay dates (`src/domain/stay.ts`) and transfer buffers. Unlike
- * flight/hotel, `proposeActivitiesStep` doesn't return a short list of
- * interchangeable single picks — activities are a scheduling problem, not a
- * pick-one problem, so it returns the one curated+scheduled result. Since
- * this is the *last* chain step (design rule 4 — nothing further
- * downstream), `confirmActivitiesStep` is also where the trip's budget gets
- * computed and the Itinerary Writer runs, exactly as the old pipeline's
- * `finalizeCombinations` did at the end of its one-shot assembly.
+ * Redesigned 2026-09-18 (`docs/IMPLEMENTATION_PLAN.md`'s "ACTIVITIES:
+ * PREFERENCE-DRIVEN MULTI-SELECT" section) from a fully auto-curated,
+ * auto-scheduled, no-user-choice pipeline into a real pick-list, matching
+ * flight/hotel's propose-a-list/user-picks shape — found live during the
+ * user's own manual e2e testing pass that the old design surfaced nothing
+ * but bare dates/times, with no activity name ever reaching the UI and no
+ * way for the user to actually choose what they wanted to do. The four
+ * functions below replace the old two (`proposeActivitiesStep`/
+ * `confirmActivitiesStep`):
  *
- * Slice 4: `proposeActivitiesStep` persists its one scheduled result as a
- * `"proposed"` `trip_decisions` row (same reasoning as flight/hotel — reload
- * survival for a real UI). `confirmActivitiesStep` needs no equivalent
- * change: its existing retire-then-insert-as-confirmed loop over
- * `activities`/`budget`/`itineraryText` already correctly supersedes that
- * proposed row in the same call that writes the confirmed one.
+ * 1. `proposeActivitiesStep` — given a UI-submitted preference (category
+ *    chips + optional free text, `app/app/actions.ts`'s
+ *    `proposeActivityCandidates`), retrieves + curates candidates and
+ *    returns them richly (name/category/price/description), NOT scheduled
+ *    yet. Persists the given preference as real `trip_preferences` rows
+ *    (`activityInterests`/`activityNotes`) so a page reload can rebuild the
+ *    same query, and the candidates as `"proposed"` `activityCandidate`
+ *    decisions (reload-survival signature, same reasoning as flight/hotel's
+ *    slice-4 persistence — not itself the UI's data source, which is this
+ *    function's return value).
+ * 2. `confirmActivitySelection` — adds exactly one candidate to the trip, as
+ *    its own `"confirmed"` `"activity"` decision row (multiple rows share
+ *    this field name, unlike flight's `outboundFlight`/`returnFlight` —
+ *    there's no "slot" identity here, just "pick as many as you want").
+ * 3. `removeActivitySelection` — the inverse: retires one confirmed
+ *    `"activity"` row by activity id.
+ * 4. `finalizeActivitiesStep` (the old `confirmActivitiesStep`, renamed to
+ *    distinguish it from #2's per-activity confirm) — reads every currently
+ *    confirmed `"activity"` row, and *only now* runs the deterministic
+ *    scheduler (reused as-is) to place them into date/time slots, computes
+ *    the budget, runs the Itinerary Writer, and writes the final
+ *    `"activities"`/`"budget"`/`"itineraryText"` confirmed decisions —
+ *    still the chain's terminal step, same completion signal
+ *    (`src/domain/chain.ts`'s `getCurrentChainStep` only ever checks for a
+ *    confirmed `"activities"` row, unaffected by the new per-pick `"activity"`
+ *    rows existing alongside it).
+ *
+ * What's unchanged: this can still only propose once hotel is confirmed
+ * (scheduling needs the confirmed flight's derived stay dates); the
+ * deterministic scheduler/feasibility/budget/curator-reference-check/
+ * writer-grounding machinery are all reused exactly as before, just invoked
+ * at a different point (finalize time, not propose time) and over a
+ * user-picked set instead of a curator-auto-picked one.
  */
 import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -40,7 +60,6 @@ import {
   DEFAULT_TRANSFER_BUFFER_MINUTES,
   validateItineraryFeasibility,
   type DraftItinerary,
-  type FeasibilityResult,
   type OpeningHours,
   type ScheduledActivity,
 } from "@/src/domain/feasibility";
@@ -58,9 +77,14 @@ import {
   listActiveTripDecisions,
   retireActiveTripDecisionsForField,
   retireProposedTripDecisionsForField,
+  retireTripDecisionById,
 } from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
-import { listActiveTripPreferences } from "@/src/repositories/trip-preferences";
+import {
+  appendTripPreference,
+  listActiveTripPreferences,
+  retireActiveTripPreferencesForField,
+} from "@/src/repositories/trip-preferences";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import type { EmbeddingClient } from "@/src/retrieval/embedding-client";
@@ -99,6 +123,14 @@ export class InvalidActivitiesSelectionError extends Error {
   constructor(tripId: string, detail: string) {
     super(`Trip ${tripId}: invalid activities selection — ${detail}`);
     this.name = "InvalidActivitiesSelectionError";
+  }
+}
+
+/** A given activity id doesn't match any currently-confirmed `"activity"` decision for this trip — `removeActivitySelection` on something never added, or already removed. */
+export class ActivityNotSelectedError extends Error {
+  constructor(tripId: string, activityId: string) {
+    super(`Trip ${tripId}: activity ${activityId} isn't currently selected.`);
+    this.name = "ActivityNotSelectedError";
   }
 }
 
@@ -225,33 +257,66 @@ function buildWriterSelections(
   ];
 }
 
+/** A retrieved/curated activity, not yet picked — what `proposeActivitiesStep` returns for the UI's candidate cards. Deliberately lean (no opening hours/closed days/vibe tags): those still drive scheduling internally, but per the redesign's own scope, precise time handling is a lower priority than just letting the user see and pick real activities by name. */
+export interface ActivityCandidate {
+  id: string;
+  name: string;
+  category: string | null;
+  description: string | null;
+  priceUsd: number;
+  durationMinutes: number | null;
+  location: string | null;
+  reservationRequired: boolean;
+}
+
+function toActivityCandidate(activity: MatchedActivity): ActivityCandidate {
+  return {
+    id: activity.id,
+    name: activity.name,
+    category: activity.category,
+    description: activity.description,
+    priceUsd: activity.price_usd,
+    durationMinutes: activity.duration_minutes,
+    location: activity.location,
+    reservationRequired: activity.reservation_required,
+  };
+}
+
 export interface ProposeActivitiesStepParams {
   tripId: string;
   /** Idempotency key for the logged `trip_events` row — see `deriveCorrelationId`. Defaults to a fresh UUID if omitted. */
   correlationId?: string;
-}
-
-export interface ProposedScheduledActivity {
-  id: string;
-  date: string;
-  startMinutes: number;
-  durationMinutes: number;
+  /**
+   * Category chips selected in the UI-driven preference form
+   * (`activities.category` values, e.g. "food"/"spa"/"nightlife") — applied
+   * as a hard filter (`categoryConstraint`) when non-empty. `undefined`
+   * (the caller didn't submit a new preference this call — e.g. a page
+   * reload's auto-re-propose) falls back to whatever was already stored
+   * (`activityInterests`); pass `[]` explicitly to mean "no category filter"
+   * instead of falling back. Written to `trip_preferences` only when
+   * explicitly provided, not on every fallback re-propose.
+   */
+  categories?: string[];
+  /** Optional free-text supplement ("nothing too touristy") — same fallback-when-undefined behavior as `categories`, against the `activityNotes` preference. Folded into the retrieval query text and passed to the Curator as `criteria` for nuance beyond the category filter. */
+  criteria?: string;
 }
 
 export interface ProposeActivitiesStepResult {
-  scheduledActivities: ProposedScheduledActivity[];
-  /** Curated-but-retrieved candidates that didn't fit any open slot — not an error, just not schedulable this trip. */
-  unscheduledActivityIds: string[];
-  feasibility: FeasibilityResult;
-  /** Null if there were no activity candidates to curate, or the agent's call didn't validate. */
+  /** Ranked, richly-detailed candidates — NOT scheduled yet. The user picks from these via `confirmActivitySelection`. */
+  candidates: ActivityCandidate[];
+  /** Activities already confirmed for this trip (from an earlier call in the same session, or a page reload) — richly detailed the same way, so the UI's "already in your itinerary" list has real names without a separate fetch. */
+  alreadySelected: ActivityCandidate[];
+  /** Null if there were no candidates to curate, or the agent's call didn't validate — candidates are still returned either way (rank order just falls back to retrieval order). */
   curation: CurationOutput | null;
 }
 
 /**
- * Retrieves activity candidates, curates them against stated preferences
- * (Curator agent), schedules the curated set into the confirmed flight's
- * derived stay dates, and validates feasibility. Nothing is persisted —
- * ephemeral, same pattern the flight/hotel steps use.
+ * Retrieves and curates activity candidates against a UI-submitted
+ * preference — no scheduling, no persistence of a final pick, purely a
+ * pick-list for the user (see this module's own header for the full
+ * redesign). Automatically excludes anything already confirmed for this
+ * trip, so a repeat call ("show me more") doesn't just re-offer what's
+ * already been added.
  */
 export async function proposeActivitiesStep(
   supabase: SupabaseClient<Database>,
@@ -261,38 +326,87 @@ export async function proposeActivitiesStep(
 ): Promise<ProposeActivitiesStepResult> {
   const correlationId = params.correlationId ?? randomUUID();
 
-  const ctx = await loadConfirmedContext(supabase, params.tripId);
+  // Only the validation side-effect matters here (throws if flight/hotel
+  // aren't confirmed yet) — unlike `finalizeActivitiesStep`, propose doesn't
+  // schedule anything, so it never needs the confirmed stay dates this
+  // returns.
+  await loadConfirmedContext(supabase, params.tripId);
 
-  const [requirementRows, preferenceRows, run] = await Promise.all([
+  const [requirementRows, existingDecisions, existingPreferences, run] = await Promise.all([
     listActiveTripRequirements(supabase, params.tripId),
+    listActiveTripDecisions(supabase, params.tripId),
     listActiveTripPreferences(supabase, params.tripId),
     getOrCreateActiveWorkflowRun(supabase, params.tripId),
   ]);
   const reqs = requirementMap(requirementRows);
   const destinationRow = await resolveTripDestination(supabase, reqs, params.tripId);
 
-  const preferenceQuery =
-    preferenceRows
-      .flatMap((p) => (typeof p.value === "string" ? [p.value] : Array.isArray(p.value) ? p.value.filter((v): v is string => typeof v === "string") : []))
-      .join(", ") || undefined;
+  const alreadySelectedIds = existingDecisions
+    .filter((d) => d.field === "activity" && d.status === "confirmed")
+    .map((d) => d.value as string);
 
-  const candidateActivities = await retrieveActivities(supabase, embeddingClient, {
-    destination: destinationRow.name,
-    destinationId: destinationRow.id,
-    query: preferenceQuery,
-    excludeClosedOnDays: reqs.get("excludeClosedOnDays") as string[] | undefined,
-    accessibilityNeeds: reqs.get("requiredAccessibility") as string[] | undefined,
-    maxPriceUsd: reqs.get("maxActivityPriceUsd") as number | undefined,
-    topK: ACTIVITY_TOP_K,
-  });
+  // Falls back to whatever was already stored when the caller didn't submit
+  // a new preference this call (a page reload's auto-re-propose, see
+  // `ProposeActivitiesStepParams`'s own docstring) — only a genuine new
+  // submission gets persisted, so a reload-triggered re-propose doesn't
+  // retire-and-reappend the same unchanged value every time.
+  const storedInterests = existingPreferences.find((p) => p.field === "activityInterests")?.value as string[] | undefined;
+  const storedNotes = existingPreferences.find((p) => p.field === "activityNotes")?.value as string | undefined;
+  const categories = (params.categories ?? storedInterests ?? []).filter((c) => c.trim().length > 0);
+  const criteria = (params.criteria !== undefined ? params.criteria : storedNotes)?.trim() || undefined;
+
+  if (params.categories !== undefined) {
+    await retireActiveTripPreferencesForField(supabase, params.tripId, "activityInterests");
+  }
+  if (params.categories !== undefined && categories.length > 0) {
+    await appendTripPreference(supabase, {
+      tripId: params.tripId,
+      field: "activityInterests",
+      value: categories as unknown as Json,
+      source: "user_explicit",
+      confidence: 1,
+    });
+  }
+  if (params.criteria !== undefined) {
+    await retireActiveTripPreferencesForField(supabase, params.tripId, "activityNotes");
+  }
+  if (params.criteria !== undefined && criteria) {
+    await appendTripPreference(supabase, {
+      tripId: params.tripId,
+      field: "activityNotes",
+      value: criteria,
+      source: "user_explicit",
+      confidence: 1,
+    });
+  }
+
+  const alreadySelectedIdSet = new Set(alreadySelectedIds);
+  const [rawCandidates, alreadySelectedActivities] = await Promise.all([
+    retrieveActivities(supabase, embeddingClient, {
+      destination: destinationRow.name,
+      destinationId: destinationRow.id,
+      query: criteria,
+      categories: categories.length > 0 ? categories : undefined,
+      excludeClosedOnDays: reqs.get("excludeClosedOnDays") as string[] | undefined,
+      accessibilityNeeds: reqs.get("requiredAccessibility") as string[] | undefined,
+      maxPriceUsd: reqs.get("maxActivityPriceUsd") as number | undefined,
+      topK: ACTIVITY_TOP_K + alreadySelectedIds.length,
+    }),
+    getActivitiesByIds(supabase, alreadySelectedIds),
+  ]);
+  const candidateActivities = rawCandidates.filter((a) => !alreadySelectedIdSet.has(a.id));
 
   let curation: CurationOutput | null = null;
   if (candidateActivities.length > 0) {
     const startedAt = Date.now();
     const curatorResult = await runCuratorAgent(modelClient, {
       kind: "activity",
-      preferences: preferenceRows.map((p) => ({ field: p.field, value: p.value })),
+      preferences: [
+        ...(categories.length > 0 ? [{ field: "activityInterests", value: categories }] : []),
+        ...(criteria ? [{ field: "activityNotes", value: criteria }] : []),
+      ],
       candidates: candidateActivities,
+      criteria,
     });
     const latencyMs = Date.now() - startedAt;
     const incompleteStopReason = curatorResult.stopReason !== "end_turn" && curatorResult.stopReason !== "tool_use";
@@ -363,126 +477,182 @@ export async function proposeActivitiesStep(
     ? [...includedActivities].sort((a, b) => curationRankIndex(curation, a.id) - curationRankIndex(curation, b.id))
     : includedActivities;
 
-  const earliestStartByDate = {
-    [ctx.checkIn]: localMinutesOfDay(ctx.outboundFlight.arrival_time, ctx.destinationTimeZone) + DEFAULT_TRANSFER_BUFFER_MINUTES,
-  };
-  const latestEndByDate = {
-    [ctx.checkOut]: localMinutesOfDay(ctx.returnFlight.departure_time, ctx.destinationTimeZone) - DEFAULT_TRANSFER_BUFFER_MINUTES,
-  };
-  const schedule = scheduleActivities({
-    activities: orderedActivities.map((a) => ({
-      id: a.id,
-      durationMinutes: a.duration_minutes,
-      openingHours: a.opening_hours as OpeningHours | null,
-      closedDays: a.closed_days,
-      preferredWindows: a.category === "food" ? MEAL_WINDOWS : undefined,
-    })),
-    dateRange: dateRange(ctx.checkIn, ctx.checkOut),
-    earliestStartByDate,
-    latestEndByDate,
-  });
-
-  const activityById = new Map(orderedActivities.map((a) => [a.id, a]));
-  const scheduledActivities: ScheduledActivity[] = schedule.scheduled.map((slot) => {
-    const activity = activityById.get(slot.id)!;
-    return {
-      id: slot.id,
-      date: slot.date,
-      startMinutes: slot.startMinutes,
-      durationMinutes: slot.durationMinutes,
-      openingHours: activity.opening_hours as OpeningHours | null,
-      closedDays: activity.closed_days,
-    };
-  });
-
-  const draft = buildDraft(ctx, scheduledActivities);
-  const feasibility = validateItineraryFeasibility(draft);
-
-  await recordGuardrailEvent(supabase, {
-    tripId: params.tripId,
-    agentName: AGENT_NAME,
-    guardrailName: "itinerary_feasibility",
-    layer: "domain_validation",
-    triggered: !feasibility.valid,
-    detail: feasibility.valid ? null : feasibility.violations.map((v) => v.message).join("; "),
-    workflowRunId: run.id,
-  });
-
-  const proposedScheduledActivities: ProposedScheduledActivity[] = scheduledActivities.map((a) => ({
-    id: a.id,
-    date: a.date,
-    startMinutes: a.startMinutes,
-    durationMinutes: a.durationMinutes,
-  }));
-
-  // Persisted as "proposed" (stepwise chain redesign slice 4) so the UI can
-  // render this schedule and survive a page reload before it's confirmed —
-  // a single row, since activities is a scheduling result, not a pick-list.
-  await retireProposedTripDecisionsForField(supabase, params.tripId, "activities");
-  await appendTripDecision(supabase, {
-    tripId: params.tripId,
-    field: "activities",
-    value: proposedScheduledActivities as unknown as Json,
-    source: "system_computed",
-    status: "proposed",
-  });
+  // Persisted as "proposed" (stepwise chain redesign slice 4) purely as a
+  // reload-survival signature, same reasoning as flight/hotel — the UI's
+  // actual candidate data comes from this function's return value, not from
+  // re-reading these rows (they hold just the id, not the full candidate).
+  await retireProposedTripDecisionsForField(supabase, params.tripId, "activityCandidate");
+  for (const activity of orderedActivities) {
+    await appendTripDecision(supabase, {
+      tripId: params.tripId,
+      field: "activityCandidate",
+      value: activity.id,
+      source: "system_computed",
+      status: "proposed",
+    });
+  }
 
   await appendTripEvent(supabase, {
     tripId: params.tripId,
     eventType: "activities_step_proposed",
-    payload: {
-      scheduledActivityIds: scheduledActivities.map((a) => a.id),
-      unscheduledActivityIds: schedule.unscheduled,
-    } as unknown as Json,
+    payload: { candidateActivityIds: orderedActivities.map((a) => a.id), categories, criteria: criteria ?? null } as unknown as Json,
     correlationId: deriveCorrelationId(correlationId, "event:activities_step_proposed"),
   });
 
   return {
-    scheduledActivities: proposedScheduledActivities,
-    unscheduledActivityIds: schedule.unscheduled,
-    feasibility,
+    candidates: orderedActivities.map(toActivityCandidate),
+    alreadySelected: alreadySelectedActivities.map(toActivityCandidate),
     curation,
   };
 }
 
-export interface ConfirmActivitiesStepParams {
+export interface ConfirmActivitySelectionParams {
   tripId: string;
-  scheduledActivities: ProposedScheduledActivity[];
+  activityId: string;
   /** Idempotency key for the logged `trip_events` row — see `deriveCorrelationId`. Defaults to a fresh UUID if omitted. */
   correlationId?: string;
 }
 
-export interface ConfirmActivitiesStepResult {
+export interface ConfirmActivitySelectionResult {
+  activity: ActivityCandidate;
+}
+
+/**
+ * Adds one activity to the trip — its own `"confirmed"` `"activity"`
+ * decision row, alongside however many others are already confirmed (no
+ * "slot" identity, unlike flight/hotel). Re-validates the id the same way
+ * `confirmFlightStep`/`confirmHotelStep` do (destination match, inventory
+ * freshness) rather than trusting a propose result computed moments
+ * earlier. A no-op-with-success (not an error) if the activity is already
+ * selected — clicking "Add" twice shouldn't create two rows or fail loudly.
+ */
+export async function confirmActivitySelection(
+  supabase: SupabaseClient<Database>,
+  params: ConfirmActivitySelectionParams,
+): Promise<ConfirmActivitySelectionResult> {
+  const correlationId = params.correlationId ?? randomUUID();
+
+  const [activityRows, requirementRows, existingDecisions] = await Promise.all([
+    getActivitiesByIds(supabase, [params.activityId]),
+    listActiveTripRequirements(supabase, params.tripId),
+    listActiveTripDecisions(supabase, params.tripId),
+  ]);
+  const activity = activityRows[0];
+  if (!activity) {
+    throw new InvalidActivitiesSelectionError(params.tripId, `unresolved activity id: ${params.activityId}`);
+  }
+
+  const reqs = requirementMap(requirementRows);
+  const destinationRow = await resolveTripDestination(supabase, reqs, params.tripId);
+  if (activity.destination_id !== destinationRow.id) {
+    throw new InvalidActivitiesSelectionError(params.tripId, `activity ${activity.id} belongs to a different destination`);
+  }
+  if (activity.inventory_version !== destinationRow.inventory_version) {
+    throw new InvalidActivitiesSelectionError(
+      params.tripId,
+      `stale inventory version: ${activity.id} (v${activity.inventory_version}) — current is v${destinationRow.inventory_version}.`,
+    );
+  }
+
+  const alreadySelected = existingDecisions.some(
+    (d) => d.field === "activity" && d.status === "confirmed" && d.value === activity.id,
+  );
+  if (!alreadySelected) {
+    await appendTripDecision(supabase, {
+      tripId: params.tripId,
+      field: "activity",
+      value: activity.id,
+      source: "user_explicit",
+      status: "confirmed",
+    });
+    await appendTripEvent(supabase, {
+      tripId: params.tripId,
+      eventType: "activity_selected",
+      payload: { activityId: activity.id } as unknown as Json,
+      correlationId: deriveCorrelationId(correlationId, `event:activity_selected:${activity.id}`),
+    });
+  }
+
+  return { activity: toActivityCandidate(activity) };
+}
+
+export interface RemoveActivitySelectionParams {
+  tripId: string;
+  activityId: string;
+  correlationId?: string;
+}
+
+/** The inverse of `confirmActivitySelection` — retires the one confirmed `"activity"` row matching this id, leaving every other selection untouched (`retireTripDecisionById`, not the field-wide retire helpers, since multiple rows share the `"activity"` field name). */
+export async function removeActivitySelection(
+  supabase: SupabaseClient<Database>,
+  params: RemoveActivitySelectionParams,
+): Promise<void> {
+  const correlationId = params.correlationId ?? randomUUID();
+
+  const decisions = await listActiveTripDecisions(supabase, params.tripId);
+  const match = decisions.find((d) => d.field === "activity" && d.status === "confirmed" && d.value === params.activityId);
+  if (!match) {
+    throw new ActivityNotSelectedError(params.tripId, params.activityId);
+  }
+  await retireTripDecisionById(supabase, params.tripId, match.id);
+  await appendTripEvent(supabase, {
+    tripId: params.tripId,
+    eventType: "activity_deselected",
+    payload: { activityId: params.activityId } as unknown as Json,
+    correlationId: deriveCorrelationId(correlationId, `event:activity_deselected:${params.activityId}`),
+  });
+}
+
+export interface FinalizeActivitiesStepParams {
+  tripId: string;
+  /** Idempotency key for the logged `trip_events` row — see `deriveCorrelationId`. Defaults to a fresh UUID if omitted. */
+  correlationId?: string;
+}
+
+export interface ProposedScheduledActivity {
+  id: string;
+  name: string;
+  category: string | null;
+  priceUsd: number;
+  date: string;
+  startMinutes: number;
+  durationMinutes: number;
+}
+
+export interface FinalizeActivitiesStepResult {
   scheduledActivities: ProposedScheduledActivity[];
+  /** Selected-but-couldn't-fit activities — not an error, just not schedulable this trip (the user picked more than the date range/hours can hold). */
+  unscheduledActivityIds: string[];
   budget: BudgetBreakdown;
   itineraryText: string | null;
 }
 
 /**
- * Persists the confirmed activity schedule. Re-fetches and re-validates the
- * given IDs (defense in depth, same as `confirmFlightStep`/`confirmHotelStep`)
- * and re-runs `validateItineraryFeasibility` against the current confirmed
- * flight/hotel before persisting anything, rather than trusting a `propose`
- * result computed moments earlier is still accurate. Since this is the
- * chain's last step, this is also where the budget gets computed and the
- * Itinerary Writer runs — the `presenting_draft`-equivalent moment for the
- * new model.
+ * Schedules every currently-confirmed `"activity"` selection into the
+ * confirmed flight's derived stay dates, computes the budget, and runs the
+ * Itinerary Writer — the chain's terminal step (the old `confirmActivitiesStep`,
+ * renamed to distinguish it from `confirmActivitySelection`'s per-pick add).
+ * Re-validates every selected id the same way the old function did
+ * (destination match, inventory-version staleness) before scheduling
+ * anything, rather than trusting the confirmed rows are still accurate.
  */
-export async function confirmActivitiesStep(
+export async function finalizeActivitiesStep(
   supabase: SupabaseClient<Database>,
   modelClient: ModelClient,
-  params: ConfirmActivitiesStepParams,
-): Promise<ConfirmActivitiesStepResult> {
+  params: FinalizeActivitiesStepParams,
+): Promise<FinalizeActivitiesStepResult> {
   const correlationId = params.correlationId ?? randomUUID();
 
   const ctx = await loadConfirmedContext(supabase, params.tripId);
 
-  const activityIds = params.scheduledActivities.map((a) => a.id);
-  const [activityRows, requirementRows, run] = await Promise.all([
-    getActivitiesByIds(supabase, activityIds),
+  const [decisions, requirementRows, run] = await Promise.all([
+    listActiveTripDecisions(supabase, params.tripId),
     listActiveTripRequirements(supabase, params.tripId),
     getOrCreateActiveWorkflowRun(supabase, params.tripId),
   ]);
+  const activityIds = decisions.filter((d) => d.field === "activity" && d.status === "confirmed").map((d) => d.value as string);
+
+  const activityRows = await getActivitiesByIds(supabase, activityIds);
   const activityById = new Map(activityRows.map((a) => [a.id, a]));
   const unresolved = activityIds.filter((id) => !activityById.has(id));
   if (unresolved.length > 0) {
@@ -498,9 +668,9 @@ export async function confirmActivitiesStep(
       `activities belong to a different destination: ${wrongDestination.map((a) => a.id).join(", ")}`,
     );
   }
-  // Defense in depth against a stale-inventory-version ID reaching confirm
-  // directly (propose-time retrieval already filters by version — this
-  // closes the same gap for a caller that skips propose, docs/IMPLEMENTATION_PLAN.md §5).
+  // Defense in depth against a stale-inventory-version ID reaching finalize
+  // directly (each confirmActivitySelection call already checked this at
+  // add-time — this closes the same gap for anything that changed since).
   const staleActivities = activityRows.filter((a) => a.inventory_version !== destinationRow.inventory_version);
   if (staleActivities.length > 0) {
     throw new InvalidActivitiesSelectionError(
@@ -509,13 +679,32 @@ export async function confirmActivitiesStep(
     );
   }
 
-  const scheduledActivities: ScheduledActivity[] = params.scheduledActivities.map((a) => {
-    const activity = activityById.get(a.id)!;
-    return {
+  const earliestStartByDate = {
+    [ctx.checkIn]: localMinutesOfDay(ctx.outboundFlight.arrival_time, ctx.destinationTimeZone) + DEFAULT_TRANSFER_BUFFER_MINUTES,
+  };
+  const latestEndByDate = {
+    [ctx.checkOut]: localMinutesOfDay(ctx.returnFlight.departure_time, ctx.destinationTimeZone) - DEFAULT_TRANSFER_BUFFER_MINUTES,
+  };
+  const schedule = scheduleActivities({
+    activities: activityRows.map((a) => ({
       id: a.id,
-      date: a.date,
-      startMinutes: a.startMinutes,
-      durationMinutes: a.durationMinutes,
+      durationMinutes: a.duration_minutes,
+      openingHours: a.opening_hours as OpeningHours | null,
+      closedDays: a.closed_days,
+      preferredWindows: a.category === "food" ? MEAL_WINDOWS : undefined,
+    })),
+    dateRange: dateRange(ctx.checkIn, ctx.checkOut),
+    earliestStartByDate,
+    latestEndByDate,
+  });
+
+  const scheduledActivities: ScheduledActivity[] = schedule.scheduled.map((slot) => {
+    const activity = activityById.get(slot.id)!;
+    return {
+      id: slot.id,
+      date: slot.date,
+      startMinutes: slot.startMinutes,
+      durationMinutes: slot.durationMinutes,
       openingHours: activity.opening_hours as OpeningHours | null,
       closedDays: activity.closed_days,
     };
@@ -538,6 +727,19 @@ export async function confirmActivitiesStep(
       `schedule is no longer feasible: ${feasibility.violations.map((v) => v.message).join("; ")}`,
     );
   }
+
+  const proposedScheduledActivities: ProposedScheduledActivity[] = scheduledActivities.map((a) => {
+    const activity = activityById.get(a.id)!;
+    return {
+      id: a.id,
+      name: activity.name,
+      category: activity.category,
+      priceUsd: activity.price_usd,
+      date: a.date,
+      startMinutes: a.startMinutes,
+      durationMinutes: a.durationMinutes,
+    };
+  });
 
   const partySize = reqs.get("partySize") as number;
   const roomGroups = (reqs.get("roomGroups") as RoomGroup[] | undefined) ?? [{ occupants: partySize }];
@@ -626,12 +828,12 @@ export async function confirmActivitiesStep(
     });
   }
 
-  const decisions: [string, Json][] = [
-    ["activities", params.scheduledActivities as unknown as Json],
+  const decisionsToWrite: [string, Json][] = [
+    ["activities", proposedScheduledActivities as unknown as Json],
     ["budget", budget as unknown as Json],
   ];
-  if (itineraryText) decisions.push(["itineraryText", itineraryText]);
-  for (const [field, value] of decisions) {
+  if (itineraryText) decisionsToWrite.push(["itineraryText", itineraryText]);
+  for (const [field, value] of decisionsToWrite) {
     await retireActiveTripDecisionsForField(supabase, params.tripId, field);
     await appendTripDecision(supabase, { tripId: params.tripId, field, value, source: "system_computed", status: "confirmed" });
   }
@@ -639,9 +841,9 @@ export async function confirmActivitiesStep(
   await appendTripEvent(supabase, {
     tripId: params.tripId,
     eventType: "activities_step_confirmed",
-    payload: { scheduledActivityIds: params.scheduledActivities.map((a) => a.id) } as unknown as Json,
+    payload: { scheduledActivityIds: proposedScheduledActivities.map((a) => a.id), unscheduledActivityIds: schedule.unscheduled } as unknown as Json,
     correlationId: deriveCorrelationId(correlationId, "event:activities_step_confirmed"),
   });
 
-  return { scheduledActivities: params.scheduledActivities, budget, itineraryText };
+  return { scheduledActivities: proposedScheduledActivities, unscheduledActivityIds: schedule.unscheduled, budget, itineraryText };
 }

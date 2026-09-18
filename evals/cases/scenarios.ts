@@ -43,7 +43,7 @@ import {
   type FlightStepCandidate,
 } from "../../src/workflow/flight-step";
 import { InvalidHotelSelectionError, confirmHotelStep, proposeHotelStep } from "../../src/workflow/hotel-step";
-import { InvalidActivitiesSelectionError, confirmActivitiesStep, proposeActivitiesStep } from "../../src/workflow/activities-step";
+import { confirmActivitySelection, finalizeActivitiesStep, proposeActivitiesStep } from "../../src/workflow/activities-step";
 import { reviseChainStep } from "../../src/workflow/step-router";
 import type { ScenarioHarness } from "../lib/scenario-harness";
 
@@ -102,13 +102,13 @@ export async function proposeAndConfirmHotel(harness: ScenarioHarness, tripId: s
   return picked.id;
 }
 
-/** Mirrors `app/app/actions.ts`'s `confirmActivitiesCandidate` exactly, including the `chain_completed` transition it fires once every chain step is confirmed — `confirmActivitiesStep` itself (the raw workflow function) never fires this, only that Server Action wrapper does. */
+/** Mirrors `app/app/actions.ts`'s `finalizeActivities` exactly, including the `chain_completed` transition it fires once every chain step is confirmed — `finalizeActivitiesStep` itself (the raw workflow function) never fires this, only that Server Action wrapper does. Adds every proposed candidate (mirrors the pre-redesign behavior of scheduling the curator's entire ranked list, not just a subset) via `confirmActivitySelection`, the same per-activity add path a real user's UI clicks go through, before finalizing. */
 async function proposeAndConfirmActivities(harness: ScenarioHarness, tripId: string) {
   const proposed = await proposeActivitiesStep(harness.supabase, harness.clients.curatorModelClient, harness.clients.embeddingClient, { tripId });
-  const confirmed = await confirmActivitiesStep(harness.supabase, harness.clients.writerModelClient, {
-    tripId,
-    scheduledActivities: proposed.scheduledActivities,
-  });
+  for (const candidate of proposed.candidates) {
+    await confirmActivitySelection(harness.supabase, { tripId, activityId: candidate.id });
+  }
+  const confirmed = await finalizeActivitiesStep(harness.supabase, harness.clients.writerModelClient, { tripId });
 
   const decisions = await listActiveTripDecisions(harness.supabase, tripId);
   if (getCurrentChainStep(decisions) === "complete") {
@@ -188,7 +188,8 @@ export const SCENARIO_CASES: ScenarioCase[] = [
       const finalState = await finalizeTrip(harness, tripId);
       return [
         { pass: turn.ready, detail: "intake marked requirements ready" },
-        { pass: proposed.feasibility.valid, detail: "proposed schedule is feasible" },
+        { pass: proposed.candidates.length > 0, detail: `proposed real, named activity candidates (got ${proposed.candidates.length})` },
+        { pass: confirmed.unscheduledActivityIds.length === 0, detail: `every selected activity fit into the schedule (unscheduled: ${JSON.stringify(confirmed.unscheduledActivityIds)})` },
         { pass: confirmed.budget.violations.length === 0, detail: `budget within ceiling (violations: ${JSON.stringify(confirmed.budget.violations)})` },
         { pass: !!confirmed.itineraryText && confirmed.itineraryText.length > 0, detail: "itinerary Writer produced non-empty grounded prose" },
         { pass: finalState === "finalized", detail: `workflow reached "finalized" (got "${finalState}")` },
@@ -396,31 +397,27 @@ export const SCENARIO_CASES: ScenarioCase[] = [
   {
     name: "itinerary_timing_conflict",
     description:
-      "Two activities scheduled to overlap on the same day — confirmActivitiesStep's own independent feasibility re-validation must reject the plan, not silently accept it (PROJECT_BRIEF.md §19 #9). Constructs the conflict by hand (bypassing the normal non-overlapping scheduler) since the point is proving the *validator* rejects a bad schedule, not that the scheduler avoids producing one.",
+      "The itinerary_feasibility guardrail must actually run as part of finalizeActivitiesStep's real integration, not just be correct in isolation (PROJECT_BRIEF.md §19 #9). Overlap-rejection itself is proven at the unit level (src/domain/feasibility.test.ts's 'flags two overlapping activities' case) and can no longer be exercised end-to-end after the 2026-09-18 multi-select redesign: finalizeActivitiesStep always derives the schedule internally via the deterministic scheduler (itself provably non-overlapping, src/domain/scheduling.test.ts), so there's no public path left to hand it an externally-constructed bad schedule the way the old confirmActivitiesStep(scheduledActivities) signature allowed — a real, structural improvement (a genuinely bad schedule can no longer reach confirm at all, not just get caught there). This instead proves the guardrail is live-wired into the real flow: a normal finalize call logs a non-triggered itinerary_feasibility guardrail event.",
     run: async (harness) => {
       const userId = await harness.createUser();
       const { tripId, sessionId } = await harness.newTrip(userId);
       await intakeTurn(harness, tripId, sessionId, STANDARD_TRIP_MESSAGE);
       await proposeAndConfirmFlight(harness, tripId);
       await proposeAndConfirmHotel(harness, tripId);
-      const proposed = await proposeActivitiesStep(harness.supabase, harness.clients.curatorModelClient, harness.clients.embeddingClient, { tripId });
-      if (proposed.scheduledActivities.length < 2) {
-        throw new Error(`need at least 2 curated activities to construct a conflict, got ${proposed.scheduledActivities.length}`);
-      }
+      await proposeAndConfirmActivities(harness, tripId);
 
-      const [a, b] = proposed.scheduledActivities;
-      const overlapping = [
-        { id: a.id, date: a.date, startMinutes: a.startMinutes, durationMinutes: a.durationMinutes },
-        { id: b.id, date: a.date, startMinutes: a.startMinutes + 10, durationMinutes: Math.max(b.durationMinutes, 60) },
+      const { data: events } = await harness.supabase
+        .from("guardrail_events")
+        .select("*")
+        .eq("trip_id", tripId)
+        .eq("guardrail_name", "itinerary_feasibility")
+        .order("created_at", { ascending: false })
+        .limit(1);
+      const event = events?.[0];
+      return [
+        { pass: !!event, detail: `finalizeActivitiesStep logged an itinerary_feasibility guardrail event (found: ${!!event})` },
+        { pass: event?.triggered === false, detail: `guardrail not triggered for a real, valid schedule (got triggered=${event?.triggered})` },
       ];
-
-      let rejected = false;
-      try {
-        await confirmActivitiesStep(harness.supabase, harness.clients.writerModelClient, { tripId, scheduledActivities: overlapping });
-      } catch (err) {
-        rejected = err instanceof InvalidActivitiesSelectionError;
-      }
-      return [{ pass: rejected, detail: "confirmActivitiesStep's independent feasibility re-check rejected an overlapping hand-built schedule" }];
     },
   },
   {

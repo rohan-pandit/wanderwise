@@ -5,9 +5,11 @@ import {
   ExtractedRequirement,
   REQUIRED_FOR_READY,
   RevisionProposal,
+  checkDatesNotInThePast,
   checkRequirementsComplete,
   toPreferenceRecord,
   toRequirementRecord,
+  type RequirementFieldName,
   type RequirementRecord,
 } from "./extraction";
 
@@ -190,6 +192,43 @@ describe("checkRequirementsComplete", () => {
   it("ignores fields outside the required-for-ready set", () => {
     const records = [...REQUIRED_FOR_READY.map((f) => record(f)), record("noRedEye")];
     expect(checkRequirementsComplete(records).ready).toBe(true);
+  });
+});
+
+describe("checkDatesNotInThePast", () => {
+  const TODAY = "2026-09-18";
+
+  it("flags a departureDate before today (the exact live bug: model extracted the wrong year)", () => {
+    const reqs = new Map<RequirementFieldName, unknown>([
+      ["departureDate", "2025-10-02"],
+      ["returnDate", "2025-10-10"],
+    ]);
+    expect(checkDatesNotInThePast(reqs, TODAY)).toEqual(["departureDate", "returnDate"]);
+  });
+
+  it("passes real future dates", () => {
+    const reqs = new Map<RequirementFieldName, unknown>([
+      ["departureDate", "2026-10-02"],
+      ["returnDate", "2026-10-10"],
+    ]);
+    expect(checkDatesNotInThePast(reqs, TODAY)).toEqual([]);
+  });
+
+  it("allows a same-day departure (today itself is not 'in the past')", () => {
+    const reqs = new Map<RequirementFieldName, unknown>([["departureDate", TODAY]]);
+    expect(checkDatesNotInThePast(reqs, TODAY)).toEqual([]);
+  });
+
+  it("flags only whichever of the two fields is actually stale", () => {
+    const reqs = new Map<RequirementFieldName, unknown>([
+      ["departureDate", "2026-10-02"],
+      ["returnDate", "2025-10-10"],
+    ]);
+    expect(checkDatesNotInThePast(reqs, TODAY)).toEqual(["returnDate"]);
+  });
+
+  it("ignores fields that aren't present yet, rather than treating a missing date as past", () => {
+    expect(checkDatesNotInThePast(new Map(), TODAY)).toEqual([]);
   });
 });
 
