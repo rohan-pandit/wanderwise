@@ -19,7 +19,7 @@
  * trigger it.
  */
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { sendMessage, type PendingCascadeConfirmation } from "../actions";
 
 export interface ChatMessage {
@@ -27,17 +27,37 @@ export interface ChatMessage {
   content: string;
 }
 
+/** Real `activities.category` values (`scripts/data/inventory-templates.ts`'s `ActivityCategory`) as user-facing chip labels for the inline activities-preference prompt below. Free text covers anything a chip doesn't (a pure vibe word like "relaxing", "nothing too touristy"). */
+const ACTIVITY_CATEGORY_OPTIONS: { value: string; label: string }[] = [
+  { value: "food", label: "Food & Dining" },
+  { value: "cultural", label: "Museums & Culture" },
+  { value: "tour", label: "Guided Tours" },
+  { value: "spa", label: "Spa & Relaxation" },
+  { value: "concert", label: "Concerts" },
+  { value: "show", label: "Shows & Theater" },
+  { value: "movie", label: "Movies" },
+  { value: "sporting_event", label: "Sporting Events" },
+  { value: "outdoor", label: "Outdoors & Nature" },
+  { value: "nightlife", label: "Nightlife" },
+];
+
 export function ChatPanel({
   tripId: initialTripId,
   initialMessages,
   onPendingCascade,
   onRequirementsReady,
+  activitiesPreferencePrompt,
+  onSubmitActivityPreferences,
 }: {
   tripId?: string;
   initialMessages: ChatMessage[];
   onPendingCascade?: (pending: PendingCascadeConfirmation) => void;
   /** Fired once a turn's completeness check (`result.ready`) first reports the trip's requirements are complete — `ItineraryPanel` uses this to know it's safe to search, rather than guessing from an empty decisions list (see its own docstring). Never fired with `false`: going from ready back to not-ready isn't a real transition once `requirements_ready` is reached (`checkRequirementsComplete` only ever gates the one-way `collecting_requirements`/`awaiting_clarification` -> `requirements_ready` hop). */
   onRequirementsReady?: () => void;
+  /** Set by `TripWorkspace` (via `ItineraryPanel`'s `onActivitiesPreferenceNeeded`) once the activities step needs a preference — renders the pill+free-text prompt inline in the transcript instead of in the itinerary panel, per the activities redesign's UI having moved into chat. `ItineraryPanel` still owns the actual `proposeActivityCandidates` call and the resulting suggestions/add/remove/finalize UI, unchanged. */
+  activitiesPreferencePrompt?: boolean;
+  /** Fired once the inline prompt is submitted (pills and/or free text). */
+  onSubmitActivityPreferences?: (categories: string[], criteria: string | undefined) => void;
 }) {
   const router = useRouter();
   const [tripId, setTripId] = useState(initialTripId);
@@ -45,6 +65,9 @@ export function ChatPanel({
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [activitySelectedCategories, setActivitySelectedCategories] = useState<string[]>([]);
+  const [activityNotesInput, setActivityNotesInput] = useState("");
 
   // Stable across every send attempt until a trip exists — a lost response
   // followed by a retry (double-click, network-level resend) reuses this
@@ -56,6 +79,38 @@ export function ChatPanel({
   function startCorrelationId(): string {
     if (!startCorrelationIdRef.current) startCorrelationIdRef.current = crypto.randomUUID();
     return startCorrelationIdRef.current;
+  }
+
+  // Announces the inline activities prompt once per activation (a rising
+  // edge of `activitiesPreferencePrompt`) as a normal assistant message, so
+  // it reads as part of the conversation rather than a UI element that
+  // appeared unexplained — then resets on the falling edge (submitted, or
+  // not yet needed) so a later "Change preferences" re-activation announces
+  // again instead of staying silent.
+  const activitiesPromptAnnouncedRef = useRef(false);
+  useEffect(() => {
+    if (activitiesPreferencePrompt) {
+      if (!activitiesPromptAnnouncedRef.current) {
+        activitiesPromptAnnouncedRef.current = true;
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: "What would you like to do during your trip? Pick anything that fits below, or just tell me in your own words." },
+        ]);
+      }
+    } else {
+      activitiesPromptAnnouncedRef.current = false;
+    }
+  }, [activitiesPreferencePrompt]);
+
+  function handleSubmitActivityPreferences() {
+    const categories = activitySelectedCategories;
+    const criteria = activityNotesInput.trim() || undefined;
+    const labels = categories.map((c) => ACTIVITY_CATEGORY_OPTIONS.find((opt) => opt.value === c)?.label ?? c);
+    const summary = [labels.join(", "), criteria].filter(Boolean).join(labels.length && criteria ? " — " : "") || "Surprise me — no particular preferences.";
+    setMessages((prev) => [...prev, { role: "user", content: summary }]);
+    setActivitySelectedCategories([]);
+    setActivityNotesInput("");
+    onSubmitActivityPreferences?.(categories, criteria);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -124,6 +179,45 @@ export function ChatPanel({
             ))}
           </ul>
         )}
+        {activitiesPreferencePrompt ? (
+          <div className="mt-3 flex flex-col gap-2 rounded-2xl border border-sand-200 bg-sand-50 px-4 py-3 text-sm">
+            <div className="flex flex-wrap gap-1">
+              {ACTIVITY_CATEGORY_OPTIONS.map((opt) => {
+                const selected = activitySelectedCategories.includes(opt.value);
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() =>
+                      setActivitySelectedCategories((prev) =>
+                        selected ? prev.filter((c) => c !== opt.value) : [...prev, opt.value],
+                      )
+                    }
+                    className={`rounded-full border px-2 py-1 text-xs transition-colors ${
+                      selected ? "border-teal-600 bg-teal-50 text-teal-800" : "border-sand-300 text-navy-700 hover:border-teal-600"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            <textarea
+              value={activityNotesInput}
+              onChange={(e) => setActivityNotesInput(e.target.value)}
+              placeholder="e.g. “I want a relaxing trip” or “nothing too touristy” (optional)"
+              rows={2}
+              className="rounded-md border border-sand-300 bg-transparent px-2 py-1 text-xs text-navy-900 placeholder:text-navy-400"
+            />
+            <button
+              type="button"
+              onClick={handleSubmitActivityPreferences}
+              className="self-start rounded-md bg-terracotta-600 px-3 py-1 text-xs font-medium text-sand-50 transition-colors hover:bg-terracotta-700"
+            >
+              Show me activities
+            </button>
+          </div>
+        ) : null}
         {pending ? (
           <p className="mt-3 text-xs text-navy-400" aria-live="polite">
             Thinking…

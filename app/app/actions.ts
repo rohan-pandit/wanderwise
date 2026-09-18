@@ -55,7 +55,6 @@ import {
 } from "@/src/workflow/intake-orchestrator";
 import {
   advanceOrRefreshChain,
-  proposeCurrentChainStep,
   reviseChainStep,
   type AdvanceOrRefreshResult,
   type ReviseChainStepResult,
@@ -295,22 +294,35 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
     enableAirportDisambiguation: true,
   });
 
-  // Auto-chain into whatever's next, scheduled via `after()` so this
+  // Auto-chain a chat-requested revision, scheduled via `after()` so this
   // response returns immediately (the user's message + the intake agent's
-  // own reply) instead of blocking on real API calls; the itinerary panel
+  // own reply) instead of blocking on a real API call; the itinerary panel
   // watches `trip_decisions`/`trip_events` via Supabase Realtime to see the
-  // rest land live. Unlike the old interim glue (`chain-orchestrator.ts`,
+  // result land live. Unlike the old interim glue (`chain-orchestrator.ts`,
   // deleted this slice), nothing here auto-confirms anything — it only ever
   // proposes, and the user picks/confirms via the hybrid UI's own Server
   // Actions below.
   //
-  // Checked in this exact order — `pendingCascadeConfirmation` and
-  // `decisionRevisionRequested` first, `workflowState` last. Caught live in
-  // slice 3 (not by unit tests, which mock `processIntakeTurn` and so never
-  // see this): `workflowState` never leaves `"requirements_ready"` once the
-  // stepwise steps take over (they deliberately never call `advanceTrip`),
-  // so checking it first would mean a genuine chat-requested revision is
-  // silently missed forever in favor of the "requirements_ready" branch.
+  // The cold-start case (`workflowState === "requirements_ready"` with no
+  // decisions yet — the chain's very first propose) deliberately has no
+  // equivalent trigger here. It used to: an `after()` block symmetrical to
+  // the one below, proposing the current chain step the moment requirements
+  // first became ready. That raced the itinerary panel's own `useEffect`
+  // (`itinerary-panel.tsx`), which independently calls `proposeFlightCandidates`
+  // the moment it observes `activeStep === "flight" && requirementsReady` on
+  // its next render — both landed for the same trip, and since
+  // `proposeFlightStep` isn't idempotent (each call unconditionally retires
+  // whatever "proposed" rows exist and inserts a fresh set), whichever call's
+  // writes landed second silently superseded the first mid-render, doubling
+  // live SerpAPI usage and occasionally showing a transient "no flights"
+  // state that self-repaired once the second wave of writes arrived. Every
+  // *other* transition avoids this by having exactly one synchronous trigger
+  // (`advanceOrRefreshChain`, called from `confirmFlightCandidate`/
+  // `confirmHotelCandidate` below) that pre-arms the client's guard ref from
+  // its own already-known result before Realtime can double-fire it — the
+  // client's reactive effect alone is a complete, self-sufficient trigger for
+  // the cold-start case too, so the fix is to not have a second one racing
+  // it, not to add locking.
   const finalTripId = tripId;
   if (result.pendingCascadeConfirmation) {
     // Do nothing yet — the UI must show the warning (from
@@ -338,32 +350,6 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
         }).catch((logErr) => console.error(`failed to log chain_revision_failed event for trip ${finalTripId}:`, logErr));
       }),
     );
-  } else if (result.workflowState === "requirements_ready") {
-    // Only propose the very first time the chain has nothing at all yet —
-    // `workflowState` stays "requirements_ready" on every later turn too,
-    // and without this check an unrelated chat message would keep
-    // re-searching and overwriting the current step's candidate list.
-    const existingDecisions = await listActiveTripDecisions(supabase, finalTripId);
-    if (existingDecisions.length === 0) {
-      after(() =>
-        proposeCurrentChainStep(supabase, finalTripId, stepwiseChainClients()).catch(async (err) => {
-          console.error(`proposeCurrentChainStep failed for trip ${finalTripId}:`, err);
-          // Fire-and-forget, same reasoning as the `reviseChainStep` failure
-          // handling above: nothing is waiting on this rejection, so the
-          // failure needs its own signal (a `chain_propose_failed` trip_event,
-          // picked up by the itinerary panel's `needsAttention` Realtime
-          // listener) instead of leaving the UI stuck with no explanation.
-          const step = getCurrentChainStep(await listActiveTripDecisions(supabase, finalTripId));
-          const friendly = friendlyStepErrorMessage(err) ?? "That didn't go through — try again or adjust your requirements.";
-          await appendTripEvent(supabase, {
-            tripId: finalTripId,
-            eventType: "chain_propose_failed",
-            payload: { step, message: friendly },
-            correlationId: deriveCorrelationId(finalTripId, `chain_propose_failed:${step}`),
-          }).catch((logErr) => console.error(`failed to log chain_propose_failed event for trip ${finalTripId}:`, logErr));
-        }),
-      );
-    }
   }
 
   return { ...result, tripId, sessionId };

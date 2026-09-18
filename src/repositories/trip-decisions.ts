@@ -135,19 +135,33 @@ export async function retireTripDecisionById(
   );
 }
 
-/** Flips every currently-`"proposed"` row for these fields to `"confirmed"` — the other half of the propose/confirm lifecycle a chain step that shows a proposal before confirming it (rather than writing straight to `"confirmed"`, as the flight step originally did) uses. */
-export async function confirmTripDecisions(
+/**
+ * Flips exactly one decision row to `"confirmed"` by its own id — the other
+ * half of the propose/confirm lifecycle a chain step that shows a proposal
+ * before confirming it (rather than writing straight to `"confirmed"`, as
+ * the flight step originally did) uses. Deliberately scoped to a single row,
+ * not a field+status match: a real live incident (2026-09-18) had a
+ * still-running propose loop insert a fresh `"proposed"` row for the same
+ * field between `supersedeOtherActiveTripDecisions` and this call — the
+ * previous field-scoped `UPDATE ... WHERE status = 'proposed'` would have
+ * confirmed *whichever* row(s) happened to still be `"proposed"` at that
+ * instant, not necessarily (or not only) the one `confirmDecisionField`
+ * actually matched the user's pick against. No `status` filter either: the
+ * caller already matched this exact row against the requested value, so
+ * this should win regardless of whatever status a concurrent write left it
+ * in, not silently no-op if something else touched it first.
+ */
+export async function confirmTripDecisionById(
   supabase: SupabaseClient<Database>,
   tripId: string,
-  fields: string[],
+  decisionId: string,
 ): Promise<void> {
   await unwrapOrThrow(
     supabase
       .from("trip_decisions")
       .update({ status: "confirmed" })
       .eq("trip_id", tripId)
-      .in("field", fields)
-      .eq("status", "proposed")
+      .eq("id", decisionId)
       .select(),
   );
 }

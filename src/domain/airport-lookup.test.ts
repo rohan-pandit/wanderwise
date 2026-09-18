@@ -46,6 +46,11 @@ describe("findAirportsForCity", () => {
     expect(findAirportsForCity("London, France")).toEqual([]);
   });
 
+  it("falls back to the unfiltered city match for a US 'City, State' origin, rather than rejecting it", () => {
+    const result = findAirportsForCity("Newark, New Jersey");
+    expect(result.map((a) => a.iata)).toEqual(["EWR"]);
+  });
+
   it("returns an empty list for a city with no scheduled-commercial airport", () => {
     expect(findAirportsForCity("Nowheresville")).toEqual([]);
   });

@@ -61,19 +61,12 @@ import {
 import type { FlightStepCandidate } from "@/src/workflow/flight-step";
 import type { ActivityCandidate, ProposedScheduledActivity } from "@/src/workflow/activities-step";
 
-/** Real `activities.category` values (`scripts/data/inventory-templates.ts`'s `ActivityCategory`) as user-facing chip labels — the UI-driven activity-preference form's structured half (`docs/IMPLEMENTATION_PLAN.md`'s "ACTIVITIES: PREFERENCE-DRIVEN MULTI-SELECT"). Free text covers anything a chip doesn't (a pure vibe word like "relaxing", "nothing too touristy"). */
-const ACTIVITY_CATEGORY_OPTIONS: { value: string; label: string }[] = [
-  { value: "food", label: "Food & Dining" },
-  { value: "cultural", label: "Museums & Culture" },
-  { value: "tour", label: "Guided Tours" },
-  { value: "spa", label: "Spa & Relaxation" },
-  { value: "concert", label: "Concerts" },
-  { value: "show", label: "Shows & Theater" },
-  { value: "movie", label: "Movies" },
-  { value: "sporting_event", label: "Sporting Events" },
-  { value: "outdoor", label: "Outdoors & Nature" },
-  { value: "nightlife", label: "Nightlife" },
-];
+/** A submitted activities preference, forwarded down from `TripWorkspace` once `ChatPanel`'s inline prompt is answered (the preference-collection UI itself lives in chat now, not here — see the module docstring's "ACTIVITIES" note). `requestId` is a fresh value per submission so the effect below can tell a genuinely new answer apart from the same object reference re-rendering. */
+export interface ActivityPreferenceSubmission {
+  requestId: string;
+  categories: string[];
+  criteria?: string;
+}
 
 interface DecisionRow {
   id: string;
@@ -208,6 +201,8 @@ export function ItineraryPanel({
   requirementsReady,
   pendingCascade,
   onPendingCascade,
+  onActivitiesPreferenceNeeded,
+  activityPreferenceSubmission,
 }: {
   tripId: string;
   initialTripStatus: string;
@@ -215,6 +210,10 @@ export function ItineraryPanel({
   requirementsReady: boolean;
   pendingCascade: PendingCascadeConfirmation | null;
   onPendingCascade: (pending: PendingCascadeConfirmation | null) => void;
+  /** Tells `TripWorkspace` it's time for `ChatPanel` to show its inline activities-preference prompt — fired once the activities step becomes active with no preference given yet (a fresh trip whose hotel just confirmed), and again from "Change preferences". The preference-collection UI itself lives in chat now, not here. */
+  onActivitiesPreferenceNeeded: () => void;
+  /** The chat prompt's answer, forwarded down once submitted — `null` until then. */
+  activityPreferenceSubmission: ActivityPreferenceSubmission | null;
 }) {
   const [decisions, setDecisions] = useState<DecisionRow[]>([]);
   const [initialLoad, setInitialLoad] = useState(true);
@@ -223,19 +222,18 @@ export function ItineraryPanel({
   const [flightCandidates, setFlightCandidates] = useState<FlightStepCandidate[] | null>(null);
   const [hotelCandidates, setHotelCandidates] = useState<Hotel[] | null>(null);
 
-  // Activities: preference form -> candidate pick-list -> finalize (see the
-  // module docstring's "ACTIVITIES: PREFERENCE-DRIVEN MULTI-SELECT" note).
-  // `activityCandidates === null` means "show the preference form"; once set
-  // (form submitted, or a reload auto-hydrated it — see the effect below),
-  // the candidate/pick-list view shows instead. `addedActivities` is a
-  // client-side name-ful mirror of the confirmed `"activity"` decision rows
-  // (which only carry an id) — seeded from a propose call's `alreadySelected`
-  // and kept in sync by `handleAddActivity`/`handleRemoveActivity`'s own
-  // results, so the "in your itinerary" list never has to show a bare id.
+  // Activities: chat prompt -> candidate pick-list -> finalize (see the
+  // module docstring's "ACTIVITIES" note and `ActivityPreferenceSubmission`
+  // above). `activityCandidates === null` means "waiting on the chat
+  // prompt"; once set (the prompt was answered, or a reload auto-hydrated it
+  // — see the effect below), the candidate/pick-list view shows instead.
+  // `addedActivities` is a client-side name-ful mirror of the confirmed
+  // `"activity"` decision rows (which only carry an id) — seeded from a
+  // propose call's `alreadySelected` and kept in sync by
+  // `handleAddActivity`/`handleRemoveActivity`'s own results, so the "in
+  // your itinerary" list never has to show a bare id.
   const [activityCandidates, setActivityCandidates] = useState<ActivityCandidate[] | null>(null);
   const [addedActivities, setAddedActivities] = useState<Map<string, ActivityCandidate>>(new Map());
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-  const [activityNotesInput, setActivityNotesInput] = useState("");
   const [pendingActivityId, setPendingActivityId] = useState<string | null>(null);
 
   const [revisingFlightCandidates, setRevisingFlightCandidates] = useState<FlightStepCandidate[] | null>(null);
@@ -253,7 +251,18 @@ export function ItineraryPanel({
 
   const flightSigRef = useRef<string | null>(null);
   const hotelSigRef = useRef<string | null>(null);
+  /** True while this component's own `proposeFlightCandidates`/`proposeHotelCandidates` call (below) is in flight — closes a real infinite-loop bug found live 2026-09-18 (a trip kept re-proposing flights every ~0.7s for minutes, well after already confirming). `propose*Step` writes as two separate steps (retire the old "proposed" rows, then insert the new ones), so Realtime can deliver a transient state with none visible in between; recomputing `sig` from `decisions` during that gap doesn't match what triggered the call, which used to look identical to a genuine external change (e.g. a chat-driven revision) and refire the effect — which retires+inserts again, reproducing the same gap forever. Checked here in addition to the signature so this component's own in-flight write is never mistaken for one. */
+  const flightProposingRef = useRef(false);
+  const hotelProposingRef = useRef(false);
+  /** Hard circuit breaker: a call this effect makes counts against its step's budget, and once it's exhausted, the effect stops retrying automatically and surfaces an error instead — a safety net against *any* runaway-retry shape here (known or not yet found), not just the specific gap `flightProposingRef` closes. Found necessary live 2026-09-18: the signature/in-flight-guard fix above still didn't fully stop a real recurrence (a fresh trip re-proposed flights for ~48s, through and past a live confirm, corrupting an in-progress hotel selection) — root cause not fully pinned down (a stale browser tab running pre-fix JS is the leading theory, but unconfirmed), so this bounds the damage regardless: at most a handful of calls, then a loud failure instead of a silent multi-minute hammering of the DB/SerpAPI. */
+  const MAX_AUTO_PROPOSE_ATTEMPTS = 5;
+  const flightProposeAttemptsRef = useRef(0);
+  const hotelProposeAttemptsRef = useRef(0);
   const activitiesLoadedRef = useRef(false);
+  /** Guards the mount/reload effect's own `onActivitiesPreferenceNeeded` call below so it asks chat once per activation, not on every `decisions` change while still waiting — separate from `activitiesLoadedRef`, which guards the unrelated auto-hydrate-on-reload call. `handleConfirmHotel` pre-arms this synchronously for the same reason it pre-arms `hotelSigRef`: closing the race where this effect's own reaction to that confirm's `decisions` update could ask chat a second, redundant time. */
+  const activitiesPromptRequestedRef = useRef(false);
+  /** Guards the submission-effect below so a re-render with the same `activityPreferenceSubmission` object (or `TripWorkspace` re-passing the same `requestId`) doesn't re-run `proposeActivityCandidates`. */
+  const lastActivitySubmissionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const supabase = createClient();
@@ -269,9 +278,37 @@ export function ItineraryPanel({
         .eq("trip_id", tripId)
         .neq("status", "superseded");
       if (error) console.error("initial trip_decisions fetch failed:", error);
-      if (!cancelled) {
-        if (data) setDecisions(data as DecisionRow[]);
-        setInitialLoad(false);
+      if (cancelled) return;
+      const rows = (data as DecisionRow[] | null) ?? [];
+      setDecisions(rows);
+      setInitialLoad(false);
+
+      // `confirmedFlightSummary`/`confirmedHotelSummary` are otherwise only
+      // ever populated by `handleConfirmFlight`/`handleConfirmHotel`'s own
+      // already-known result — a reload of a trip that was confirmed in an
+      // *earlier* session never goes through those handlers, so without
+      // this, the confirmed-step display falls back to its raw-id text
+      // (`Confirmed ({flightOutboundId} / {flightReturnId})`) permanently,
+      // not just transiently (found live 2026-09-18, reported as "the
+      // flight name is now a UUID" after a reload — real, reproducible on
+      // any reload of an already-confirmed trip, not specific to that
+      // session's other issue). `flights`/`hotels` are world-readable seed
+      // inventory, so a direct client-side read is fine here, same as the
+      // `trip_decisions` fetch just above.
+      const outboundId = confirmedValue(rows, "outboundFlight");
+      const returnId = confirmedValue(rows, "returnFlight");
+      if (outboundId && returnId) {
+        const { data: flightRows, error: flightError } = await supabase.from("flights").select("*").in("id", [outboundId, returnId]);
+        if (flightError) console.error("confirmed-flight hydrate failed:", flightError);
+        const outboundFlight = flightRows?.find((f) => f.id === outboundId) as Flight | undefined;
+        const returnFlight = flightRows?.find((f) => f.id === returnId) as Flight | undefined;
+        if (!cancelled && outboundFlight && returnFlight) setConfirmedFlightSummary({ outboundFlight, returnFlight });
+      }
+      const confirmedHotelId = confirmedValue(rows, "hotel");
+      if (confirmedHotelId) {
+        const { data: hotelRow, error: hotelError } = await supabase.from("hotels").select("*").eq("id", confirmedHotelId).maybeSingle();
+        if (hotelError) console.error("confirmed-hotel hydrate failed:", hotelError);
+        if (!cancelled && hotelRow) setConfirmedHotelSummary(hotelRow as Hotel);
       }
     })();
 
@@ -343,40 +380,89 @@ export function ItineraryPanel({
     if (activeStep === "flight" && !requirementsReady) return;
     if (activeStep === "flight") {
       const sig = proposedSignature("flight", decisions);
-      if (flightSigRef.current === sig) return;
-      flightSigRef.current = sig;
+      // TEMPORARY diagnostic logging (2026-09-18) — pinning down a
+      // still-unexplained repeat-propose loop. Remove once root-caused.
+      console.debug("[flight-propose-debug] effect check", {
+        sig,
+        prevSig: flightSigRef.current,
+        inFlight: flightProposingRef.current,
+        attempts: flightProposeAttemptsRef.current,
+        proposedCount: decisions.filter((d) => (d.field === "outboundFlight" || d.field === "returnFlight") && d.status === "proposed").length,
+      });
+      if (flightSigRef.current === sig || flightProposingRef.current) return;
+      if (flightProposeAttemptsRef.current >= MAX_AUTO_PROPOSE_ATTEMPTS) {
+        setActionError("Flight search keeps re-running unexpectedly — please reload the page.");
+        return;
+      }
+      flightProposeAttemptsRef.current += 1;
+      flightProposingRef.current = true;
+      console.debug("[flight-propose-debug] CALLING proposeFlightCandidates", { attempt: flightProposeAttemptsRef.current });
       void (async () => {
         try {
           const result = await proposeFlightCandidates({ tripId });
-          if ("error" in result) setActionError(result.error);
-          else setFlightCandidates(result.candidates);
+          if ("error" in result) {
+            setActionError(result.error);
+            return;
+          }
+          setFlightCandidates(result.candidates);
+          // Derived from the call's own result, not a fresh `decisions`
+          // read — see `flightProposingRef`'s docstring above for why that
+          // distinction is what actually closes the loop.
+          flightSigRef.current = result.candidates
+            .flatMap((c) => [c.outboundFlight.id, c.returnFlight.id])
+            .sort()
+            .join(",");
+          console.debug("[flight-propose-debug] result", {
+            newSig: flightSigRef.current,
+            candidateCount: result.candidates.length,
+            ids: result.candidates.map((c) => ({ out: c.outboundFlight.id, ret: c.returnFlight.id })),
+          });
         } catch (err) {
           console.error("proposeFlightCandidates failed:", err);
+        } finally {
+          flightProposingRef.current = false;
         }
       })();
     } else if (activeStep === "hotel") {
       const sig = proposedSignature("hotel", decisions);
-      if (hotelSigRef.current === sig) return;
-      hotelSigRef.current = sig;
+      if (hotelSigRef.current === sig || hotelProposingRef.current) return;
+      if (hotelProposeAttemptsRef.current >= MAX_AUTO_PROPOSE_ATTEMPTS) {
+        setActionError("Hotel search keeps re-running unexpectedly — please reload the page.");
+        return;
+      }
+      hotelProposeAttemptsRef.current += 1;
+      hotelProposingRef.current = true;
       void (async () => {
         try {
           const result = await proposeHotelCandidates({ tripId });
-          if ("error" in result) setActionError(result.error);
-          else setHotelCandidates(result.candidates);
+          if ("error" in result) {
+            setActionError(result.error);
+            return;
+          }
+          setHotelCandidates(result.candidates);
+          hotelSigRef.current = result.candidates.map((h) => h.id).sort().join(",");
         } catch (err) {
           console.error("proposeHotelCandidates failed:", err);
+        } finally {
+          hotelProposingRef.current = false;
         }
       })();
     } else if (activeStep === "activities") {
-      if (activitiesLoadedRef.current) return;
       // Only auto-hydrates on a genuine reload of a trip that already
       // engaged with activities before (a proposed `activityCandidate` or
       // confirmed `activity` row already exists) — a brand-new trip whose
-      // hotel just confirmed shows the preference form instead
-      // (`handleProposeActivities`, triggered by the form's own submit, not
-      // this effect), since there's no preference to search with yet.
+      // hotel just confirmed asks in chat instead (`onActivitiesPreferenceNeeded`,
+      // answered via the submission effect below), since there's no
+      // preference to search with yet.
       const hasEngagedBefore = decisions.some((d) => d.field === "activityCandidate" || d.field === "activity");
-      if (!hasEngagedBefore) return;
+      if (!hasEngagedBefore) {
+        if (!activitiesPromptRequestedRef.current) {
+          activitiesPromptRequestedRef.current = true;
+          onActivitiesPreferenceNeeded();
+        }
+        return;
+      }
+      if (activitiesLoadedRef.current) return;
       activitiesLoadedRef.current = true;
       void (async () => {
         try {
@@ -392,34 +478,43 @@ export function ItineraryPanel({
         }
       })();
     }
-  }, [activeStep, decisions, initialLoad, requirementsReady, tripId]);
+  }, [activeStep, decisions, initialLoad, requirementsReady, tripId, onActivitiesPreferenceNeeded]);
 
-  async function handleProposeActivities() {
+  // Runs the real propose call once the chat prompt is answered
+  // (`activityPreferenceSubmission`, set by `TripWorkspace`) — the
+  // counterpart to the auto-hydrate branch above, just sourced from a
+  // real user-submitted preference instead of a prior one.
+  useEffect(() => {
+    if (!activityPreferenceSubmission) return;
+    if (lastActivitySubmissionIdRef.current === activityPreferenceSubmission.requestId) return;
+    lastActivitySubmissionIdRef.current = activityPreferenceSubmission.requestId;
     activitiesLoadedRef.current = true;
-    setActionPending(true);
-    setActionError(null);
-    try {
-      const result = await proposeActivityCandidates({
-        tripId,
-        categories: selectedCategories,
-        criteria: activityNotesInput.trim() || undefined,
-      });
-      if ("error" in result) {
-        setActionError(result.error);
-        return;
+    void (async () => {
+      setActionPending(true);
+      setActionError(null);
+      try {
+        const result = await proposeActivityCandidates({
+          tripId,
+          categories: activityPreferenceSubmission.categories,
+          criteria: activityPreferenceSubmission.criteria,
+        });
+        if ("error" in result) {
+          setActionError(result.error);
+          return;
+        }
+        setActivityCandidates(result.candidates);
+        setAddedActivities((prev) => {
+          const merged = new Map(prev);
+          for (const a of result.alreadySelected) merged.set(a.id, a);
+          return merged;
+        });
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : "Couldn't load activities — try again.");
+      } finally {
+        setActionPending(false);
       }
-      setActivityCandidates(result.candidates);
-      setAddedActivities((prev) => {
-        const merged = new Map(prev);
-        for (const a of result.alreadySelected) merged.set(a.id, a);
-        return merged;
-      });
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Couldn't load activities — try again.");
-    } finally {
-      setActionPending(false);
-    }
-  }
+    })();
+  }, [activityPreferenceSubmission, tripId]);
 
   async function handleAddActivity(activityId: string) {
     setPendingActivityId(activityId);
@@ -462,6 +557,7 @@ export function ItineraryPanel({
 
   function handleChangeActivityPreferences() {
     setActivityCandidates(null);
+    onActivitiesPreferenceNeeded();
   }
 
   async function handleConfirmFlight(outboundFlightId: string, returnFlightId: string) {
@@ -485,10 +581,11 @@ export function ItineraryPanel({
         hotelSigRef.current = proposedSignature("hotel", decisions);
         setHotelCandidates(next.result.candidates);
       }
-      // No `else if (next.step === "activities")` branch: unlike
-      // flight/hotel, activities has nothing to auto-hydrate — the
-      // preference form (`activityCandidates === null`) shows on its own
-      // once `activeStep` becomes "activities".
+      // No `else if (next.step === "activities")` branch: `next.step` can
+      // only be "hotel" or "complete" from a flight confirm (hotel always
+      // comes between flight and activities) — the chat prompt is asked
+      // from `handleConfirmHotel` instead, once activities can actually
+      // become the active step.
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Couldn't confirm that flight — try again.");
     } finally {
@@ -510,10 +607,14 @@ export function ItineraryPanel({
       setDecisions((prev) => optimisticConfirm(prev, "hotel", confirmed.hotel.id));
       setHotelCandidates(null);
       setRevisingHotelCandidates(null);
-      // Once hotel confirms, activities becomes the active step and the
-      // preference form shows on its own (`activityCandidates` starts
-      // `null`) — no auto-propose here, per the redesign: activities needs
-      // a real user-submitted preference first (`handleProposeActivities`).
+      // Once hotel confirms, activities becomes the active step — ask for a
+      // preference in chat rather than auto-proposing (activities needs a
+      // real user-submitted preference first). Pre-arms the guard ref
+      // synchronously, same reasoning as `hotelSigRef` above: closes the
+      // race where the mount effect's own reaction to this same confirm's
+      // `decisions` update could otherwise ask chat a second, redundant time.
+      activitiesPromptRequestedRef.current = true;
+      onActivitiesPreferenceNeeded();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Couldn't confirm that hotel — try again.");
     } finally {
@@ -814,7 +915,7 @@ export function ItineraryPanel({
             </section>
           ) : null}
 
-          {/* Activities step — preference form -> candidate pick-list -> finalize (see the module docstring's "ACTIVITIES: PREFERENCE-DRIVEN MULTI-SELECT" note). */}
+          {/* Activities step — chat prompt -> candidate pick-list -> finalize (see the module docstring's "ACTIVITIES" note). The preference prompt itself renders in `ChatPanel`, not here. */}
           {hotelConfirmed || confirmedActivities ? (
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-navy-400">Activities</h3>
@@ -832,45 +933,7 @@ export function ItineraryPanel({
                   </ul>
                 )
               ) : activityCandidates === null ? (
-                <div className="mt-2 flex flex-col gap-2 rounded-lg border border-sand-200 px-3 py-2 text-xs">
-                  <p className="text-navy-700">What would you like to do — pick anything that fits, or just describe it below.</p>
-                  <div className="flex flex-wrap gap-1">
-                    {ACTIVITY_CATEGORY_OPTIONS.map((opt) => {
-                      const selected = selectedCategories.includes(opt.value);
-                      return (
-                        <button
-                          key={opt.value}
-                          type="button"
-                          onClick={() =>
-                            setSelectedCategories((prev) =>
-                              selected ? prev.filter((c) => c !== opt.value) : [...prev, opt.value],
-                            )
-                          }
-                          className={`rounded-full border px-2 py-1 transition-colors ${
-                            selected ? "border-teal-600 bg-teal-50 text-teal-800" : "border-sand-200 text-navy-700 hover:border-teal-600"
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <textarea
-                    value={activityNotesInput}
-                    onChange={(e) => setActivityNotesInput(e.target.value)}
-                    placeholder="e.g. “I want a relaxing trip” or “nothing too touristy” (optional)"
-                    rows={2}
-                    className="rounded-md border border-sand-200 px-2 py-1 text-xs text-navy-900 placeholder:text-navy-400"
-                  />
-                  <button
-                    type="button"
-                    disabled={actionPending}
-                    onClick={() => void handleProposeActivities()}
-                    className="self-start rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 transition-colors hover:bg-terracotta-700 disabled:opacity-50"
-                  >
-                    Show me activities
-                  </button>
-                </div>
+                <p className="mt-2 text-xs text-navy-400">Answer the chat&apos;s question to choose your activities.</p>
               ) : (
                 <div className="mt-2 flex flex-col gap-3">
                   {addedActivities.size > 0 ? (

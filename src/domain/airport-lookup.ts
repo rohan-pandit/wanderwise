@@ -46,6 +46,9 @@ for (const airport of ALL_AIRPORTS) {
   airportsByIata.set(airport.iata, airport);
 }
 
+/** Every real country name present in the dataset, for telling an actual "City, Country" suffix apart from something that merely sits in the same position — see `findAirportsForCity`'s docstring. */
+const KNOWN_COUNTRIES = new Set(ALL_AIRPORTS.map((a) => normalize(a.country)));
+
 /**
  * Looks up every scheduled-commercial airport serving the given free-text
  * city (optionally with a country, e.g. "Madrid, Spain" or "London, Canada")
@@ -53,12 +56,25 @@ for (const airport of ALL_AIRPORTS) {
  * When a country is given but doesn't match any airport's country for that
  * city (e.g. "London, France"), this returns `[]` rather than silently
  * falling back to a different country's airports for that city name.
+ *
+ * That "returns `[]`" rule only applies when the given "country" is a real
+ * one, though — `origin` (unlike `destination`) is a free-text home city
+ * that a US traveler will often state as "City, State" (e.g. "Newark, New
+ * Jersey"), which `parseDestinationQuery` parses identically to "City,
+ * Country" since it has no way to tell the two apart from shape alone. If
+ * the parsed "country" isn't a real country anywhere in the dataset (found
+ * live 2026-09-18: "Newark, New Jersey" wrongly resolved to zero airports —
+ * "New Jersey" filtered out Newark's real, single, unambiguous airport
+ * because no airport's `country` is literally "New Jersey"), this falls
+ * back to the unfiltered city match instead of rejecting a real city over a
+ * state name it was never meant to disambiguate against.
  */
 export function findAirportsForCity(raw: string): Airport[] {
   const { city, country } = parseDestinationQuery(raw);
   const candidates = airportsByCity.get(normalize(city)) ?? [];
   if (!country) return candidates;
   const wantedCountry = normalize(country);
+  if (!KNOWN_COUNTRIES.has(wantedCountry)) return candidates;
   return candidates.filter((airport) => normalize(airport.country) === wantedCountry);
 }
 

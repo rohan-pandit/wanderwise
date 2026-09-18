@@ -16,7 +16,7 @@ import { AirportAmbiguousError, UnknownDestinationError } from "./step-shared";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import {
   appendTripDecision,
-  confirmTripDecisions,
+  confirmTripDecisionById,
   listActiveTripDecisions,
   retireActiveTripDecisionsForField,
   retireProposedTripDecisionsForField,
@@ -110,7 +110,7 @@ beforeEach(() => {
   vi.mocked(retireActiveTripDecisionsForField).mockResolvedValue(undefined as never);
   vi.mocked(retireProposedTripDecisionsForField).mockResolvedValue(undefined as never);
   vi.mocked(supersedeOtherActiveTripDecisions).mockResolvedValue(undefined as never);
-  vi.mocked(confirmTripDecisions).mockResolvedValue(undefined as never);
+  vi.mocked(confirmTripDecisionById).mockResolvedValue(undefined as never);
   vi.mocked(listActiveTripDecisions).mockResolvedValue([]);
 });
 
@@ -329,9 +329,9 @@ describe("confirmFlightStep", () => {
     await confirmFlightStep(supabase, { tripId: TRIP_ID, outboundFlightId: "o1", returnFlightId: "r1" });
 
     expect(supersedeOtherActiveTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, "outboundFlight", "dec_outboundFlight_proposed");
-    expect(confirmTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, ["outboundFlight"]);
+    expect(confirmTripDecisionById).toHaveBeenCalledWith(supabase, TRIP_ID, "dec_outboundFlight_proposed");
     expect(supersedeOtherActiveTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, "returnFlight", "dec_returnFlight_proposed");
-    expect(confirmTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, ["returnFlight"]);
+    expect(confirmTripDecisionById).toHaveBeenCalledWith(supabase, TRIP_ID, "dec_returnFlight_proposed");
     expect(retireActiveTripDecisionsForField).not.toHaveBeenCalledWith(supabase, TRIP_ID, "outboundFlight");
     expect(retireActiveTripDecisionsForField).not.toHaveBeenCalledWith(supabase, TRIP_ID, "returnFlight");
     expect(appendTripDecision).not.toHaveBeenCalledWith(
@@ -362,8 +362,8 @@ describe("confirmFlightStep", () => {
     // cleared too, not just sibling proposals.
     expect(supersedeOtherActiveTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, "outboundFlight", "dec_outboundFlight_proposed");
     expect(supersedeOtherActiveTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, "returnFlight", "dec_returnFlight_proposed");
-    expect(confirmTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, ["outboundFlight"]);
-    expect(confirmTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, ["returnFlight"]);
+    expect(confirmTripDecisionById).toHaveBeenCalledWith(supabase, TRIP_ID, "dec_outboundFlight_proposed");
+    expect(confirmTripDecisionById).toHaveBeenCalledWith(supabase, TRIP_ID, "dec_returnFlight_proposed");
   });
 
   it("supersedes a prior confirmation when called again with a different pair", async () => {

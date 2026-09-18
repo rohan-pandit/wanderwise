@@ -30,7 +30,7 @@ import type { Flight } from "@/src/repositories/flights";
 import type { Hotel } from "@/src/repositories/hotels";
 import {
   appendTripDecision,
-  confirmTripDecisions,
+  confirmTripDecisionById,
   retireActiveTripDecisionsForField,
   supersedeOtherActiveTripDecisions,
   type TripDecisionRow,
@@ -256,7 +256,7 @@ export async function confirmDecisionField(
   const proposedMatch = activeDecisions.find((d) => d.field === field && d.status === "proposed" && d.value === value);
   if (proposedMatch) {
     await supersedeOtherActiveTripDecisions(supabase, tripId, field, proposedMatch.id);
-    await confirmTripDecisions(supabase, tripId, [field]);
+    await confirmTripDecisionById(supabase, tripId, proposedMatch.id);
     return;
   }
   await retireActiveTripDecisionsForField(supabase, tripId, field);

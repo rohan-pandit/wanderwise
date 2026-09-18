@@ -17,7 +17,7 @@ import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { findHotels, getHotelsByIds } from "@/src/repositories/hotels";
 import {
   appendTripDecision,
-  confirmTripDecisions,
+  confirmTripDecisionById,
   listActiveTripDecisions,
   retireActiveTripDecisionsForField,
   retireProposedTripDecisionsForField,
@@ -106,7 +106,7 @@ beforeEach(() => {
   vi.mocked(retireActiveTripDecisionsForField).mockResolvedValue(undefined as never);
   vi.mocked(retireProposedTripDecisionsForField).mockResolvedValue(undefined as never);
   vi.mocked(supersedeOtherActiveTripDecisions).mockResolvedValue(undefined as never);
-  vi.mocked(confirmTripDecisions).mockResolvedValue(undefined as never);
+  vi.mocked(confirmTripDecisionById).mockResolvedValue(undefined as never);
   vi.mocked(getFlightsByIds).mockImplementation(async (_s, ids) => (ids[0] === "o1" ? [outboundFlight()] : [returnFlight()]) as never);
 });
 
@@ -246,7 +246,7 @@ describe("confirmHotelStep", () => {
     await confirmHotelStep(supabase, { tripId: TRIP_ID, hotelId: "h1" });
 
     expect(supersedeOtherActiveTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, "hotel", "dec_hotel");
-    expect(confirmTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, ["hotel"]);
+    expect(confirmTripDecisionById).toHaveBeenCalledWith(supabase, TRIP_ID, "dec_hotel");
     expect(retireActiveTripDecisionsForField).not.toHaveBeenCalledWith(supabase, TRIP_ID, "hotel");
     expect(appendTripDecision).not.toHaveBeenCalledWith(
       supabase,
@@ -268,7 +268,7 @@ describe("confirmHotelStep", () => {
     // row for the field (any status) except the one being kept — that
     // includes the still-confirmed old pick, not just sibling proposals.
     expect(supersedeOtherActiveTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, "hotel", "dec_hotel_new");
-    expect(confirmTripDecisions).toHaveBeenCalledWith(supabase, TRIP_ID, ["hotel"]);
+    expect(confirmTripDecisionById).toHaveBeenCalledWith(supabase, TRIP_ID, "dec_hotel_new");
   });
 
   it("throws InvalidHotelSelectionError when the id doesn't resolve to real inventory", async () => {
