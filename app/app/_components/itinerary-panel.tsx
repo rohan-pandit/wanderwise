@@ -363,7 +363,7 @@ export function ItineraryPanel({
   /** Renders as "Your itinerary for {tripName}" once set — `null` for a nameless legacy trip (pre-dates the naming step) falls back to the bare "Your itinerary". */
   tripName: string | null;
   initialTripStatus: string;
-  /** Whether the trip's `REQUIRED_FOR_READY` fields are all present yet (`app/app/trips/[tripId]/page.tsx` computes the initial value server-side; `ChatPanel`'s `onRequirementsReady` flips it once a turn's completeness check passes). Gates the flight auto-propose effect below — searching before this is true throws `RequirementsNotReadyError` (found live 2026-09-18: an under-specified first message redirected here and the effect fired immediately with an empty decisions list, before the user had finished answering the intake agent's clarifying questions). */
+  /** Whether the trip's `REQUIRED_FOR_READY` fields are all present yet (`app/app/trips/[identifier]/page.tsx` computes the initial value server-side; `ChatPanel`'s `onRequirementsReady` flips it once a turn's completeness check passes). Gates the flight auto-propose effect below — searching before this is true throws `RequirementsNotReadyError` (found live 2026-09-18: an under-specified first message redirected here and the effect fired immediately with an empty decisions list, before the user had finished answering the intake agent's clarifying questions). */
   requirementsReady: boolean;
   pendingCascade: PendingCascadeConfirmation | null;
   onPendingCascade: (pending: PendingCascadeConfirmation | null) => void;

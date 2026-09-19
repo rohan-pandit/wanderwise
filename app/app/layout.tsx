@@ -8,7 +8,7 @@ import { SignOutButton } from "./_components/sign-out-button";
  * Supabase Auth network round-trip per request with no added protection.
  * The real defense in depth for user *data* is Row Level Security (see
  * supabase/migrations/0001_initial_schema.sql), the same pattern
- * app/app/trips/[tripId]/page.tsx already relies on.
+ * app/app/trips/[identifier]/page.tsx already relies on.
  */
 export default function AppLayout({
   children,

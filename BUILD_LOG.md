@@ -1849,3 +1849,21 @@ Tried baking the strip into the schema itself first via `z.string().min(1).trans
 **Verification:** `npx tsc --noEmit`/`npm run lint`/`npm test` (471/471, unchanged — pure rendering/state-plumbing change, no domain logic touched) all pass. Dev server boots with no compile errors. Not verified against a real authenticated flow (same standing limitation as recent sessions) — worth the user watching the activities step specifically after a chat preference submission to confirm the skeleton cards actually appear immediately rather than the old frozen "Answer the chat's question" text.
 
 **Next recommended task:** User does a real click-through of a full trip (flight/hotel/activities propose, a Change, a Finalize) to confirm the loading states look and time right in practice — in particular the activities skeleton-to-real-cards transition, since that was the specific reported problem.
+
+---
+
+## 2026-09-19 (continued) — Trip URLs use a name-derived slug instead of the raw id
+
+**What happened:** User asked for trip URLs to show the trip name instead of the trip id. Flagged before implementing (no mockup needed, not a visual change) that names aren't unique — two trips can share a name, even for the same user — so the raw name can't be the URL by itself, and this needs another migration.
+
+**Design:** a `slug` column (`supabase/migrations/0017_trips_slug.sql`), generated once at creation time from the name (`src/domain/trip-slug.ts`'s pure `slugify` — lowercase, hyphenated, capped at 60 chars, falls back to `"trip"` for a name with no alphanumeric characters at all) and made actually unique per-user via `generateUniqueTripSlug` (`src/repositories/trips.ts`) — checks the candidate against the user's own trips and appends an incrementing counter (`lisbon-getaway`, `lisbon-getaway-2`, …) until it finds one free, backed by a partial unique index on `(user_id, slug)` (scoped per-user, not global, since RLS already means a slug only ever resolves within its owner's own trips). A genuine concurrent double-create of the identical name could theoretically still race past the check-then-insert (unlike `startTrip`'s own correlation-id path, this doesn't retry-on-conflict) — accepted as a low-stakes, rare-enough edge case rather than building the full retry machinery for it.
+
+**Backward compatible, not a breaking change:** `app/app/trips/[tripId]/page.tsx` renamed to `app/app/trips/[identifier]/page.tsx` — the segment can be either a slug (new links) or a raw id (old links, or a legacy trip that predates this column), decided via `isUuid` (`trip-slug.ts`) before choosing which column to query. Both link-construction call sites (`new/page.tsx`'s post-create redirect, `trips/page.tsx`'s list) updated to prefer `slug`, falling back to `id` for a slug-less row — mirroring the existing "Untitled trip" fallback pattern for a name-less row.
+
+**What I built:** `src/domain/trip-slug.ts` (`slugify`, `isUuid`, its own test file) + `generateUniqueTripSlug` (`trips.ts`) + the migration/hand-edited `database.types.ts` (`slug: string | null`) + `createTripAction` now generates and returns the slug + the route rename above.
+
+**Verification:** `npm run typecheck` (not just `tsc --noEmit` — a stale `.next/types` reference to the old `[tripId]` route needed `next typegen` to regenerate before `tsc` would pass clean, since I'd deleted `.next` mid-session; `npm run typecheck` runs both in the right order already) / `npm run lint` / `npm test` (481/481, up from 471 — new `trip-slug.test.ts`) all pass. Dev server boots clean; confirmed `/app/trips/lisbon-getaway` resolves through the renamed route and correctly redirects unauthenticated (same as every other `/app/*` route — no `proxy.ts` change was needed).
+
+**Known limitations / do not deploy yet:** same as the naming/landing/review work two entries back — this migration is **not applied** to the hosted project (no DB credentials available to this agent). Holding at a local commit until the user applies `supabase/migrations/0017_trips_slug.sql` and confirms.
+
+**Next recommended task:** Apply the migration, then push and confirm live: start a new trip, check the URL bar shows a slug immediately after naming it; open an existing (pre-migration) trip from "Your trips" and confirm its old ID-based URL still resolves correctly.

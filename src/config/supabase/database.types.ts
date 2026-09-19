@@ -43,6 +43,7 @@ export interface Database {
           status: string;
           correlation_id: string | null;
           name: string | null;
+          slug: string | null;
           created_at: string;
         };
         Insert: {
@@ -52,6 +53,7 @@ export interface Database {
           status?: string;
           correlation_id?: string | null;
           name?: string | null;
+          slug?: string | null;
           created_at?: string;
         };
         Relationships: [];

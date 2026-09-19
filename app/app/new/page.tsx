@@ -2,11 +2,12 @@
 
 /**
  * The naming step between the landing screen (`/app`) and a trip's chat +
- * itinerary workspace (`/app/trips/[tripId]`) — naming is required (the
+ * itinerary workspace (`/app/trips/[identifier]`) — naming is required (the
  * user's explicit call, 2026-09-19), so this is the one place `createTripAction`
  * (`app/app/actions.ts`) is ever called from. The trip exists for real the
  * moment this submits; `ChatPanel` on the destination page always receives a
- * real `tripId` and never creates one itself anymore.
+ * real `tripId` and never creates one itself anymore. Routes to the trip's
+ * `slug`, not its raw id, so the URL reads as `/app/trips/lisbon-getaway`.
  */
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -37,8 +38,8 @@ export default function NewTripPage() {
     setPending(true);
     setError(null);
     try {
-      const { tripId } = await createTripAction({ name: trimmed, correlationId: correlationId() });
-      router.push(`/app/trips/${tripId}`);
+      const { slug } = await createTripAction({ name: trimmed, correlationId: correlationId() });
+      router.push(`/app/trips/${slug}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong — try again.");
       setPending(false);

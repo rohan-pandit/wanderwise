@@ -44,7 +44,7 @@ import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
 import { getLatestTripState } from "@/src/repositories/trip-state";
-import { getTrip, type Trip } from "@/src/repositories/trips";
+import { generateUniqueTripSlug, getTrip, type Trip } from "@/src/repositories/trips";
 import { startTrip } from "@/src/workflow/controller";
 import { advanceOrThrow } from "@/src/workflow/advance";
 import { deriveCorrelationId } from "@/src/workflow/correlation";
@@ -225,6 +225,8 @@ export interface CreateTripInput {
 
 export interface CreateTripResult {
   tripId: string;
+  /** URL-friendly identifier — `app/app/new/page.tsx` routes to `/app/trips/{slug}` with this, not `tripId`, so the trip's real URL never shows a raw UUID. */
+  slug: string;
 }
 
 /**
@@ -250,14 +252,16 @@ export async function createTripAction(input: CreateTripInput): Promise<CreateTr
   }
 
   const supabase = createServiceClient();
+  const slug = await generateUniqueTripSlug(supabase, user.id, name);
   const session = await createSession(supabase, user.id);
   const { trip } = await startTrip(supabase, {
     sessionId: session.id,
     userId: user.id,
     correlationId: input.correlationId,
     name,
+    slug,
   });
-  return { tripId: trip.id };
+  return { tripId: trip.id, slug: trip.slug ?? slug };
 }
 
 export interface SendMessageInput {

@@ -1,7 +1,7 @@
 /**
  * The finalized trip review page (PROJECT_BRIEF.md §14 UX rework,
  * 2026-09-19) — replaces `TripWorkspace` once `trips.status === "finalized"`
- * (see `app/app/trips/[tripId]/page.tsx`'s branch). A finalized trip is
+ * (see `app/app/trips/[identifier]/page.tsx`'s branch). A finalized trip is
  * immutable: flight/hotel/activities are locked (no more "Change" —
  * `ItineraryPanel`'s own `finalized` branch, unchanged) and chat can no
  * longer drive a revision (`ChatHistoryPanel` is read-only, no input at

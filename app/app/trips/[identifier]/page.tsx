@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/src/config/supabase/server";
 import { REQUIRED_FOR_READY, checkDatesNotInThePast, type RequirementFieldName } from "@/src/domain/extraction";
+import { isUuid } from "@/src/domain/trip-slug";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { checkAirportReadiness } from "@/src/workflow/step-shared";
 import type { Flight } from "@/src/repositories/flights";
@@ -93,19 +94,26 @@ async function loadTripReviewProps(
  * docstring). RLS enforces ownership — a trip belonging to another user
  * simply won't be returned by this query, so we don't need a separate
  * authorization check here.
+ *
+ * The URL segment (`identifier`) is the trip's `slug` for any trip created
+ * since slugs existed (`generateUniqueTripSlug`, `src/repositories/trips.ts`)
+ * — `/app/trips/lisbon-getaway`, not a raw UUID. A trip created before that,
+ * or one only ever reachable by an already-shared/bookmarked ID-based link,
+ * has no slug (or the link simply predates this), so `isUuid` decides which
+ * column to look the trip up by rather than assuming every URL segment is a
+ * slug.
  */
 export default async function TripPage({
   params,
 }: {
-  params: Promise<{ tripId: string }>;
+  params: Promise<{ identifier: string }>;
 }) {
-  const { tripId } = await params;
+  const { identifier } = await params;
   const supabase = await createClient();
-  const { data: trip, error } = await supabase
-    .from("trips")
-    .select("id, session_id, status, name, created_at")
-    .eq("id", tripId)
-    .single();
+  const lookup = isUuid(identifier)
+    ? supabase.from("trips").select("id, session_id, status, name, created_at").eq("id", identifier)
+    : supabase.from("trips").select("id, session_id, status, name, created_at").eq("slug", identifier);
+  const { data: trip, error } = await lookup.single();
 
   if (error) {
     // PGRST116 = "no rows returned" from .single() — genuinely not found

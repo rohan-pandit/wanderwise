@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/config/supabase/database.types";
+import { slugify } from "@/src/domain/trip-slug";
 import { unwrapOrThrow } from "./shared";
 
 export type Trip = Database["public"]["Tables"]["trips"]["Row"];
@@ -17,6 +18,8 @@ export interface NewTrip {
    * `controller.test.ts`) aren't forced to invent one.
    */
   name?: string;
+  /** URL-friendly identifier (`generateUniqueTripSlug` below) — like `name`, only ever set by `createTripAction`. */
+  slug?: string;
 }
 
 export const TRIP_CORRELATION_ID_UNIQUE_VIOLATION = "23505";
@@ -33,10 +36,39 @@ export async function createTrip(
         user_id: trip.userId,
         correlation_id: trip.correlationId ?? null,
         name: trip.name ?? null,
+        slug: trip.slug ?? null,
       })
       .select()
       .single(),
   );
+}
+
+/**
+ * Turns a trip name into a slug that's actually unique among this user's
+ * own trips (`trips_user_id_slug_unique`, `supabase/migrations/0017_trips_slug.sql`
+ * — a partial unique index scoped to `(user_id, slug)`, skipping nulls).
+ * `slugify` alone can't guarantee this — two trips named "Lisbon Getaway"
+ * would otherwise collide — so this checks-then-appends a counter
+ * (`lisbon-getaway`, `lisbon-getaway-2`, …) until it finds one that's free.
+ * A real concurrent double-create of the exact same name is a low-stakes
+ * enough edge case here (unlike `startTrip`'s own correlation-id race) that
+ * this doesn't also retry on a unique-violation insert failure — it would
+ * just surface as a normal "try again" error, extremely rarely.
+ */
+export async function generateUniqueTripSlug(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+  name: string,
+): Promise<string> {
+  const base = slugify(name);
+  let candidate = base;
+  let attempt = 1;
+  while (true) {
+    const { data } = await supabase.from("trips").select("id").eq("user_id", userId).eq("slug", candidate).maybeSingle();
+    if (!data) return candidate;
+    attempt += 1;
+    candidate = `${base}-${attempt}`;
+  }
 }
 
 export async function getTrip(

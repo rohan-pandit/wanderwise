@@ -25,7 +25,7 @@ export default async function TripsPage() {
   const supabase = await createClient();
   const { data: trips, error } = await supabase
     .from("trips")
-    .select("id, name, status, created_at")
+    .select("id, name, slug, status, created_at")
     .order("created_at", { ascending: false });
 
   const decisionsByTrip = new Map<string, ChainDecision[]>();
@@ -69,7 +69,7 @@ export default async function TripsPage() {
             {trips.map((trip) => (
               <li key={trip.id}>
                 <Link
-                  href={`/app/trips/${trip.id}`}
+                  href={`/app/trips/${trip.slug ?? trip.id}`}
                   className="flex items-center justify-between rounded-lg border border-sand-200 bg-sand-100 px-4 py-3 text-sm transition-colors hover:border-teal-600"
                 >
                   <span className={trip.name ? "font-semibold text-navy-900" : "text-navy-400 italic"}>
