@@ -108,6 +108,19 @@ function escapeIlikeLiteral(value: string): string {
  * moment two destinations ever shared a name (and country) —
  * `AmbiguousDestinationNameError` makes that failure mode a typed,
  * catchable one instead.
+ *
+ * Found live 2026-09-19, debugging two real users' stuck trips: an exact
+ * match alone still fails a very natural, common shorthand — "New York"
+ * doesn't match the seeded "New York City" at all (no substring/fuzzy
+ * matching, just case-insensitive-exact). Falls back to a `%contains%`
+ * search only when the exact match finds nothing, and only trusts that
+ * fallback when it resolves to exactly one destination — 0 or 2+ results
+ * still fall through to `UnknownDestinationError`/`AmbiguousDestinationNameError`
+ * rather than guessing. This does not handle a true abbreviation with no
+ * shared substring ("LA" for "Los Angeles", "NYC" for "New York City") —
+ * that would need a hand-maintained alias table, a materially bigger,
+ * ongoing-maintenance fix deliberately not built here without deciding
+ * that's worth it first.
  */
 export async function getDestinationByName(
   supabase: SupabaseClient<Database>,
@@ -115,17 +128,29 @@ export async function getDestinationByName(
   inventoryVersion: number = CURRENT_INVENTORY_VERSION,
   country?: string | null,
 ): Promise<Destination | null> {
-  let query = supabase
-    .from("destinations")
-    .select("*")
-    .ilike("name", escapeIlikeLiteral(name.trim()))
-    .eq("inventory_version", inventoryVersion);
-  if (country) {
-    query = query.ilike("country", escapeIlikeLiteral(country.trim()));
+  const trimmedName = name.trim();
+  const escapedName = escapeIlikeLiteral(trimmedName);
+  const trimmedCountry = country?.trim();
+
+  function baseQuery() {
+    let query = supabase.from("destinations").select("*").eq("inventory_version", inventoryVersion);
+    if (trimmedCountry) {
+      query = query.ilike("country", escapeIlikeLiteral(trimmedCountry));
+    }
+    return query;
   }
-  const rows = await unwrapOrThrow(query.limit(2));
-  if (rows.length > 1) {
+
+  const exactRows = await unwrapOrThrow(baseQuery().ilike("name", escapedName).limit(2));
+  if (exactRows.length > 1) {
     throw new AmbiguousDestinationNameError(name, inventoryVersion);
   }
-  return rows[0] ?? null;
+  if (exactRows.length === 1) {
+    return exactRows[0];
+  }
+
+  const fuzzyRows = await unwrapOrThrow(baseQuery().ilike("name", `%${escapedName}%`).limit(2));
+  if (fuzzyRows.length > 1) {
+    throw new AmbiguousDestinationNameError(name, inventoryVersion);
+  }
+  return fuzzyRows[0] ?? null;
 }
