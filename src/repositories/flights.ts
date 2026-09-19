@@ -4,7 +4,7 @@ import { CURRENT_INVENTORY_VERSION } from "@/src/domain/inventory";
 import { localDateInTimeZone } from "@/src/domain/dates";
 import { generateFlightsForDate } from "@/src/domain/flight-generator";
 import { haulMultiplier } from "@/src/domain/geography";
-import type { FlightSearchProvider } from "./flight-provider";
+import { FlightProviderError, type FlightSearchProvider } from "./flight-provider";
 import { unwrapOrThrow } from "./shared";
 
 export type Flight = Database["public"]["Tables"]["flights"]["Row"];
@@ -221,14 +221,25 @@ export async function findFlightsFromProvider(
   filter: ProviderFlightSearchFilter,
 ): Promise<Flight[]> {
   const cached = await queryCachedProviderFlights(supabase, provider.name, filter);
-  if (cached.length > 0) return cached;
+  // TEMPORARY DIAGNOSTIC (2026-09-18) — pinning down where a leg's candidate
+  // count actually becomes 0. Revert alongside the other temporary
+  // diagnostics in serpapi-flight-provider.ts / flight-step.ts / actions.ts.
+  if (cached.length > 0) {
+    throw new FlightProviderError(
+      `DIAGNOSTIC: cache HIT for ${filter.originAirportCode}->${filter.destinationAirportCode} on ${filter.departureDate}, cached.length=${cached.length}`,
+      null,
+    );
+  }
 
   const results = await provider.search({
     originAirportCode: filter.originAirportCode,
     destinationAirportCode: filter.destinationAirportCode,
     departureDate: filter.departureDate,
   });
-  if (results.length === 0) return [];
+  throw new FlightProviderError(
+    `DIAGNOSTIC: cache MISS, live provider.search(${filter.originAirportCode}->${filter.destinationAirportCode}, ${filter.departureDate}) returned results.length=${results.length}`,
+    null,
+  );
 
   const inventoryVersion = filter.inventoryVersion ?? CURRENT_INVENTORY_VERSION;
   const rowsToInsert: Database["public"]["Tables"]["flights"]["Insert"][] = results.map((option) => ({
