@@ -44,41 +44,46 @@ export default async function TripsPage() {
 
   return (
     <div className="flex flex-1 flex-col px-6 py-8">
-      <h1 className="font-serif text-2xl font-semibold text-navy-900">
-        Your trips
-      </h1>
+      {/* Same `max-w-2xl` content cap as `chat-panel.tsx`, for the same
+          reason — measured at 1440px, this list rendered at ~1377px wide
+          with no cap at all, reading as very sparse on a large screen. */}
+      <div className="mx-auto w-full max-w-2xl">
+        <h1 className="font-serif text-2xl font-semibold text-navy-900">
+          Your trips
+        </h1>
 
-      {error ? (
-        <p className="mt-4 text-sm text-red-600">
-          Couldn&apos;t load trips: {error.message}
-        </p>
-      ) : !trips || trips.length === 0 ? (
-        <p className="mt-4 text-sm text-navy-400">
-          No trips yet.{" "}
-          <Link href="/app" className="text-teal-700 underline hover:text-teal-800">
-            Start planning one
-          </Link>
-          .
-        </p>
-      ) : (
-        <ul className="mt-4 flex flex-col gap-2">
-          {trips.map((trip) => (
-            <li key={trip.id}>
-              <Link
-                href={`/app/trips/${trip.id}`}
-                className="flex items-center justify-between rounded-lg border border-sand-200 bg-sand-100 px-4 py-3 text-sm transition-colors hover:border-teal-600"
-              >
-                <span className="text-navy-900">
-                  Trip {trip.id.slice(0, 8)}
-                </span>
-                <span className="text-navy-400">
-                  {describeProgress(trip.status, decisionsByTrip.get(trip.id) ?? [])}
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
+        {error ? (
+          <p className="mt-4 text-sm text-red-600">
+            Couldn&apos;t load trips: {error.message}
+          </p>
+        ) : !trips || trips.length === 0 ? (
+          <p className="mt-4 text-sm text-navy-400">
+            No trips yet.{" "}
+            <Link href="/app" className="text-teal-700 underline hover:text-teal-800">
+              Start planning one
+            </Link>
+            .
+          </p>
+        ) : (
+          <ul className="mt-4 flex flex-col gap-2">
+            {trips.map((trip) => (
+              <li key={trip.id}>
+                <Link
+                  href={`/app/trips/${trip.id}`}
+                  className="flex items-center justify-between rounded-lg border border-sand-200 bg-sand-100 px-4 py-3 text-sm transition-colors hover:border-teal-600"
+                >
+                  <span className="text-navy-900">
+                    Trip {trip.id.slice(0, 8)}
+                  </span>
+                  <span className="text-navy-400">
+                    {describeProgress(trip.status, decisionsByTrip.get(trip.id) ?? [])}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

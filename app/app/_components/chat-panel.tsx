@@ -158,108 +158,121 @@ export function ChatPanel({
 
   return (
     <section className="flex min-h-0 flex-1 flex-col">
+      {/* `mx-auto max-w-2xl` on the content, not the scroll container itself
+          — without a width cap here, message bubbles and the input row
+          stretched edge-to-edge on a wide desktop screen (measured at
+          1440px: the section/form were literally `width: 1440` with
+          `max-width: none`), reading as very sparse rather than like a chat
+          interface. Capping just the inner content keeps the outer
+          scroll/border bar full-width (so the border-top still spans the
+          whole panel) while the actual conversation stays a readable
+          column, the same split every mainstream chat UI uses. */}
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-        {messages.length === 0 ? (
-          <p className="text-sm text-navy-400">
-            Tell me about the trip you&apos;re planning — where from, where to, when, how many people, and your budget.
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-3">
-            {messages.map((message, i) => (
-              <li
-                key={i}
-                className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
-              >
-                <div
-                  className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm whitespace-pre-wrap ${
-                    message.role === "user"
-                      ? "bg-navy-900 text-sand-50"
-                      : "bg-sand-100 text-navy-900"
-                  }`}
+        <div className="mx-auto w-full max-w-2xl">
+          {messages.length === 0 ? (
+            <p className="text-sm text-navy-400">
+              Tell me about the trip you&apos;re planning — where from, where to, when, how many people, and your budget.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-3">
+              {messages.map((message, i) => (
+                <li
+                  key={i}
+                  className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
                 >
-                  {message.content}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-        {activitiesPreferencePrompt ? (
-          <div className="mt-3 flex flex-col gap-2 rounded-2xl border border-sand-200 bg-sand-50 px-4 py-3 text-sm">
-            <div className="flex flex-wrap gap-1">
-              {ACTIVITY_CATEGORY_OPTIONS.map((opt) => {
-                const selected = activitySelectedCategories.includes(opt.value);
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() =>
-                      setActivitySelectedCategories((prev) =>
-                        selected ? prev.filter((c) => c !== opt.value) : [...prev, opt.value],
-                      )
-                    }
-                    className={`rounded-full border px-2 py-1 text-xs transition-colors ${
-                      selected ? "border-teal-600 bg-teal-50 text-teal-800" : "border-sand-300 text-navy-700 hover:border-teal-600"
+                  <div
+                    className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm whitespace-pre-wrap ${
+                      message.role === "user"
+                        ? "bg-navy-900 text-sand-50"
+                        : "bg-sand-100 text-navy-900"
                     }`}
                   >
-                    {opt.label}
-                  </button>
-                );
-              })}
+                    {message.content}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          {activitiesPreferencePrompt ? (
+            <div className="mt-3 flex flex-col gap-2 rounded-2xl border border-sand-200 bg-sand-50 px-4 py-3 text-sm">
+              <div className="flex flex-wrap gap-1">
+                {ACTIVITY_CATEGORY_OPTIONS.map((opt) => {
+                  const selected = activitySelectedCategories.includes(opt.value);
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() =>
+                        setActivitySelectedCategories((prev) =>
+                          selected ? prev.filter((c) => c !== opt.value) : [...prev, opt.value],
+                        )
+                      }
+                      className={`rounded-full border px-2 py-1 text-xs transition-colors ${
+                        selected ? "border-teal-600 bg-teal-50 text-teal-800" : "border-sand-300 text-navy-700 hover:border-teal-600"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <textarea
+                value={activityNotesInput}
+                onChange={(e) => setActivityNotesInput(e.target.value)}
+                placeholder="e.g. “I want a relaxing trip” or “nothing too touristy” (optional)"
+                rows={2}
+                // `text-base`, not `text-xs` — see the message input below for why.
+                className="rounded-md border border-sand-300 bg-transparent px-2 py-1 text-base text-navy-900 placeholder:text-navy-400"
+              />
+              <button
+                type="button"
+                onClick={handleSubmitActivityPreferences}
+                className="self-start rounded-md bg-terracotta-600 px-3 py-1 text-xs font-medium text-sand-50 transition-colors hover:bg-terracotta-700"
+              >
+                Show me activities
+              </button>
             </div>
-            <textarea
-              value={activityNotesInput}
-              onChange={(e) => setActivityNotesInput(e.target.value)}
-              placeholder="e.g. “I want a relaxing trip” or “nothing too touristy” (optional)"
-              rows={2}
-              // `text-base`, not `text-xs` — see the message input below for why.
-              className="rounded-md border border-sand-300 bg-transparent px-2 py-1 text-base text-navy-900 placeholder:text-navy-400"
-            />
-            <button
-              type="button"
-              onClick={handleSubmitActivityPreferences}
-              className="self-start rounded-md bg-terracotta-600 px-3 py-1 text-xs font-medium text-sand-50 transition-colors hover:bg-terracotta-700"
-            >
-              Show me activities
-            </button>
-          </div>
-        ) : null}
-        {pending ? (
-          <p className="mt-3 text-xs text-navy-400" aria-live="polite">
-            Thinking…
-          </p>
-        ) : null}
-        {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
+          ) : null}
+          {pending ? (
+            <p className="mt-3 text-xs text-navy-400" aria-live="polite">
+              Thinking…
+            </p>
+          ) : null}
+          {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
+        </div>
       </div>
 
       <form
         onSubmit={handleSubmit}
-        className={`flex gap-2 border-t border-sand-200 px-6 py-4 ${layoutMode === "drawer" ? "pb-[calc(1rem+4rem)]" : ""}`}
+        className={`border-t border-sand-200 px-6 py-4 ${layoutMode === "drawer" ? "pb-[calc(1rem+4rem)]" : ""}`}
       >
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          disabled={pending}
-          placeholder="Message Wanderwise…"
-          // Not an address/name/contact field, so no autofill suggestions
-          // apply — `autoComplete="off"` keeps iOS from showing one anyway.
-          // `enterKeyHint="send"` labels the keyboard's return key correctly
-          // for a chat input instead of the generic default.
-          autoComplete="off"
-          enterKeyHint="send"
-          // `text-base` (16px), not `text-sm` — iOS Safari auto-zooms the
-          // whole page on focus for any input under 16px. Found live on a
-          // phone: with the keyboard open, the zoomed page was clipping the
-          // header nav and the initial chat bubble's right edge — neither
-          // is actually broken, the whole page was just zoomed in.
-          className="flex-1 rounded-lg border border-sand-300 bg-transparent px-3 py-2 text-base text-navy-900 outline-none focus:border-navy-400 disabled:opacity-50"
-        />
-        <button
-          type="submit"
-          disabled={pending || !input.trim()}
-          className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-sand-50 transition-colors hover:bg-teal-800 disabled:opacity-40"
-        >
-          Send
-        </button>
+        <div className="mx-auto flex w-full max-w-2xl gap-2">
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            disabled={pending}
+            placeholder="Message Wanderwise…"
+            // Not an address/name/contact field, so no autofill suggestions
+            // apply — `autoComplete="off"` keeps iOS from showing one anyway.
+            // `enterKeyHint="send"` labels the keyboard's return key correctly
+            // for a chat input instead of the generic default.
+            autoComplete="off"
+            enterKeyHint="send"
+            // `text-base` (16px), not `text-sm` — iOS Safari auto-zooms the
+            // whole page on focus for any input under 16px. Found live on a
+            // phone: with the keyboard open, the zoomed page was clipping the
+            // header nav and the initial chat bubble's right edge — neither
+            // is actually broken, the whole page was just zoomed in.
+            className="flex-1 rounded-lg border border-sand-300 bg-transparent px-3 py-2 text-base text-navy-900 outline-none focus:border-navy-400 disabled:opacity-50"
+          />
+          <button
+            type="submit"
+            disabled={pending || !input.trim()}
+            className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-sand-50 transition-colors hover:bg-teal-800 disabled:opacity-40"
+          >
+            Send
+          </button>
+        </div>
       </form>
     </section>
   );
