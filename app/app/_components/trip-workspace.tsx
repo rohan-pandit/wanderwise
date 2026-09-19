@@ -16,11 +16,13 @@ import type { PendingCascadeConfirmation } from "../actions";
 
 export function TripWorkspace({
   tripId,
+  tripName,
   initialMessages,
   initialTripStatus,
   initialRequirementsReady,
 }: {
   tripId: string;
+  tripName: string | null;
   initialMessages: ChatMessage[];
   initialTripStatus: string;
   initialRequirementsReady: boolean;
@@ -63,6 +65,7 @@ export function TripWorkspace({
       />
       <ItineraryPanel
         tripId={tripId}
+        tripName={tripName}
         initialTripStatus={initialTripStatus}
         requirementsReady={requirementsReady}
         pendingCascade={pendingCascade}

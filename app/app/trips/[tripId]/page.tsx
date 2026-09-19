@@ -170,6 +170,7 @@ export default async function TripPage({
   return (
     <TripWorkspace
       tripId={trip.id}
+      tripName={trip.name}
       initialMessages={initialMessages}
       initialTripStatus={trip.status}
       initialRequirementsReady={initialRequirementsReady}
