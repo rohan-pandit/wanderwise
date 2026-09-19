@@ -413,6 +413,9 @@ export function ItineraryPanel({
 
   const [flightCandidates, setFlightCandidates] = useState<FlightStepCandidate[] | null>(null);
   const [hotelCandidates, setHotelCandidates] = useState<Hotel[] | null>(null);
+  /** Whether the most recent auto-propose attempt for this step came back with an `{error}` result (e.g. `NoViableFlightCandidatesError`'s friendly message) rather than candidates — distinguishes "still searching" from "already failed" so the section doesn't keep showing "Finding flights…"/"Finding hotels…" forever once `actionError` already explains what went wrong (found live 2026-09-18: a failed search followed by a requirement fix left this stuck-looking indefinitely). */
+  const [flightProposeFailed, setFlightProposeFailed] = useState(false);
+  const [hotelProposeFailed, setHotelProposeFailed] = useState(false);
 
   // Activities: chat prompt -> candidate pick-list -> finalize (see the
   // module docstring's "ACTIVITIES" note and `ActivityPreferenceSubmission`
@@ -604,12 +607,14 @@ export function ItineraryPanel({
       }
       flightProposeAttemptsRef.current += 1;
       flightProposingRef.current = true;
+      setFlightProposeFailed(false);
       console.debug("[flight-propose-debug] CALLING proposeFlightCandidates", { attempt: flightProposeAttemptsRef.current });
       void (async () => {
         try {
           const result = await proposeFlightCandidates({ tripId });
           if ("error" in result) {
             setActionError(result.error);
+            setFlightProposeFailed(true);
             return;
           }
           setFlightCandidates(result.candidates);
@@ -640,11 +645,13 @@ export function ItineraryPanel({
       }
       hotelProposeAttemptsRef.current += 1;
       hotelProposingRef.current = true;
+      setHotelProposeFailed(false);
       void (async () => {
         try {
           const result = await proposeHotelCandidates({ tripId });
           if ("error" in result) {
             setActionError(result.error);
+            setHotelProposeFailed(true);
             return;
           }
           setHotelCandidates(result.candidates);
@@ -1139,7 +1146,11 @@ export function ItineraryPanel({
                 ))}
               </ul>
             ) : requirementsReady ? (
-              <p className="mt-2 text-xs text-navy-400">Finding flights…</p>
+              flightProposeFailed ? (
+                <p className="mt-2 text-xs text-terracotta-600">Couldn&apos;t find matching flights — see the message above, then try adjusting your requirements in chat.</p>
+              ) : (
+                <p className="mt-2 text-xs text-navy-400">Finding flights…</p>
+              )
             ) : (
               <p className="mt-2 text-xs text-navy-400">Answer the chat&apos;s questions to start planning.</p>
             )}
@@ -1188,6 +1199,8 @@ export function ItineraryPanel({
                     </li>
                   ))}
                 </ul>
+              ) : hotelProposeFailed ? (
+                <p className="mt-2 text-xs text-terracotta-600">Couldn&apos;t find matching hotels — see the message above, then try adjusting your requirements in chat.</p>
               ) : (
                 <p className="mt-2 text-xs text-navy-400">Finding hotels…</p>
               )}

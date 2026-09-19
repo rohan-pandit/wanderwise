@@ -360,6 +360,21 @@ async function applyRevisionProposal(
   if (revisionRisksConfirmedWork(targetStep, confirmedDecisions)) {
     return { requirement, pendingCascadeConfirmation: { kind: "requirement", step: targetStep, field: requirement.field } };
   }
+  // Mirrors the "safe" decision-revision branch above: if the revised
+  // requirement targets the chain's currently-active (not-yet-confirmed)
+  // step, re-propose it immediately via the same `decisionRevisionRequested`
+  // signal, rather than just persisting the requirement value silently.
+  // Without this, correcting a requirement after a failed propose (e.g.
+  // raising the budget once "no flights match" already fired) updates
+  // `trip_requirements` but never retries the search — nothing else
+  // watches that table, so the itinerary panel's Realtime-driven retry
+  // (keyed off `trip_decisions`) never fires either, leaving a stale
+  // failure on screen indefinitely. Found live 2026-09-18. Gated by
+  // `REVISABLE_CHAIN_STEPS` since `reviseChainStep` doesn't support
+  // "activities" (it uses a different, preference-driven propose path).
+  if (REVISABLE_CHAIN_STEPS.includes(targetStep) && targetStep === getCurrentChainStep(confirmedDecisions)) {
+    return { requirement, decisionRevisionRequested: { step: targetStep } };
+  }
   return { requirement };
 }
 

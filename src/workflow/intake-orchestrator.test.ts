@@ -594,6 +594,35 @@ describe("processIntakeTurn", () => {
     const budgetEntries = result.requirements.filter((r) => r.field === "budgetTotalUsd");
     expect(budgetEntries).toHaveLength(1);
     expect(budgetEntries[0].value).toBe(4000);
+    // `budgetTotalUsd` maps to "flight" (`requirementRevisionTargetStep`), and
+    // with no confirmed decisions the active chain step is also "flight" —
+    // this revision should re-propose it, not just persist the new value
+    // silently. Found live 2026-09-18: without this, correcting a budget
+    // after a failed flight search left the itinerary panel stuck showing
+    // the stale failure forever, since nothing else watches trip_requirements.
+    expect(result.decisionRevisionRequested).toEqual({ step: "flight" });
+  });
+
+  it("does not signal decisionRevisionRequested for a requirement revision that targets a step other than the currently-active one", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    // No confirmed decisions -> the active chain step is "flight". A
+    // hotel-targeting requirement revision shouldn't re-propose hotel, since
+    // hotel hasn't even been reached yet.
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({
+        revisionProposal: { revisionType: "requirement", target: "maxHotelPriceUsd", value: 200 },
+      }) as never,
+    );
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "keep hotels under $200/night",
+    });
+
+    expect(result.decisionRevisionRequested).toBeNull();
+    expect(result.pendingCascadeConfirmation).toBeNull();
+    expect(appendTripRequirement).toHaveBeenCalledWith(supabase, expect.objectContaining({ field: "maxHotelPriceUsd", value: 200 }));
   });
 
   it("signals decisionRevisionRequested for a revisable decision field, without applying anything itself or logging it as unsupported", async () => {

@@ -1637,3 +1637,23 @@ Compared `ItineraryDrawerShell` (`app/app/_components/itinerary-panel.tsx`) agai
 **Decisions made:** none yet — the magic-link testing proposal is pending the user's answer, not decided unilaterally, since handing over any sign-in credential (even a scoped, one-time magic link) is the user's call to make.
 
 **Next recommended task:** Depends on the user's answer above. If they send a magic link, verify the scroll/transition fixes directly in this agent's own browser session against the deployed Vercel URL before asking for another phone round. If not, push and wait for the next phone retest as usual.
+
+---
+
+## 2026-09-18 (continued) — First agent-authenticated session; full design review found a real requirement-revision retry gap
+
+**What happened:** The user sent a magic-link URL to give this agent its own authenticated browser session for a full mobile/tablet/desktop UI design review. First attempt failed (`?error=auth_callback_failed`) — traced to PKCE: Supabase magic links tie the sign-in code to a `code_verifier` stored only in the browser that requested it, so a link forwarded from the user's device/browser can't be redeemed elsewhere. Not a bug, just how PKCE is supposed to work. Fix: requested a fresh magic link from *this agent's own browser* (typed the user's email into the real sign-in form, clicked send), had the user forward that one instead — redeemed successfully.
+
+Per the user's earlier instruction this session, design-review findings go in `docs/END_TO_END_TESTING_ISSUES.md`, not this log or `IMPLEMENTATION_PLAN.md` §5 (updated the standing memory on this too, since a more precise split now exists between the two files than previously recorded).
+
+Started the actual review at desktop size (1440×900) by creating a real test trip (NY→Lisbon, Nov 10–15, $2500, live Anthropic/Voyage/SerpAPI calls). Found the flight search failing with a legitimate "no flights match" outcome, then — trying to recover by raising the budget via chat — found it never retried at all. Investigated this specific bug in depth this session (full root cause and fix in `docs/END_TO_END_TESTING_ISSUES.md` #8): a real asymmetry in `intake-orchestrator.ts`'s revision-routing — a safe decision revision re-proposes the active step automatically; a safe requirement revision targeting that same active step didn't, silently. Fixed both that gap and a related, smaller display bug (flight/hotel sections showing "Finding…" forever after already failing).
+
+Also noted in passing, not yet investigated: on 1440px desktop, the empty chat panel (no active trip) stretches full-width with no max-width container, reading as very sparse/wide on a large screen — flagged for the design-review pass proper, not fixed yet, since the session got diverted into the functional retry bug instead.
+
+**What I built:** `applyRevisionProposal` (`src/workflow/intake-orchestrator.ts`) now signals `decisionRevisionRequested` for a requirement revision targeting the active step, mirroring the existing decision-revision branch. `ItineraryPanel` (`itinerary-panel.tsx`) gained `flightProposeFailed`/`hotelProposeFailed` state so the flight/hotel sections show a clear failed state instead of an indefinite "Finding…" once a propose has already errored.
+
+**Decisions made:** none needing the user's input — both fixes close a gap in already-existing, already-reviewed machinery rather than introducing anything new; the user approved digging in and implementing both ("yes") after the diagnosis was presented.
+
+**Verification:** `npx tsc --noEmit`/`npm run lint`/`npm test` (452/452, up from 451 — one new regression test plus a strengthened existing one) all pass. Not yet re-verified live against the redeployed app — pushing now, then continuing the review (including retrying the exact original stuck scenario) against the fresh deployment in this agent's own authenticated session.
+
+**Next recommended task:** Push, wait for Vercel to redeploy, re-run the exact repro (fail a flight search, raise the budget, confirm it now retries and the section no longer shows a stale "Finding flights…"), then resume the broader mobile/tablet/desktop design-review pass that this bug interrupted — including the flagged full-width empty-chat-panel spacing issue on desktop.
