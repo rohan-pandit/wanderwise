@@ -33,6 +33,7 @@
  * Curator call before the handler's own response comes back.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Drawer } from "@base-ui/react/drawer";
 import { createClient } from "@/src/config/supabase/client";
 import {
   STEP_DECISION_FIELDS,
@@ -60,6 +61,7 @@ import {
 } from "../actions";
 import type { FlightStepCandidate } from "@/src/workflow/flight-step";
 import type { ActivityCandidate, ProposedScheduledActivity } from "@/src/workflow/activities-step";
+import type { LayoutMode } from "./use-layout-mode";
 
 /** A submitted activities preference, forwarded down from `TripWorkspace` once `ChatPanel`'s inline prompt is answered (the preference-collection UI itself lives in chat now, not here — see the module docstring's "ACTIVITIES" note). `requestId` is a fresh value per submission so the effect below can tell a genuinely new answer apart from the same object reference re-rendering. */
 export interface ActivityPreferenceSubmission {
@@ -195,6 +197,131 @@ function proposedSignature(step: ChainStep, decisions: DecisionRow[]): string {
     .join(",");
 }
 
+/**
+ * The `"drawer"` layout's shell (mobile and tablet-portrait) — a bottom
+ * sheet that's either a short peek bar (collapsed) or an ~82vh sheet over a
+ * dimming scrim (open), both `position: fixed` so they sit outside
+ * `TripWorkspace`'s normal flex flow entirely (chat gets the full width
+ * either way, not a shrinking sibling). `ItineraryPanel` owns *when* this
+ * opens/closes (an auto-open effect keyed off whatever currently needs a
+ * user decision — see its own comment); this component only renders
+ * whatever `open` it's given. Tapping the peek bar, the drag handle, or the
+ * scrim are the only ways to toggle it — real swipe-to-dismiss (drag
+ * physics) is a deliberately deferred fast-follow, not built here.
+ */
+/** The peek bar's height and the expanded sheet's height, both expressed as fractions of the viewport height (Base UI's `snapPoints` accept 0-1 as a viewport-height fraction, >1 as a literal pixel value, or a `px`/`rem` string) — fractions track real device height variation better than a fixed pixel peek bar would. */
+const DRAWER_PEEK_SNAP = 0.08;
+const DRAWER_FULL_SNAP = 0.82;
+
+/**
+ * Real drag-to-dismiss/expand physics for the "drawer" layout's bottom
+ * sheet, via Base UI's `Drawer` primitive (`@base-ui/react/drawer`) rather
+ * than hand-rolled pointer-event tracking — velocity-based snapping,
+ * scroll-vs-drag disambiguation against `children`'s own scroll area, and
+ * accessibility (focus trap only while actually expanded, escape/outside
+ * handling) all come from it instead of being reinvented here. (`vaul`, the
+ * more commonly recommended library for this, is openly unmaintained as of
+ * this writing — its own README says so — so this codebase uses Base UI's
+ * primitive instead, which explicitly supports React 19 and is under active
+ * development.)
+ *
+ * Modeled as two `snapPoints`, not a plain open/closed boolean: the peek bar
+ * is real content (a status line), always visible, never actually
+ * unmounted, so `open` stays a constant `true` and `ItineraryPanel`'s own
+ * `open` prop instead selects which snap point is active. `modal` tracks
+ * the same boolean — full focus trap and scroll lock only while genuinely
+ * expanded over most of the screen, not while just peeking (where chat
+ * underneath should stay completely usable).
+ */
+function ItineraryDrawerShell({
+  open,
+  onExpand,
+  onCollapse,
+  statusLine,
+  children,
+}: {
+  open: boolean;
+  onExpand: () => void;
+  onCollapse: () => void;
+  statusLine: string;
+  children: ReactNode;
+}) {
+  return (
+    <Drawer.Root
+      open
+      modal={open}
+      swipeDirection="down"
+      snapPoints={[DRAWER_PEEK_SNAP, DRAWER_FULL_SNAP]}
+      snapPoint={open ? DRAWER_FULL_SNAP : DRAWER_PEEK_SNAP}
+      onSnapPointChange={(snapPoint) => {
+        if (snapPoint === DRAWER_FULL_SNAP) onExpand();
+        else onCollapse();
+      }}
+    >
+      <Drawer.Portal>
+        {open ? <Drawer.Backdrop className="fixed inset-0 z-30 bg-navy-900/40" /> : null}
+        <Drawer.Viewport className="fixed inset-0 z-40 flex items-end">
+          <Drawer.Popup className="flex w-full flex-col rounded-t-2xl border-t border-sand-200 bg-sand-50 shadow-[0_-8px_24px_rgba(22,35,58,0.16)] outline-none [height:var(--drawer-height)] [transform:translateY(calc(var(--drawer-snap-point-offset)_+_var(--drawer-swipe-movement-y)))]">
+            <div aria-hidden="true" className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-sand-300" />
+            {open ? (
+              <Drawer.Content className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">{children}</Drawer.Content>
+            ) : (
+              <button type="button" onClick={onExpand} className="flex w-full flex-1 items-center gap-2 px-6">
+                <span className="text-sm font-medium text-navy-900">Itinerary</span>
+                <span className="text-xs text-navy-400">{statusLine}</span>
+                <span className="ml-auto text-navy-400">&#9650;</span>
+              </button>
+            )}
+          </Drawer.Popup>
+        </Drawer.Viewport>
+      </Drawer.Portal>
+    </Drawer.Root>
+  );
+}
+
+/**
+ * The `"split"` layout's shell (tablet-landscape) — a flexible-width
+ * (not the desktop `w-96` fixed one) collapsible side panel, manual toggle
+ * only. Unlike the drawer, this never auto-opens: the extra landscape width
+ * this mode targets is enough to leave it open by default alongside chat,
+ * the way the desktop sidebar already behaves.
+ */
+function ItineraryCollapsibleSplit({
+  collapsed,
+  onToggle,
+  children,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-label="Show itinerary"
+        className="fixed top-1/2 right-0 z-30 -translate-y-1/2 rounded-l-lg bg-navy-900 px-2 py-3 text-xs font-semibold tracking-wide text-sand-50 [writing-mode:vertical-rl]"
+      >
+        Show itinerary
+      </button>
+    );
+  }
+  return (
+    <aside className="relative flex w-[380px] flex-shrink-0 flex-col overflow-y-auto border-l border-sand-200 px-6 py-6">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-label="Hide itinerary"
+        className="absolute top-1/2 -left-3 flex h-11 w-6 -translate-y-1/2 items-center justify-center rounded-md border border-sand-300 bg-sand-50 text-navy-400"
+      >
+        &#10095;
+      </button>
+      {children}
+    </aside>
+  );
+}
+
 export function ItineraryPanel({
   tripId,
   initialTripStatus,
@@ -203,6 +330,7 @@ export function ItineraryPanel({
   onPendingCascade,
   onActivitiesPreferenceNeeded,
   activityPreferenceSubmission,
+  layoutMode,
 }: {
   tripId: string;
   initialTripStatus: string;
@@ -214,6 +342,8 @@ export function ItineraryPanel({
   onActivitiesPreferenceNeeded: () => void;
   /** The chat prompt's answer, forwarded down once submitted — `null` until then. */
   activityPreferenceSubmission: ActivityPreferenceSubmission | null;
+  /** Which of the three chat+itinerary layouts to render (`use-layout-mode.ts`) — "sidebar" renders exactly as before; "drawer"/"split" wrap the same content in `ItineraryDrawerShell`/`ItineraryCollapsibleSplit` instead. */
+  layoutMode: LayoutMode;
 }) {
   const [decisions, setDecisions] = useState<DecisionRow[]>([]);
   const [initialLoad, setInitialLoad] = useState(true);
@@ -263,6 +393,22 @@ export function ItineraryPanel({
   const activitiesPromptRequestedRef = useRef(false);
   /** Guards the submission-effect below so a re-render with the same `activityPreferenceSubmission` object (or `TripWorkspace` re-passing the same `requestId`) doesn't re-run `proposeActivityCandidates`. */
   const lastActivitySubmissionIdRef = useRef<string | null>(null);
+
+  // `"drawer"` layout mode only (mobile/tablet-portrait) — `null` means "no
+  // manual override, let `actionableSignature` decide" (the automatic
+  // open/close behavior); "open"/"closed" means the user explicitly
+  // toggled it for the *current* pending decision. Reset back to `null`
+  // whenever `actionableSignature` actually changes (see the render-time
+  // adjustment right before `content` below) — React's documented way to
+  // reset state in response to a changing value without an effect
+  // (https://react.dev/reference/react/useState#storing-information-from-previous-renders),
+  // which also sidesteps the `set-state-in-effect` an effect-based version
+  // of this hit here first.
+  const [manualDrawerState, setManualDrawerState] = useState<"open" | "closed" | null>(null);
+  const [lastActionableSignature, setLastActionableSignature] = useState("");
+  // `"split"` layout mode only (tablet-landscape) — manual toggle, no
+  // auto-open (see `ItineraryCollapsibleSplit`'s own docstring for why).
+  const [splitCollapsed, setSplitCollapsed] = useState(false);
 
   useEffect(() => {
     const supabase = createClient();
@@ -732,8 +878,79 @@ export function ItineraryPanel({
   const hotelId = confirmedValue(decisions, "hotel");
   const hotelConfirmed = Boolean(hotelId);
 
-  return (
-    <aside className="flex w-96 flex-shrink-0 flex-col overflow-y-auto border-l border-sand-200 px-6 py-6">
+  // What (if anything) currently needs a user decision inside the
+  // itinerary — the single signal the "drawer" layout's auto-open effect
+  // below reacts to, rather than driving the sheet off individual events
+  // ("flight confirmed -> close", "hotel proposed -> open"). That
+  // event-driven shape would fight the real flow: flight and hotel can be
+  // picked back to back (hotel's candidates are already loaded by the time
+  // flight confirms — `handleConfirmFlight` sets them directly from its own
+  // result), so closing on every confirm and reopening for the next pick
+  // would flicker shut between two picks the user makes in one breath.
+  // Keying off this signal instead means the sheet only actually closes
+  // once nothing is left pending, and reopens the instant something new is.
+  const needsFlightPick = Boolean(revisingFlightCandidates ?? flightCandidates);
+  const needsHotelPick = Boolean(revisingHotelCandidates ?? hotelCandidates);
+  const needsActivityPick = activityCandidates !== null && !confirmedActivities;
+  const actionableSignature: string = pendingCascade
+    ? "cascade"
+    : budgetOverrideViolations
+      ? "budget-override"
+      : needsFlightPick
+        ? "flight"
+        : needsHotelPick
+          ? "hotel"
+          : needsActivityPick
+            ? "activities"
+            : "";
+
+  const drawerStatusLine =
+    actionableSignature === "cascade"
+      ? "Confirm your change"
+      : actionableSignature === "budget-override"
+        ? "Budget needs a look"
+        : actionableSignature === "flight"
+          ? "Pick a flight"
+          : actionableSignature === "hotel"
+            ? "Pick a hotel"
+            : actionableSignature === "activities"
+              ? "Pick your activities"
+              : finalized
+                ? "Trip finalized"
+                : [flightConfirmed && "Flight ✓", hotelConfirmed && "Hotel ✓", confirmedActivities && "Activities ✓"]
+                    .filter(Boolean)
+                    .join(" · ") || "Planning your trip";
+
+  // Whenever the pending decision itself changes (including to/from
+  // nothing pending), any manual override the user set for the *previous*
+  // one no longer applies — hand control back to the automatic behavior for
+  // whatever's pending now. Adjusting state directly during render like
+  // this (rather than in a `useEffect`) is React's documented way to reset
+  // state in response to a changing value; it re-renders once immediately,
+  // before paint, instead of the extra commit-then-effect round trip an
+  // effect-based version of this would cost.
+  if (actionableSignature !== lastActionableSignature) {
+    setLastActionableSignature(actionableSignature);
+    setManualDrawerState(null);
+  }
+
+  // Purely derived: automatic (open whenever something's pending) unless
+  // the user explicitly overrode it for this exact pending decision. Never
+  // true outside `"drawer"` mode — `"split"` never auto-opens
+  // (`ItineraryCollapsibleSplit`'s own docstring) and `"sidebar"` has no
+  // drawer at all.
+  const drawerOpen =
+    layoutMode === "drawer" && (manualDrawerState !== null ? manualDrawerState === "open" : Boolean(actionableSignature));
+
+  function handleDrawerExpand() {
+    setManualDrawerState("open");
+  }
+  function handleDrawerCollapse() {
+    setManualDrawerState("closed");
+  }
+
+  const content = (
+    <>
       <div className="flex items-center justify-between">
         <h2 className="font-serif text-lg font-semibold text-navy-900">Your itinerary</h2>
         {!finalized && !cancelled ? (
@@ -1064,6 +1281,31 @@ export function ItineraryPanel({
           ) : null}
         </div>
       )}
+    </>
+  );
+
+  if (layoutMode === "drawer") {
+    return (
+      <ItineraryDrawerShell
+        open={drawerOpen}
+        onExpand={handleDrawerExpand}
+        onCollapse={handleDrawerCollapse}
+        statusLine={drawerStatusLine}
+      >
+        {content}
+      </ItineraryDrawerShell>
+    );
+  }
+  if (layoutMode === "split") {
+    return (
+      <ItineraryCollapsibleSplit collapsed={splitCollapsed} onToggle={() => setSplitCollapsed((c) => !c)}>
+        {content}
+      </ItineraryCollapsibleSplit>
+    );
+  }
+  return (
+    <aside className="flex w-96 flex-shrink-0 flex-col overflow-y-auto border-l border-sand-200 px-6 py-6">
+      {content}
     </aside>
   );
 }

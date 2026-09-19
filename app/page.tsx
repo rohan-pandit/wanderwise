@@ -15,21 +15,33 @@ export default function Home() {
     setStatus("sending");
     setErrorMessage(null);
 
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
-      },
-    });
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/callback`,
+        },
+      });
 
-    if (error) {
+      if (error) {
+        setStatus("error");
+        setErrorMessage(error.message);
+        return;
+      }
+
+      setStatus("sent");
+    } catch (err) {
+      // `signInWithOtp` normally *resolves* with `{ error }` for an
+      // API-level failure (including a rate-limit rejection) — this only
+      // catches a genuine network-level failure (DNS, connectivity drop),
+      // which would otherwise reject the promise and leave `status` stuck
+      // on "sending" forever with no feedback at all (found live
+      // 2026-09-19: testing from a phone over a local network, "nothing
+      // happens" after submitting).
       setStatus("error");
-      setErrorMessage(error.message);
-      return;
+      setErrorMessage(err instanceof Error ? err.message : "Something went wrong — try again.");
     }
-
-    setStatus("sent");
   }
 
   return (

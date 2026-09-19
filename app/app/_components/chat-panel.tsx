@@ -21,6 +21,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { sendMessage, type PendingCascadeConfirmation } from "../actions";
+import type { LayoutMode } from "./use-layout-mode";
 
 export interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -48,6 +49,7 @@ export function ChatPanel({
   onRequirementsReady,
   activitiesPreferencePrompt,
   onSubmitActivityPreferences,
+  layoutMode,
 }: {
   tripId?: string;
   initialMessages: ChatMessage[];
@@ -58,6 +60,8 @@ export function ChatPanel({
   activitiesPreferencePrompt?: boolean;
   /** Fired once the inline prompt is submitted (pills and/or free text). */
   onSubmitActivityPreferences?: (categories: string[], criteria: string | undefined) => void;
+  /** In `"drawer"` mode (`use-layout-mode.ts`), `ItineraryPanel` renders as a `position: fixed` bottom sheet that's always at least a 64px peek bar — without this, that bar sits on top of the message input whenever the sheet is collapsed. Unused in `"split"`/`"sidebar"` mode, where the itinerary is a normal flex sibling instead. */
+  layoutMode?: LayoutMode;
 }) {
   const router = useRouter();
   const [tripId, setTripId] = useState(initialTripId);
@@ -226,7 +230,10 @@ export function ChatPanel({
         {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
       </div>
 
-      <form onSubmit={handleSubmit} className="flex gap-2 border-t border-sand-200 px-6 py-4">
+      <form
+        onSubmit={handleSubmit}
+        className={`flex gap-2 border-t border-sand-200 px-6 py-4 ${layoutMode === "drawer" ? "pb-[calc(1rem+4rem)]" : ""}`}
+      >
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}

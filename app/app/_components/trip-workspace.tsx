@@ -11,6 +11,7 @@
 import { useCallback, useState } from "react";
 import { ChatPanel, type ChatMessage } from "./chat-panel";
 import { ItineraryPanel, type ActivityPreferenceSubmission } from "./itinerary-panel";
+import { useLayoutMode } from "./use-layout-mode";
 import type { PendingCascadeConfirmation } from "../actions";
 
 export function TripWorkspace({
@@ -26,6 +27,7 @@ export function TripWorkspace({
 }) {
   const [pendingCascade, setPendingCascade] = useState<PendingCascadeConfirmation | null>(null);
   const [requirementsReady, setRequirementsReady] = useState(initialRequirementsReady);
+  const layoutMode = useLayoutMode();
 
   // Bridges the activities preference prompt across panels — `ItineraryPanel`
   // detects when it's needed (from its own Realtime-derived `decisions`
@@ -57,6 +59,7 @@ export function TripWorkspace({
         onRequirementsReady={() => setRequirementsReady(true)}
         activitiesPreferencePrompt={showActivitiesPrompt}
         onSubmitActivityPreferences={handleSubmitActivityPreferences}
+        layoutMode={layoutMode}
       />
       <ItineraryPanel
         tripId={tripId}
@@ -66,6 +69,7 @@ export function TripWorkspace({
         onPendingCascade={setPendingCascade}
         onActivitiesPreferenceNeeded={handleActivitiesPreferenceNeeded}
         activityPreferenceSubmission={activityPreferenceSubmission}
+        layoutMode={layoutMode}
       />
     </div>
   );
