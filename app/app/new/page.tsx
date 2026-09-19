@@ -12,6 +12,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { createTripAction } from "../actions";
+import { Spinner } from "../_components/spinner";
 
 export default function NewTripPage() {
   const router = useRouter();
@@ -77,9 +78,15 @@ export default function NewTripPage() {
           <button
             type="submit"
             disabled={pending || !name.trim()}
-            className="mt-5 self-start rounded-lg bg-terracotta-600 px-6 py-3 text-sm font-semibold text-sand-50 transition-colors hover:bg-terracotta-700 disabled:opacity-40"
+            className="mt-5 inline-flex items-center gap-1.5 self-start rounded-lg bg-terracotta-600 px-6 py-3 text-sm font-semibold text-sand-50 transition-colors hover:bg-terracotta-700 disabled:opacity-40"
           >
-            {pending ? "Starting…" : "Continue"}
+            {pending ? (
+              <>
+                <Spinner /> Starting…
+              </>
+            ) : (
+              "Continue"
+            )}
           </button>
         </form>
       </div>

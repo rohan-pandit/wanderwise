@@ -44,6 +44,8 @@ import {
 } from "@/src/domain/chain";
 import { formatFlightTime, formatMoney, formatTime } from "@/src/domain/itinerary-format";
 import { ItineraryText } from "./itinerary-text";
+import { Spinner } from "./spinner";
+import { SkeletonActivityCard, SkeletonCandidateCard } from "./skeleton";
 import type { Flight } from "@/src/repositories/flights";
 import type { Hotel } from "@/src/repositories/hotels";
 import {
@@ -409,6 +411,22 @@ export function ItineraryPanel({
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [budgetOverrideViolations, setBudgetOverrideViolations] = useState<{ message: string }[] | null>(null);
 
+  /** True while the Curator round trip (retrieval + LLM ranking, the slowest propose in the app) triggered by a chat preference submission is in flight — read by the render below to show skeleton candidate cards instead of the stale "Answer the chat's question…" text (found live 2026-09-19: `actionPending` was already set here but nothing in the activities JSX ever read it, so the section showed zero feedback for the whole multi-second wait). Kept separate from `actionPending` rather than reusing it, since this needs to gate a specific render branch precisely, not just disable a button. */
+  const [activitiesProposePending, setActivitiesProposePending] = useState(false);
+  /**
+   * Which specific `actionPending`-gated action is in flight, purely to
+   * decide which ONE button shows its own spinner+"-ing" label (the others
+   * `actionPending` already disables stay plainly dimmed, since they aren't
+   * the one actually doing something) — `actionPending` itself is untouched
+   * and still drives every existing `disabled={actionPending}`.
+   */
+  const [pendingAction, setPendingAction] = useState<
+    "flightChange" | "hotelChange" | "finalizeActivities" | "finalizeTrip" | "cancelTrip" | null
+  >(null);
+  /** Which flight/hotel candidate card was clicked — same reasoning as `pendingActivityId` below, needed because `actionPending` alone can't say WHICH of several candidate cards to show "Confirming…" on. */
+  const [pendingFlightCandidateKey, setPendingFlightCandidateKey] = useState<string | null>(null);
+  const [pendingHotelCandidateId, setPendingHotelCandidateId] = useState<string | null>(null);
+
   const flightSigRef = useRef<string | null>(null);
   const hotelSigRef = useRef<string | null>(null);
   /** True while this component's own `proposeFlightCandidates`/`proposeHotelCandidates` call (below) is in flight — closes a real infinite-loop bug found live 2026-09-18 (a trip kept re-proposing flights every ~0.7s for minutes, well after already confirming). `propose*Step` writes as two separate steps (retire the old "proposed" rows, then insert the new ones), so Realtime can deliver a transient state with none visible in between; recomputing `sig` from `decisions` during that gap doesn't match what triggered the call, which used to look identical to a genuine external change (e.g. a chat-driven revision) and refire the effect — which retires+inserts again, reproducing the same gap forever. Checked here in addition to the signature so this component's own in-flight write is never mistaken for one. */
@@ -630,6 +648,7 @@ export function ItineraryPanel({
       if (activitiesLoadedRef.current) return;
       activitiesLoadedRef.current = true;
       void (async () => {
+        setActivitiesProposePending(true);
         try {
           const result = await proposeActivityCandidates({ tripId });
           if ("error" in result) {
@@ -640,6 +659,8 @@ export function ItineraryPanel({
           setAddedActivities(new Map(result.alreadySelected.map((a) => [a.id, a])));
         } catch (err) {
           console.error("proposeActivityCandidates failed:", err);
+        } finally {
+          setActivitiesProposePending(false);
         }
       })();
     }
@@ -656,6 +677,7 @@ export function ItineraryPanel({
     activitiesLoadedRef.current = true;
     void (async () => {
       setActionPending(true);
+      setActivitiesProposePending(true);
       setActionError(null);
       try {
         const result = await proposeActivityCandidates({
@@ -677,6 +699,7 @@ export function ItineraryPanel({
         setActionError(err instanceof Error ? err.message : "Couldn't load activities — try again.");
       } finally {
         setActionPending(false);
+        setActivitiesProposePending(false);
       }
     })();
   }, [activityPreferenceSubmission, tripId]);
@@ -727,6 +750,7 @@ export function ItineraryPanel({
 
   async function handleConfirmFlight(outboundFlightId: string, returnFlightId: string) {
     setActionPending(true);
+    setPendingFlightCandidateKey(`${outboundFlightId}-${returnFlightId}`);
     setActionError(null);
     try {
       const result = await confirmFlightCandidate({ tripId, outboundFlightId, returnFlightId });
@@ -755,11 +779,13 @@ export function ItineraryPanel({
       setActionError(err instanceof Error ? err.message : "Couldn't confirm that flight — try again.");
     } finally {
       setActionPending(false);
+      setPendingFlightCandidateKey(null);
     }
   }
 
   async function handleConfirmHotel(hotelId: string) {
     setActionPending(true);
+    setPendingHotelCandidateId(hotelId);
     setActionError(null);
     try {
       const result = await confirmHotelCandidate({ tripId, hotelId });
@@ -784,11 +810,13 @@ export function ItineraryPanel({
       setActionError(err instanceof Error ? err.message : "Couldn't confirm that hotel — try again.");
     } finally {
       setActionPending(false);
+      setPendingHotelCandidateId(null);
     }
   }
 
   async function handleFinalizeActivities() {
     setActionPending(true);
+    setPendingAction("finalizeActivities");
     setActionError(null);
     try {
       const result = await finalizeActivities({ tripId });
@@ -814,11 +842,13 @@ export function ItineraryPanel({
       setActionError(err instanceof Error ? err.message : "Couldn't finalize activities — try again.");
     } finally {
       setActionPending(false);
+      setPendingAction(null);
     }
   }
 
   async function reviseStep(step: "flight" | "hotel") {
     setActionPending(true);
+    setPendingAction(step === "flight" ? "flightChange" : "hotelChange");
     setActionError(null);
     try {
       const revised = await confirmCascadeAndRevise({ tripId, step });
@@ -832,6 +862,7 @@ export function ItineraryPanel({
       setActionError(err instanceof Error ? err.message : "Couldn't load new options — try again.");
     } finally {
       setActionPending(false);
+      setPendingAction(null);
     }
   }
 
@@ -854,6 +885,7 @@ export function ItineraryPanel({
 
   async function handleFinalize(overrideBudgetCeiling = false) {
     setActionPending(true);
+    setPendingAction("finalizeTrip");
     setActionError(null);
     try {
       const result = await finalizeTrip({ tripId, overrideBudgetCeiling });
@@ -867,12 +899,14 @@ export function ItineraryPanel({
       setActionError(err instanceof Error ? err.message : "Couldn't finalize this trip — try again.");
     } finally {
       setActionPending(false);
+      setPendingAction(null);
     }
   }
 
   async function handleCancel() {
     setConfirmingCancel(false);
     setActionPending(true);
+    setPendingAction("cancelTrip");
     setActionError(null);
     try {
       await cancelTrip({ tripId });
@@ -881,6 +915,7 @@ export function ItineraryPanel({
       setActionError(err instanceof Error ? err.message : "Couldn't cancel this trip — try again.");
     } finally {
       setActionPending(false);
+      setPendingAction(null);
     }
   }
 
@@ -1010,9 +1045,15 @@ export function ItineraryPanel({
               type="button"
               disabled={actionPending}
               onClick={() => void handleCancel()}
-              className="rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 disabled:opacity-50"
             >
-              Cancel trip
+              {pendingAction === "cancelTrip" ? (
+                <>
+                  <Spinner /> Cancelling…
+                </>
+              ) : (
+                "Cancel trip"
+              )}
             </button>
             <button
               type="button"
@@ -1048,9 +1089,15 @@ export function ItineraryPanel({
               type="button"
               disabled={actionPending}
               onClick={() => void handleConfirmCascade()}
-              className="rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 disabled:opacity-50"
             >
-              Continue
+              {pendingAction === "flightChange" || pendingAction === "hotelChange" ? (
+                <>
+                  <Spinner /> Continuing…
+                </>
+              ) : (
+                "Continue"
+              )}
             </button>
             <button
               type="button"
@@ -1093,37 +1140,55 @@ export function ItineraryPanel({
                     type="button"
                     disabled={actionPending}
                     onClick={() => handleChangeClick("flight")}
-                    className={`${changeTopCls} ${clsLabel} font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50`}
+                    className={`${changeTopCls} inline-flex items-center gap-1.5 ${clsLabel} font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50`}
                   >
-                    Change
+                    {pendingAction === "flightChange" ? (
+                      <>
+                        <Spinner /> Changing…
+                      </>
+                    ) : (
+                      "Change"
+                    )}
                   </button>
                 ) : null}
               </div>
             ) : (revisingFlightCandidates ?? flightCandidates) ? (
               <ul className="mt-2 flex flex-col gap-2">
-                {(revisingFlightCandidates ?? flightCandidates ?? []).map((c) => (
-                  <li key={`${c.outboundFlight.id}-${c.returnFlight.id}`}>
-                    <button
-                      type="button"
-                      disabled={actionPending}
-                      onClick={() => void handleConfirmFlight(c.outboundFlight.id, c.returnFlight.id)}
-                      className={`w-full rounded-lg border border-sand-200 ${cardPadCls} text-left ${clsBody} hover:border-teal-600 disabled:opacity-50`}
-                    >
-                      <p className="font-medium text-navy-900">
-                        {c.outboundFlight.airline ?? "Flight"} — {formatMoney({ amount: c.totalPriceUsd, currency: "USD" })}
-                      </p>
-                      <p className={`mt-0.5 ${clsLabel} text-navy-400`}>
-                        {formatFlightTime(c.outboundFlight.departure_time, c.outboundFlight.departure_time_zone)} → {formatFlightTime(c.returnFlight.arrival_time, c.returnFlight.arrival_time_zone)}
-                      </p>
-                    </button>
-                  </li>
-                ))}
+                {(revisingFlightCandidates ?? flightCandidates ?? []).map((c) => {
+                  const candidateKey = `${c.outboundFlight.id}-${c.returnFlight.id}`;
+                  const isPending = pendingFlightCandidateKey === candidateKey;
+                  return (
+                    <li key={candidateKey}>
+                      <button
+                        type="button"
+                        disabled={actionPending}
+                        onClick={() => void handleConfirmFlight(c.outboundFlight.id, c.returnFlight.id)}
+                        className={`w-full rounded-lg border border-sand-200 ${cardPadCls} text-left ${clsBody} hover:border-teal-600 disabled:opacity-50`}
+                      >
+                        <p className="font-medium text-navy-900">
+                          {c.outboundFlight.airline ?? "Flight"} — {formatMoney({ amount: c.totalPriceUsd, currency: "USD" })}
+                        </p>
+                        <p className={`mt-0.5 ${clsLabel} text-navy-400`}>
+                          {formatFlightTime(c.outboundFlight.departure_time, c.outboundFlight.departure_time_zone)} → {formatFlightTime(c.returnFlight.arrival_time, c.returnFlight.arrival_time_zone)}
+                        </p>
+                        {isPending ? (
+                          <p className={`mt-1 flex items-center gap-1.5 ${clsLabel} text-teal-700`}>
+                            <Spinner /> Confirming…
+                          </p>
+                        ) : null}
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             ) : requirementsReady ? (
               flightProposeFailed ? (
                 <p className={`mt-2 ${clsLabel} text-terracotta-600`}>Couldn&apos;t find matching flights — see the message above, then try adjusting your requirements in chat.</p>
               ) : (
-                <p className={`mt-2 ${clsLabel} text-navy-400`}>Finding flights…</p>
+                <div className="mt-2 flex flex-col gap-2">
+                  <SkeletonCandidateCard padCls={cardPadCls} />
+                  <SkeletonCandidateCard padCls={cardPadCls} />
+                </div>
               )
             ) : (
               <p className={`mt-2 ${clsLabel} text-navy-400`}>Answer the chat&apos;s questions to start planning.</p>
@@ -1152,37 +1217,54 @@ export function ItineraryPanel({
                       type="button"
                       disabled={actionPending}
                       onClick={() => handleChangeClick("hotel")}
-                      className={`${changeTopCls} ${clsLabel} font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50`}
+                      className={`${changeTopCls} inline-flex items-center gap-1.5 ${clsLabel} font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50`}
                     >
-                      Change
+                      {pendingAction === "hotelChange" ? (
+                        <>
+                          <Spinner /> Changing…
+                        </>
+                      ) : (
+                        "Change"
+                      )}
                     </button>
                   ) : null}
                 </div>
               ) : (revisingHotelCandidates ?? hotelCandidates) ? (
                 <ul className="mt-2 flex flex-col gap-2">
-                  {(revisingHotelCandidates ?? hotelCandidates ?? []).map((h) => (
-                    <li key={h.id}>
-                      <button
-                        type="button"
-                        disabled={actionPending}
-                        onClick={() => void handleConfirmHotel(h.id)}
-                        className={`w-full rounded-lg border border-sand-200 ${cardPadCls} text-left ${clsBody} hover:border-teal-600 disabled:opacity-50`}
-                      >
-                        <p className="font-medium text-navy-900">
-                          {h.name} — {formatMoney({ amount: h.price_per_night_usd, currency: "USD" })}/night
-                        </p>
-                        <p className={`mt-0.5 ${clsLabel} text-navy-400`}>
-                          {h.neighborhood ?? h.destination}
-                          {h.rating ? ` · ${h.rating}★` : ""}
-                        </p>
-                      </button>
-                    </li>
-                  ))}
+                  {(revisingHotelCandidates ?? hotelCandidates ?? []).map((h) => {
+                    const isPending = pendingHotelCandidateId === h.id;
+                    return (
+                      <li key={h.id}>
+                        <button
+                          type="button"
+                          disabled={actionPending}
+                          onClick={() => void handleConfirmHotel(h.id)}
+                          className={`w-full rounded-lg border border-sand-200 ${cardPadCls} text-left ${clsBody} hover:border-teal-600 disabled:opacity-50`}
+                        >
+                          <p className="font-medium text-navy-900">
+                            {h.name} — {formatMoney({ amount: h.price_per_night_usd, currency: "USD" })}/night
+                          </p>
+                          <p className={`mt-0.5 ${clsLabel} text-navy-400`}>
+                            {h.neighborhood ?? h.destination}
+                            {h.rating ? ` · ${h.rating}★` : ""}
+                          </p>
+                          {isPending ? (
+                            <p className={`mt-1 flex items-center gap-1.5 ${clsLabel} text-teal-700`}>
+                              <Spinner /> Confirming…
+                            </p>
+                          ) : null}
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : hotelProposeFailed ? (
                 <p className={`mt-2 ${clsLabel} text-terracotta-600`}>Couldn&apos;t find matching hotels — see the message above, then try adjusting your requirements in chat.</p>
               ) : (
-                <p className={`mt-2 ${clsLabel} text-navy-400`}>Finding hotels…</p>
+                <div className="mt-2 flex flex-col gap-2">
+                  <SkeletonCandidateCard padCls={cardPadCls} />
+                  <SkeletonCandidateCard padCls={cardPadCls} />
+                </div>
               )}
             </section>
           ) : null}
@@ -1203,7 +1285,15 @@ export function ItineraryPanel({
                     ))}
                 </ul>
               ) : activityCandidates === null ? (
-                <p className={`mt-2 ${clsLabel} text-navy-400`}>Answer the chat&apos;s question to choose your activities.</p>
+                activitiesProposePending ? (
+                  <div className="mt-2 flex flex-col gap-2">
+                    <SkeletonActivityCard padCls="px-2 py-2" />
+                    <SkeletonActivityCard padCls="px-2 py-2" />
+                    <SkeletonActivityCard padCls="px-2 py-2" />
+                  </div>
+                ) : (
+                  <p className={`mt-2 ${clsLabel} text-navy-400`}>Answer the chat&apos;s question to choose your activities.</p>
+                )
               ) : (
                 <div className="mt-2 flex flex-col gap-3">
                   {addedActivities.size > 0 ? (
@@ -1219,9 +1309,15 @@ export function ItineraryPanel({
                               type="button"
                               disabled={pendingActivityId === a.id}
                               onClick={() => void handleRemoveActivity(a.id)}
-                              className="shrink-0 text-terracotta-600 underline hover:text-terracotta-700 disabled:opacity-50"
+                              className="inline-flex shrink-0 items-center gap-1.5 text-terracotta-600 underline hover:text-terracotta-700 disabled:opacity-50"
                             >
-                              Remove
+                              {pendingActivityId === a.id ? (
+                                <>
+                                  <Spinner /> Removing…
+                                </>
+                              ) : (
+                                "Remove"
+                              )}
                             </button>
                           </li>
                         ))}
@@ -1248,9 +1344,15 @@ export function ItineraryPanel({
                               type="button"
                               disabled={pendingActivityId === c.id}
                               onClick={() => void handleAddActivity(c.id)}
-                              className="mt-1 rounded-md border border-teal-600 px-2 py-1 text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+                              className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-teal-600 px-2 py-1 text-teal-700 hover:bg-teal-50 disabled:opacity-50"
                             >
-                              Add to itinerary
+                              {pendingActivityId === c.id ? (
+                                <>
+                                  <Spinner /> Adding…
+                                </>
+                              ) : (
+                                "Add to itinerary"
+                              )}
                             </button>
                           </li>
                         ))}
@@ -1272,9 +1374,17 @@ export function ItineraryPanel({
                       type="button"
                       disabled={actionPending}
                       onClick={() => void handleFinalizeActivities()}
-                      className="rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 transition-colors hover:bg-terracotta-700 disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 transition-colors hover:bg-terracotta-700 disabled:opacity-50"
                     >
-                      {addedActivities.size > 0 ? `Finalize itinerary (${addedActivities.size} added)` : "Finalize with no activities"}
+                      {pendingAction === "finalizeActivities" ? (
+                        <>
+                          <Spinner /> Finalizing…
+                        </>
+                      ) : addedActivities.size > 0 ? (
+                        `Finalize itinerary (${addedActivities.size} added)`
+                      ) : (
+                        "Finalize with no activities"
+                      )}
                     </button>
                   </div>
                 </div>
@@ -1300,9 +1410,15 @@ export function ItineraryPanel({
                   type="button"
                   disabled={actionPending}
                   onClick={() => void handleFinalize(true)}
-                  className="rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-terracotta-600 px-3 py-1 text-sand-50 disabled:opacity-50"
                 >
-                  Finalize anyway
+                  {pendingAction === "finalizeTrip" ? (
+                    <>
+                      <Spinner /> Finalizing…
+                    </>
+                  ) : (
+                    "Finalize anyway"
+                  )}
                 </button>
                 <button
                   type="button"
@@ -1326,9 +1442,15 @@ export function ItineraryPanel({
                 type="button"
                 disabled={actionPending}
                 onClick={() => void handleFinalize()}
-                className="rounded-lg bg-terracotta-600 px-3 py-2 text-sm font-medium text-sand-50 transition-colors hover:bg-terracotta-700 disabled:opacity-50"
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-terracotta-600 px-3 py-2 text-sm font-medium text-sand-50 transition-colors hover:bg-terracotta-700 disabled:opacity-50"
               >
-                Finalize trip
+                {pendingAction === "finalizeTrip" ? (
+                  <>
+                    <Spinner /> Finalizing…
+                  </>
+                ) : (
+                  "Finalize trip"
+                )}
               </button>
             )
           ) : null}

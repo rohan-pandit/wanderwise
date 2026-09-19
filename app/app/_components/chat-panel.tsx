@@ -20,6 +20,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { sendMessage, type PendingCascadeConfirmation } from "../actions";
+import { ThinkingIndicator } from "./thinking-indicator";
 import type { LayoutMode } from "./use-layout-mode";
 
 export interface ChatMessage {
@@ -214,9 +215,9 @@ export function ChatPanel({
             </div>
           ) : null}
           {pending ? (
-            <p className="mt-3 text-xs text-navy-400" aria-live="polite">
-              Thinking…
-            </p>
+            <div className="mt-3" aria-live="polite">
+              <ThinkingIndicator />
+            </div>
           ) : null}
           {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
         </div>
