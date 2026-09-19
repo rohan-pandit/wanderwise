@@ -265,6 +265,14 @@ export async function proposeFlightStep(
     const missing: string[] = [];
     if (outboundFilter.passing.length === 0) missing.push("no outbound flights passed hard constraints");
     if (returnFilter.passing.length === 0) missing.push("no return flights passed hard constraints");
+    // TEMPORARY DIAGNOSTIC (2026-09-18) — the raw-response diagnostic in
+    // serpapi-flight-provider.ts never fires for these failures (SerpAPI is
+    // returning real, non-empty options), so the filter here is where
+    // everything actually disappears. Added raw candidate counts to see
+    // which side and by how much. Revert alongside that diagnostic.
+    missing.push(
+      `DIAGNOSTIC: outboundCandidates=${outboundCandidates.length} returnCandidates=${returnCandidates.length} outboundPassing=${outboundFilter.passing.length} returnPassing=${returnFilter.passing.length} constraints=${constraints.length} rejectedCodes=${[...new Set([...outboundFilter.rejected, ...returnFilter.rejected].map((r) => r.code))].join(",")}`,
+    );
     throw new NoViableFlightCandidatesError(params.tripId, missing.join("; "));
   }
 

@@ -163,7 +163,10 @@ function stepwiseChainClients(): StepwiseChainClients {
  */
 function friendlyStepErrorMessage(err: unknown): string | null {
   if (err instanceof NoViableFlightCandidatesError) {
-    return "No flights match your current requirements — try relaxing the budget or other constraints.";
+    // TEMPORARY DIAGNOSTIC (2026-09-18) — surfacing the real message (which
+    // now includes raw candidate counts, see flight-step.ts) instead of the
+    // normal friendly text. Revert alongside the other temporary diagnostics.
+    return `DIAGNOSTIC: ${err.message}`;
   }
   if (err instanceof NoViableHotelCandidatesError) {
     return "No hotels match your current requirements — try relaxing the price or rating constraints.";
