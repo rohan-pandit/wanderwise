@@ -616,15 +616,6 @@ export function ItineraryPanel({
     if (activeStep === "flight" && !requirementsReady) return;
     if (activeStep === "flight") {
       const sig = proposedSignature("flight", decisions);
-      // TEMPORARY diagnostic logging (2026-09-18) — pinning down a
-      // still-unexplained repeat-propose loop. Remove once root-caused.
-      console.debug("[flight-propose-debug] effect check", {
-        sig,
-        prevSig: flightSigRef.current,
-        inFlight: flightProposingRef.current,
-        attempts: flightProposeAttemptsRef.current,
-        proposedCount: decisions.filter((d) => (d.field === "outboundFlight" || d.field === "returnFlight") && d.status === "proposed").length,
-      });
       if (flightSigRef.current === sig || flightProposingRef.current) return;
       if (flightProposeAttemptsRef.current >= MAX_AUTO_PROPOSE_ATTEMPTS) {
         setActionError("Flight search keeps re-running unexpectedly — please reload the page.");
@@ -633,7 +624,6 @@ export function ItineraryPanel({
       flightProposeAttemptsRef.current += 1;
       flightProposingRef.current = true;
       setFlightProposeFailed(false);
-      console.debug("[flight-propose-debug] CALLING proposeFlightCandidates", { attempt: flightProposeAttemptsRef.current });
       void (async () => {
         try {
           const result = await proposeFlightCandidates({ tripId });
@@ -650,11 +640,6 @@ export function ItineraryPanel({
             .flatMap((c) => [c.outboundFlight.id, c.returnFlight.id])
             .sort()
             .join(",");
-          console.debug("[flight-propose-debug] result", {
-            newSig: flightSigRef.current,
-            candidateCount: result.candidates.length,
-            ids: result.candidates.map((c) => ({ out: c.outboundFlight.id, ret: c.returnFlight.id })),
-          });
         } catch (err) {
           console.error("proposeFlightCandidates failed:", err);
         } finally {

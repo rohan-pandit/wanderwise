@@ -66,6 +66,19 @@ export class SerpApiFlightProvider implements FlightSearchProvider {
       throw new FlightProviderError("SerpAPI returned a non-JSON response", err);
     }
 
-    return mapSerpApiResponse(json, originAirport.tz, destinationAirport.tz);
+    const mapped = mapSerpApiResponse(json, originAirport.tz, destinationAirport.tz);
+    // TEMPORARY DIAGNOSTIC (2026-09-18) — three different live routes all
+    // returned zero flights today with no thrown provider error, meaning
+    // `mapSerpApiResponse` isn't throwing but also isn't producing options.
+    // No access to Vercel's server logs from here, so surface the raw
+    // response shape through the existing client-visible error path instead.
+    // Remove once root-caused.
+    if (mapped.length === 0) {
+      throw new FlightProviderError(
+        `DIAGNOSTIC: zero mapped options. keys=${Object.keys(json).join(",")} status=${json.search_metadata?.status ?? "none"} error=${json.error ?? "none"} bestFlights=${json.best_flights?.length ?? "undefined"} otherFlights=${json.other_flights?.length ?? "undefined"} raw=${JSON.stringify(json).slice(0, 500)}`,
+        null,
+      );
+    }
+    return mapped;
   }
 }

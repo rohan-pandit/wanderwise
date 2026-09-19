@@ -185,7 +185,11 @@ function friendlyStepErrorMessage(err: unknown): string | null {
     return "Which airport to search wasn't fully resolved — try asking again, naming the specific airport.";
   }
   if (err instanceof FlightProviderError) {
-    return "Live flight search is temporarily unavailable — try again in a moment.";
+    // TEMPORARY DIAGNOSTIC (2026-09-18) — surfacing the real message instead
+    // of the normal friendly text, to read the raw-response diagnostic
+    // thrown in serpapi-flight-provider.ts without Vercel server-log access.
+    // Revert alongside that diagnostic once root-caused.
+    return `DIAGNOSTIC: ${err.message}`;
   }
   if (err instanceof HotelStepNotConfirmedError) {
     return "Confirm a hotel first — activities aren't ready to search yet.";
