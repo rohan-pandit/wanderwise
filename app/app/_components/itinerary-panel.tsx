@@ -1132,24 +1132,30 @@ export function ItineraryPanel({
           <section>
             <h3 className={`${clsLabel} font-semibold uppercase tracking-wide text-navy-400`}>Flight</h3>
             {flightConfirmed && !revisingFlightCandidates ? (
-              <div className={`${cardTopCls} rounded-lg border border-sand-200 ${cardPadCls} ${clsBody}`}>
+              <div className={`${cardTopCls} rounded-lg border ${finalized ? "border-teal-200 bg-teal-50" : "border-sand-200"} ${cardPadCls} ${clsBody}`}>
                 {confirmedFlightSummary ? (
                   <p className="text-navy-700">
+                    {finalized ? <span className="text-teal-700" aria-hidden="true">✓ </span> : null}
                     {confirmedFlightSummary.outboundFlight.airline ?? "Flight"} · {formatFlightTime(confirmedFlightSummary.outboundFlight.departure_time, confirmedFlightSummary.outboundFlight.departure_time_zone)}
                     {" -> "}
                     {formatFlightTime(confirmedFlightSummary.returnFlight.arrival_time, confirmedFlightSummary.returnFlight.arrival_time_zone)}
                   </p>
                 ) : (
-                  <p className="text-navy-400">Confirmed ({flightOutboundId} / {flightReturnId})</p>
+                  <p className="text-navy-400">
+                    {finalized ? <span className="text-teal-700" aria-hidden="true">✓ </span> : null}
+                    Confirmed ({flightOutboundId} / {flightReturnId})
+                  </p>
                 )}
-                <button
-                  type="button"
-                  disabled={actionPending}
-                  onClick={() => handleChangeClick("flight")}
-                  className={`${changeTopCls} ${clsLabel} font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50`}
-                >
-                  Change
-                </button>
+                {!finalized ? (
+                  <button
+                    type="button"
+                    disabled={actionPending}
+                    onClick={() => handleChangeClick("flight")}
+                    className={`${changeTopCls} ${clsLabel} font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50`}
+                  >
+                    Change
+                  </button>
+                ) : null}
               </div>
             ) : (revisingFlightCandidates ?? flightCandidates) ? (
               <ul className="mt-2 flex flex-col gap-2">
@@ -1187,22 +1193,28 @@ export function ItineraryPanel({
             <section>
               <h3 className={`${clsLabel} font-semibold uppercase tracking-wide text-navy-400`}>Hotel</h3>
               {hotelConfirmed && !revisingHotelCandidates ? (
-                <div className={`${cardTopCls} rounded-lg border border-sand-200 ${cardPadCls} ${clsBody}`}>
+                <div className={`${cardTopCls} rounded-lg border ${finalized ? "border-teal-200 bg-teal-50" : "border-sand-200"} ${cardPadCls} ${clsBody}`}>
                   {confirmedHotelSummary ? (
                     <p className="text-navy-700">
+                      {finalized ? <span className="text-teal-700" aria-hidden="true">✓ </span> : null}
                       {confirmedHotelSummary.name} · {formatMoney({ amount: confirmedHotelSummary.price_per_night_usd, currency: "USD" })}/night
                     </p>
                   ) : (
-                    <p className="text-navy-400">Confirmed ({hotelId})</p>
+                    <p className="text-navy-400">
+                      {finalized ? <span className="text-teal-700" aria-hidden="true">✓ </span> : null}
+                      Confirmed ({hotelId})
+                    </p>
                   )}
-                  <button
-                    type="button"
-                    disabled={actionPending}
-                    onClick={() => handleChangeClick("hotel")}
-                    className={`${changeTopCls} ${clsLabel} font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50`}
-                  >
-                    Change
-                  </button>
+                  {!finalized ? (
+                    <button
+                      type="button"
+                      disabled={actionPending}
+                      onClick={() => handleChangeClick("hotel")}
+                      className={`${changeTopCls} ${clsLabel} font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50`}
+                    >
+                      Change
+                    </button>
+                  ) : null}
                 </div>
               ) : (revisingHotelCandidates ?? hotelCandidates) ? (
                 <ul className="mt-2 flex flex-col gap-2">
@@ -1238,18 +1250,16 @@ export function ItineraryPanel({
             <section>
               <h3 className={`${clsLabel} font-semibold uppercase tracking-wide text-navy-400`}>Activities</h3>
               {confirmedActivities ? (
-                itineraryText ? null : (
-                  <ul className={`mt-2 flex flex-col gap-1 ${clsBody}`}>
-                    {[...confirmedActivities]
-                      .sort((a, b) => (a.date === b.date ? a.startMinutes - b.startMinutes : a.date < b.date ? -1 : 1))
-                      .map((a) => (
-                        <li key={a.id}>
-                          <span className="font-medium text-navy-900">{a.name}</span>
-                          <span className="text-navy-400"> — {a.date} · {formatTime(a.startMinutes)}</span>
-                        </li>
-                      ))}
-                  </ul>
-                )
+                <ul className={`mt-2 flex flex-col gap-1 ${clsBody}`}>
+                  {[...confirmedActivities]
+                    .sort((a, b) => (a.date === b.date ? a.startMinutes - b.startMinutes : a.date < b.date ? -1 : 1))
+                    .map((a) => (
+                      <li key={a.id}>
+                        <span className="font-medium text-navy-900">{a.name}</span>
+                        <span className="text-navy-400"> — {a.date} · {formatTime(a.startMinutes)}</span>
+                      </li>
+                    ))}
+                </ul>
               ) : activityCandidates === null ? (
                 <p className={`mt-2 ${clsLabel} text-navy-400`}>Answer the chat&apos;s question to choose your activities.</p>
               ) : (
@@ -1336,7 +1346,7 @@ export function ItineraryPanel({
             </p>
           ) : null}
 
-          {itineraryText ? <ItineraryText text={itineraryText} /> : null}
+          {finalized && itineraryText ? <ItineraryText text={itineraryText} /> : null}
 
           {budgetOverrideViolations ? (
             <div className={`rounded-lg border border-terracotta-200 bg-terracotta-50 px-3 py-3 ${clsLabel} text-terracotta-700`}>

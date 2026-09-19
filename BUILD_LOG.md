@@ -1761,3 +1761,24 @@ Then returned to the flight-search issue as instructed, with no access to Vercel
 **Known limitations:** none new. Same standing gap as prior sessions — no way to get a real authenticated browser render from this agent without either a live deploy or a fresh magic-link click from the user.
 
 **Next recommended task:** User reviews live on the deployed app at desktop width; if the 2:1 ratio or type sizes need tuning, the four size variables (`clsHeading`/`clsLabel`/`clsBody`) and the `flex-[2]`/`flex-[1]` split are the two places to adjust.
+
+---
+
+## 2026-09-19 (continued) — Finalized trip: flight/hotel locked in, activities always listed, narrative gated to finalize
+
+**What I built:** `ItineraryPanel` (`itinerary-panel.tsx`), three related changes, all confirmed via a mockup before implementing:
+1. The confirmed flight and confirmed hotel cards now drop their "Change" link once `finalized` is true, replaced with a teal-tinted card (`border-teal-200 bg-teal-50` instead of `border-sand-200`) and a small "✓" prefix on the primary line — reads as locked-in rather than editable. Pre-finalize, both render exactly as before (byte-for-byte unchanged in the `!finalized` case).
+2. The confirmed-activities list in the Activities section used to go blank (`itineraryText ? null : <ul>...`) the moment `itineraryText` existed — which, per `activities-step.ts`, is as soon as activities are scheduled via `handleFinalizeActivities`, a materially earlier point than the actual "Finalize trip" click (`handleFinalize`, the one that sets trip status to `"complete"`). The structured list (name + date/time) now always renders whenever `confirmedActivities` exists, regardless of `itineraryText`.
+3. The AI-written day-by-day narrative (`ItineraryText`, the Itinerary Writer agent's output) now only renders once `finalized && itineraryText` — previously it rendered as soon as `itineraryText` existed, which (per point 2) could be well before the user ever clicked "Finalize trip." So the itinerary panel now reads as fully editable (Change buttons, no narrative) right up until finalize, then locks in and adds the narrative in one step, matching the user's explicit ask.
+
+**Why:** User: "the itineraryText only appear[s] after the trip is finalized... Once finalized, lock it in and add the itineraryText" — a direct answer to the open scoping question from the mockup review (whether the lock-in should key off `finalized` specifically vs. `itineraryText`'s mere existence).
+
+**Decisions made:** Used a plain "✓ " text-character prefix (`text-teal-700`) rather than an SVG/icon component for the locked-in indicator — this codebase has no existing icon usage anywhere (`grep "<svg"` across `app/app` was empty) but already uses a Unicode star for hotel ratings (`` `${h.rating}★` ``), so a Unicode checkmark matches the established idiom rather than introducing a new one.
+
+**What didn't work / dead ends:** none.
+
+**Verification:** `npx tsc --noEmit`/`npm run lint`/`npm test` (452/452, unchanged — no existing component-level tests cover `ItineraryPanel`, confirmed via `grep` across `*.test.ts*`, so this is a genuinely untested-by-suite UI path both before and after) all pass. Dev server boots clean with no compile errors (`preview_logs`), but not verified against a real finalized trip's authenticated render — same standing limitation as the prior entry (no local auth session, deployed-domain cookie doesn't carry over to `localhost:3000`).
+
+**Known limitations:** same as prior entry — no authenticated local render available to this agent.
+
+**Next recommended task:** User reviews live against a real finalized trip (or finalizes a fresh one) to confirm the locked-in flight/hotel styling, the always-shown activities list, and the narrative now appearing only post-finalize all look and behave as intended.
