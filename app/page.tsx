@@ -76,7 +76,12 @@ export default function Home() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@example.com"
-                className="rounded-full border border-sand-300 bg-sand-50 px-4 py-2.5 text-sm text-navy-900 outline-none focus:border-teal-600"
+                // `text-base` (16px), not `text-sm` — iOS Safari auto-zooms
+                // the whole page on focus for any input under 16px, which is
+                // what was cutting off unrelated UI (found live on a phone:
+                // the header nav and chat bubbles were getting clipped once
+                // the keyboard opened, purely because the page had zoomed).
+                className="rounded-full border border-sand-300 bg-sand-50 px-4 py-2.5 text-base text-navy-900 outline-none focus:border-teal-600"
               />
               <button
                 type="submit"

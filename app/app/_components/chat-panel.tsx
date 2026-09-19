@@ -211,7 +211,8 @@ export function ChatPanel({
               onChange={(e) => setActivityNotesInput(e.target.value)}
               placeholder="e.g. “I want a relaxing trip” or “nothing too touristy” (optional)"
               rows={2}
-              className="rounded-md border border-sand-300 bg-transparent px-2 py-1 text-xs text-navy-900 placeholder:text-navy-400"
+              // `text-base`, not `text-xs` — see the message input below for why.
+              className="rounded-md border border-sand-300 bg-transparent px-2 py-1 text-base text-navy-900 placeholder:text-navy-400"
             />
             <button
               type="button"
@@ -239,7 +240,18 @@ export function ChatPanel({
           onChange={(e) => setInput(e.target.value)}
           disabled={pending}
           placeholder="Message Wanderwise…"
-          className="flex-1 rounded-lg border border-sand-300 bg-transparent px-3 py-2 text-sm text-navy-900 outline-none focus:border-navy-400 disabled:opacity-50"
+          // Not an address/name/contact field, so no autofill suggestions
+          // apply — `autoComplete="off"` keeps iOS from showing one anyway.
+          // `enterKeyHint="send"` labels the keyboard's return key correctly
+          // for a chat input instead of the generic default.
+          autoComplete="off"
+          enterKeyHint="send"
+          // `text-base` (16px), not `text-sm` — iOS Safari auto-zooms the
+          // whole page on focus for any input under 16px. Found live on a
+          // phone: with the keyboard open, the zoomed page was clipping the
+          // header nav and the initial chat bubble's right edge — neither
+          // is actually broken, the whole page was just zoomed in.
+          className="flex-1 rounded-lg border border-sand-300 bg-transparent px-3 py-2 text-base text-navy-900 outline-none focus:border-navy-400 disabled:opacity-50"
         />
         <button
           type="submit"

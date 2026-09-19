@@ -1587,3 +1587,19 @@ Read `node_modules/@base-ui/react/docs/react/components/drawer.md` (the installe
 **Known limitations:** if swipe-down still isn't fully smooth after this, the next place to look is whether `modal={open}` toggling — which only updates on React's next render *after* `onSnapPointChange` fires, not mid-gesture — causes the focus-trap/scroll-lock to stay engaged throughout a full-to-peek drag in a way that interferes with touch handling on some mobile browsers; not chased further this session since it's speculative without a repro.
 
 **Next recommended task:** User to re-test swipe-down and the chat-box-click issue on their phone against this fix; if either persists, capture exactly which gesture/browser reproduces it (iOS Safari vs. Android Chrome matters here) rather than guessing further.
+
+---
+
+## 2026-09-18 (continued) — iOS keyboard zoom cutting off unrelated UI; found root cause across three inputs
+
+**What happened:** The previous drawer fixes tested better on the user's phone, but two new issues appeared once the on-screen keyboard opens on iOS: (1) the keyboard's own accessory UI ("close keyboard, whatever else") covers a lot of the screen, and (2) the whole viewport looked zoomed in, cutting off the right edge of the first chat bubble and clipping "Your trips"/"Sign out" in the header.
+
+(2) is a well-known, single-root-cause iOS Safari behavior, not two separate layout bugs: Safari auto-zooms the entire page on focus for any text input/textarea whose font-size is under 16px, to keep the zoomed text legible — it doesn't just enlarge the input, it zooms the whole viewport, which is exactly what pushes unrelated elements (the header nav, the chat bubble) outside the visible area. Grepped every `<input>`/`<textarea>` in `app/`: all three (`app/page.tsx`'s email sign-in field, `chat-panel.tsx`'s message input, its activities-preference textarea) used Tailwind's `text-sm`/`text-xs` (14px/12px) — under the threshold. Fixed all three to `text-base` (16px, the minimum that avoids the zoom), not just the message input that was reported, since it's the identical bug in the identical element class.
+
+(1) — the native keyboard accessory bar (predictive-text/QuickType row, the "hide keyboard" chevron) is OS/browser chrome a web page cannot remove; said so directly rather than implying a fix exists. The one thing actually in this app's control was reduced: the message input had no `autoComplete`, so Safari may show an autofill-suggestion strip on top of the keyboard as if it were a contact/address field, which it isn't — added `autoComplete="off"` (plus `enterKeyHint="send"` for a correctly-labeled return key, a free improvement while touching this element). Flagged as a partial mitigation, not a full fix — most of what was reported as "blocking a lot of the screen" is plausibly the zoom bug (1) compounding with the keyboard's normal footprint, so expect this to look substantially better once (2) alone is retested, even before judging whether the accessory-bar complaint has anything left in it.
+
+**What I built:** `text-sm`/`text-xs` → `text-base` on all three inputs (`app/page.tsx`, `app/app/_components/chat-panel.tsx`); `autoComplete="off"` + `enterKeyHint="send"` added to the chat message input.
+
+**Verification:** `npx tsc --noEmit`/`npm run lint`/`npm test` (451/451, unchanged) all pass. Not verified live on a phone — same access constraint as every entry today.
+
+**Next recommended task:** User to re-test both issues on their phone. If the keyboard-accessory-bar complaint still has substance left after the zoom fix, get a screenshot — that's OS chrome, so any further move (if one even exists) would need to see exactly what's rendering.
