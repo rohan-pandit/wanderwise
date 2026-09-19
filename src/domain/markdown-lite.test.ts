@@ -109,4 +109,11 @@ describe("parseMarkdownLite", () => {
   it("returns an empty array for an empty string", () => {
     expect(parseMarkdownLite("")).toEqual([]);
   });
+
+  it("strips a leaked tool-call artifact already persisted in older trip data, instead of rendering raw tags", () => {
+    const source = 'Enjoy your trip!</explanation>\n<parameter name="groundedIds">["a1"]';
+    expect(parseMarkdownLite(source)).toEqual([
+      { type: "paragraph", inline: [{ type: "text", text: "Enjoy your trip!" }] },
+    ]);
+  });
 });

@@ -13,6 +13,8 @@
  * trade-off rather than a gap to close by pulling in a Markdown library.
  */
 
+import { stripStrayMarkup } from "./stray-markup";
+
 export type InlineSegment =
   | { type: "text"; text: string }
   | { type: "bold"; text: string }
@@ -51,7 +53,10 @@ const ORDERED_LINE = /^\d+\.\s+(.*)$/;
  * (if any) isn't meaningful — only its blank-line paragraph breaks are.
  */
 export function parseMarkdownLite(source: string): MarkdownBlock[] {
-  const lines = source.replace(/\r\n/g, "\n").split("\n");
+  // Defense-in-depth, not just belt-and-suspenders with `ExplanationOutput`'s
+  // own `stripStrayMarkup` (`curation.ts`): this also cleans up any text
+  // already persisted before that guard existed, with no DB backfill needed.
+  const lines = stripStrayMarkup(source).replace(/\r\n/g, "\n").split("\n");
   const blocks: MarkdownBlock[] = [];
   let paragraphLines: string[] = [];
   let listItems: string[] = [];

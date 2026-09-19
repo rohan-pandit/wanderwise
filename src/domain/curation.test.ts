@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CurationOutput,
   ExplanationOutput,
+  sanitizeExplanationOutput,
   validateCurationReferences,
   validateExplanationGrounding,
 } from "./curation";
@@ -90,6 +91,21 @@ describe("ExplanationOutput", () => {
 
   it("requires non-empty explanation text", () => {
     expect(ExplanationOutput.safeParse({ explanation: "" }).success).toBe(false);
+  });
+});
+
+describe("sanitizeExplanationOutput", () => {
+  it("strips a leaked tool-call artifact off the end of the explanation (the live trip 2c40a36c case)", () => {
+    const parsed = ExplanationOutput.parse({
+      explanation: 'Enjoy your trip!</explanation>\n<parameter name="groundedIds">["a1"]',
+      groundedIds: ["a1"],
+    });
+    expect(sanitizeExplanationOutput(parsed).explanation).toBe("Enjoy your trip!");
+  });
+
+  it("leaves clean explanation text and groundedIds untouched", () => {
+    const parsed = ExplanationOutput.parse({ explanation: "Chosen for X.", groundedIds: ["a1"] });
+    expect(sanitizeExplanationOutput(parsed)).toEqual({ explanation: "Chosen for X.", groundedIds: ["a1"] });
   });
 });
 

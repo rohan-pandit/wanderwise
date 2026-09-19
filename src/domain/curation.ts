@@ -11,6 +11,7 @@
  * from the model's own claim.
  */
 import { z } from "zod";
+import { stripStrayMarkup } from "./stray-markup";
 
 export const CurationOutput = z.object({
   /** Candidate IDs, most-recommended first. Every ID must come from the candidate set the agent was given. */
@@ -42,6 +43,18 @@ export const ExplanationOutput = z.object({
   groundedIds: z.array(z.string().min(1)).default([]),
 });
 export type ExplanationOutput = z.infer<typeof ExplanationOutput>;
+
+/**
+ * Applied by callers right after `ExplanationOutput.safeParse` succeeds —
+ * deliberately kept out of the schema itself (no `.transform`) because both
+ * agents that use this schema (`itinerary-writer.ts`, `explanation.ts`) also
+ * feed it through `z.toJSONSchema` to build the tool definition sent to the
+ * model, and a `.transform` isn't representable in JSON Schema (it broke
+ * that call outright when tried inline here). See `stray-markup.ts`.
+ */
+export function sanitizeExplanationOutput(output: ExplanationOutput): ExplanationOutput {
+  return { ...output, explanation: stripStrayMarkup(output.explanation) };
+}
 
 export function validateExplanationGrounding(
   output: ExplanationOutput,

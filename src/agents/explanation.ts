@@ -12,7 +12,12 @@
  * by `validateExplanationGrounding`, never trusted from the model's claim.
  */
 import { z } from "zod";
-import { ExplanationOutput, validateExplanationGrounding, type ReferenceCheckResult } from "@/src/domain/curation";
+import {
+  ExplanationOutput,
+  sanitizeExplanationOutput,
+  validateExplanationGrounding,
+  type ReferenceCheckResult,
+} from "@/src/domain/curation";
 import type { ModelClient, ModelCompletionUsage, ModelTool, ToolCallLogEntry } from "./model-client";
 
 const TOOL_NAME = "get_candidate_explanations";
@@ -102,7 +107,8 @@ export async function runExplanationAgent(
       result.toolCallLog.push({ toolName: call.toolName, input: call.input, status: "error", error: parsed.error.message });
       continue;
     }
-    const referenceCheck = validateExplanationGrounding(parsed.data, approvedIds);
+    const sanitized = sanitizeExplanationOutput(parsed.data);
+    const referenceCheck = validateExplanationGrounding(sanitized, approvedIds);
     if (!referenceCheck.valid) {
       result.toolCallLog.push({
         toolName: call.toolName,
@@ -113,9 +119,9 @@ export async function runExplanationAgent(
       result.referenceCheck = referenceCheck;
       continue;
     }
-    result.explanation = parsed.data;
+    result.explanation = sanitized;
     result.referenceCheck = referenceCheck;
-    result.toolCallLog.push({ toolName: call.toolName, input: call.input, status: "success", result: parsed.data });
+    result.toolCallLog.push({ toolName: call.toolName, input: call.input, status: "success", result: sanitized });
   }
 
   return result;
