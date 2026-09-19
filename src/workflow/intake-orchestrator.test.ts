@@ -13,6 +13,7 @@ vi.mock("@/src/repositories/messages");
 vi.mock("@/src/repositories/trip-decisions");
 vi.mock("@/src/repositories/trip-preferences");
 vi.mock("@/src/repositories/trip-requirements");
+vi.mock("@/src/repositories/trip-events");
 vi.mock("@/src/repositories/trip-state");
 vi.mock("@/src/repositories/trips");
 vi.mock("@/src/repositories/workflow-runs");
@@ -20,7 +21,7 @@ vi.mock("./controller");
 
 import { runIntakeAgent } from "@/src/agents/intake";
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
-import { getDestinationByName } from "@/src/repositories/destinations";
+import { getDestinationByName, listDestinationCountries, matchDestinationsByName } from "@/src/repositories/destinations";
 import { getFlightsByIds } from "@/src/repositories/flights";
 import { getHotelsByIds } from "@/src/repositories/hotels";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
@@ -36,6 +37,7 @@ import {
   listActiveTripRequirements,
   retireActiveTripRequirementsForField,
 } from "@/src/repositories/trip-requirements";
+import { getLatestChainStepFailure } from "@/src/repositories/trip-events";
 import { getLatestTripState } from "@/src/repositories/trip-state";
 import { getTrip } from "@/src/repositories/trips";
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
@@ -99,6 +101,8 @@ beforeEach(() => {
   vi.mocked(recordAgentRun).mockResolvedValue(AGENT_RUN as never);
   vi.mocked(recordToolCalls).mockResolvedValue([]);
   vi.mocked(recordGuardrailEvent).mockResolvedValue({} as never);
+  vi.mocked(getLatestChainStepFailure).mockResolvedValue(null);
+  vi.mocked(listDestinationCountries).mockResolvedValue([]);
   vi.mocked(appendMessage).mockResolvedValue({} as never);
   vi.mocked(findMessageByCorrelationId).mockResolvedValue(null);
   vi.mocked(listActiveTripRequirements).mockResolvedValue([]);
@@ -891,6 +895,95 @@ describe("processIntakeTurn", () => {
     expect(result.workflowState).toBe("requirements_ready");
   });
 
+  const READY_EXCEPT_DESTINATION_MATCH = [
+    { field: "origin", value: "Boston", source: "user_explicit", confidence: 1 },
+    { field: "destination", value: "New York", source: "user_explicit", confidence: 1 },
+    { field: "departureDate", value: "2026-09-26", source: "user_explicit", confidence: 1 },
+    { field: "returnDate", value: "2026-09-27", source: "user_explicit", confidence: 1 },
+    { field: "partySize", value: 2, source: "user_explicit", confidence: 1 },
+    { field: "budgetTotalUsd", value: 1000, source: "user_explicit", confidence: 1 },
+  ];
+
+  it("blocks requirements_ready on a fuzzy-only destination match when enableDestinationDisambiguation is on, asking to confirm (the New York -> New York City case)", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(matchDestinationsByName).mockResolvedValue({
+      exact: null,
+      fuzzyCandidates: [{ id: "d1", name: "New York City", country: "United States" } as never],
+    });
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({ requirements: READY_EXCEPT_DESTINATION_MATCH as never, assistantMessage: "Got it!" }) as never,
+    );
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "awaiting_clarification",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "Boston to New York, next weekend, 2 people, $1000",
+      enableDestinationDisambiguation: true,
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.workflowState).toBe("awaiting_clarification");
+    expect(result.assistantMessage).toContain("New York City");
+  });
+
+  it("doesn't check destination disambiguation at all when enableDestinationDisambiguation is left off (default) — existing eval callers unaffected", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({ requirements: READY_EXCEPT_DESTINATION_MATCH as never }) as never,
+    );
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "requirements_ready",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "Boston to New York, next weekend, 2 people, $1000",
+    });
+
+    expect(result.ready).toBe(true);
+    expect(result.workflowState).toBe("requirements_ready");
+    expect(matchDestinationsByName).not.toHaveBeenCalled();
+  });
+
+  it("resolves once the user's reply confirms the exact destination name", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("awaiting_clarification", 4) as never);
+    vi.mocked(listActiveTripRequirements).mockResolvedValue(
+      READY_EXCEPT_DESTINATION_MATCH.map((r) => requirementRow(r.field, r.value)) as never,
+    );
+    vi.mocked(matchDestinationsByName).mockResolvedValue({
+      exact: { id: "d1", name: "New York City", country: "United States" } as never,
+      fuzzyCandidates: [],
+    });
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({
+        requirements: [{ field: "destination", value: "New York City", source: "user_explicit", confidence: 1 }] as never,
+      }) as never,
+    );
+    vi.mocked(advanceTrip)
+      .mockResolvedValueOnce({ status: "applied", fromState: "awaiting_clarification", toState: "collecting_requirements", version: 5 } as never)
+      .mockResolvedValueOnce({ status: "applied", fromState: "collecting_requirements", toState: "requirements_ready", version: 6 } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "yes, New York City",
+      enableDestinationDisambiguation: true,
+    });
+
+    expect(result.ready).toBe(true);
+    expect(result.workflowState).toBe("requirements_ready");
+  });
+
   const READY_WITH_PAST_DATE = [
     { field: "origin", value: "New York", source: "user_explicit", confidence: 1 },
     { field: "destination", value: "Lisbon", source: "user_explicit", confidence: 1 },
@@ -1010,5 +1103,60 @@ describe("processIntakeTurn", () => {
     expect(result.ready).toBe(false);
     expect(result.assistantMessage).toContain("already in the past");
     expect(getDestinationByName).not.toHaveBeenCalled();
+  });
+
+  it("skips airport disambiguation while a destination clarification is still pending, even with both flags on", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(matchDestinationsByName).mockResolvedValue({
+      exact: null,
+      fuzzyCandidates: [{ id: "d1", name: "New York City", country: "United States" } as never],
+    });
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({ requirements: READY_EXCEPT_DESTINATION_MATCH as never }) as never,
+    );
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "awaiting_clarification",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "Boston to New York, next weekend, 2 people, $1000",
+      enableDestinationDisambiguation: true,
+      enableAirportDisambiguation: true,
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.assistantMessage).toContain("New York City");
+    expect(getDestinationByName).not.toHaveBeenCalled();
+  });
+
+  it("passes the active step's last known failure through to the Intake agent's input", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("requirements_ready", 4) as never);
+    vi.mocked(getLatestChainStepFailure).mockResolvedValue({ message: "We don't have inventory for that destination yet — try a different one." });
+    vi.mocked(runIntakeAgent).mockResolvedValue(emptyAgentResult() as never);
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "requirements_ready",
+      toState: "requirements_ready",
+      version: 5,
+    } as never);
+
+    await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "can you check again?",
+    });
+
+    expect(getLatestChainStepFailure).toHaveBeenCalledWith(supabase, TRIP_ID, "flight");
+    expect(runIntakeAgent).toHaveBeenCalledWith(
+      modelClient,
+      expect.objectContaining({
+        lastStepFailure: { message: "We don't have inventory for that destination yet — try a different one." },
+      }),
+    );
   });
 });

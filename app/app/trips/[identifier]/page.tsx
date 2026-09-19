@@ -3,7 +3,7 @@ import { createClient } from "@/src/config/supabase/server";
 import { REQUIRED_FOR_READY, checkDatesNotInThePast, type RequirementFieldName } from "@/src/domain/extraction";
 import { isUuid } from "@/src/domain/trip-slug";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
-import { checkAirportReadiness } from "@/src/workflow/step-shared";
+import { checkAirportReadiness, checkDestinationReadiness } from "@/src/workflow/step-shared";
 import type { Flight } from "@/src/repositories/flights";
 import type { Hotel } from "@/src/repositories/hotels";
 import type { ProposedScheduledActivity } from "@/src/workflow/activities-step";
@@ -171,9 +171,11 @@ export default async function TripPage({
   const reqsMap = new Map(requirementRows.map((r) => [r.field as RequirementFieldName, r.value]));
   const today = new Date().toISOString().slice(0, 10);
   const hasPastDate = completenessReady && checkDatesNotInThePast(reqsMap, today).length > 0;
+  const hasPendingDestination =
+    completenessReady && !hasPastDate && (await checkDestinationReadiness(supabase, reqsMap, trip.id)).length > 0;
   const hasPendingAirport =
-    completenessReady && !hasPastDate && (await checkAirportReadiness(supabase, reqsMap, trip.id)).length > 0;
-  const initialRequirementsReady = completenessReady && !hasPastDate && !hasPendingAirport;
+    completenessReady && !hasPastDate && !hasPendingDestination && (await checkAirportReadiness(supabase, reqsMap, trip.id)).length > 0;
+  const initialRequirementsReady = completenessReady && !hasPastDate && !hasPendingDestination && !hasPendingAirport;
 
   return (
     <TripWorkspace

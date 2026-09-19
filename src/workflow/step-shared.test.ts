@@ -5,8 +5,13 @@ import type { RequirementFieldName } from "@/src/domain/extraction";
 
 vi.mock("@/src/repositories/destinations");
 
-import { getDestinationByName } from "@/src/repositories/destinations";
-import { UnknownAirportError, checkAirportReadiness, resolveFlightAirport } from "./step-shared";
+import {
+  getDestinationByName,
+  listDestinationCountries,
+  listDestinationsByCountry,
+  matchDestinationsByName,
+} from "@/src/repositories/destinations";
+import { UnknownAirportError, checkAirportReadiness, checkDestinationReadiness, resolveFlightAirport } from "./step-shared";
 
 const supabase = {} as SupabaseClient<Database>;
 const TRIP_ID = "trip-1";
@@ -47,6 +52,98 @@ describe("resolveFlightAirport", () => {
 
   it("throws UnknownAirportError for a city with no scheduled-commercial airport", () => {
     expect(() => resolveFlightAirport(TRIP_ID, "Nowheresville", undefined)).toThrow(UnknownAirportError);
+  });
+});
+
+describe("checkDestinationReadiness", () => {
+  it("returns no pending clarification when destination isn't present yet", async () => {
+    const result = await checkDestinationReadiness(supabase, reqs({ origin: "Boston" }), TRIP_ID);
+    expect(result).toEqual([]);
+    expect(matchDestinationsByName).not.toHaveBeenCalled();
+  });
+
+  it("returns no pending clarification when the destination resolves exactly", async () => {
+    vi.mocked(matchDestinationsByName).mockResolvedValue({
+      exact: { id: "d1", name: "Madrid", country: "Spain" } as never,
+      fuzzyCandidates: [],
+    });
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "Madrid" }), TRIP_ID);
+    expect(result).toEqual([]);
+  });
+
+  it("asks to confirm a single fuzzy match (the New York -> New York City case), even though New York is also a US state name", async () => {
+    // listDestinationCountries is checked before the fuzzy candidates (see
+    // the function's own comment on why) but finds nothing here — "New
+    // York" isn't a country — so this falls through to the fuzzy match,
+    // which correctly wins over the state check for this exact real case.
+    vi.mocked(listDestinationCountries).mockResolvedValue(["Portugal", "Spain"]);
+    vi.mocked(matchDestinationsByName).mockResolvedValue({
+      exact: null,
+      fuzzyCandidates: [{ id: "d1", name: "New York City", country: "United States" } as never],
+    });
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "New York" }), TRIP_ID);
+    expect(result).toEqual([{ cityQuery: "New York", candidates: ["New York City"], regionKind: null }]);
+  });
+
+  it("asks which one for multiple fuzzy matches", async () => {
+    vi.mocked(listDestinationCountries).mockResolvedValue([]);
+    vi.mocked(matchDestinationsByName).mockResolvedValue({
+      exact: null,
+      fuzzyCandidates: [
+        { id: "d1", name: "Springfield" } as never,
+        { id: "d2", name: "New Springfield" } as never,
+      ],
+    });
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "Springfield" }), TRIP_ID);
+    expect(result[0].candidates).toEqual(["Springfield", "New Springfield"]);
+    expect(result[0].regionKind).toBeNull();
+  });
+
+  it("asks for a specific city when the destination is a recognized US state with no fuzzy match of its own (the New Hampshire case)", async () => {
+    vi.mocked(listDestinationCountries).mockResolvedValue(["Portugal", "Spain"]);
+    vi.mocked(matchDestinationsByName).mockResolvedValue({ exact: null, fuzzyCandidates: [] });
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "New Hampshire" }), TRIP_ID);
+    expect(result).toEqual([{ cityQuery: "New Hampshire", candidates: [], regionKind: "state" }]);
+  });
+
+  it("prefers a country match over a coincidental fuzzy substring collision (Spain vs. the seeded Port of Spain)", async () => {
+    vi.mocked(listDestinationCountries).mockResolvedValue(["Spain", "Trinidad and Tobago"]);
+    vi.mocked(listDestinationsByCountry).mockResolvedValue([
+      { id: "d1", name: "Madrid", country: "Spain" } as never,
+      { id: "d2", name: "Barcelona", country: "Spain" } as never,
+    ]);
+    vi.mocked(matchDestinationsByName).mockResolvedValue({
+      exact: null,
+      fuzzyCandidates: [{ id: "d3", name: "Port of Spain", country: "Trinidad and Tobago" } as never],
+    });
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "Spain" }), TRIP_ID);
+    expect(result).toEqual([{ cityQuery: "Spain", candidates: ["Madrid", "Barcelona"], regionKind: "country" }]);
+  });
+
+  it("asks for a specific city, listing real options, when the destination is a whole seeded country", async () => {
+    vi.mocked(matchDestinationsByName).mockResolvedValue({ exact: null, fuzzyCandidates: [] });
+    vi.mocked(listDestinationCountries).mockResolvedValue(["Spain", "France"]);
+    vi.mocked(listDestinationsByCountry).mockResolvedValue([
+      { id: "d1", name: "Madrid", country: "Spain" } as never,
+      { id: "d2", name: "Barcelona", country: "Spain" } as never,
+    ]);
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "Spain" }), TRIP_ID);
+    expect(result).toEqual([{ cityQuery: "Spain", candidates: ["Madrid", "Barcelona"], regionKind: "country" }]);
+  });
+
+  it("is case-insensitive when matching a seeded country", async () => {
+    vi.mocked(matchDestinationsByName).mockResolvedValue({ exact: null, fuzzyCandidates: [] });
+    vi.mocked(listDestinationCountries).mockResolvedValue(["Spain"]);
+    vi.mocked(listDestinationsByCountry).mockResolvedValue([{ id: "d1", name: "Madrid", country: "Spain" } as never]);
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "spain" }), TRIP_ID);
+    expect(result[0].regionKind).toBe("country");
+  });
+
+  it("returns no pending clarification for a genuinely unknown destination (not a state/country either)", async () => {
+    vi.mocked(matchDestinationsByName).mockResolvedValue({ exact: null, fuzzyCandidates: [] });
+    vi.mocked(listDestinationCountries).mockResolvedValue(["Spain", "France"]);
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "Nowheresville" }), TRIP_ID);
+    expect(result).toEqual([]);
   });
 });
 

@@ -24,8 +24,16 @@ import { findAirportsForCity, type Airport } from "@/src/domain/airport-lookup";
 import { parseDestinationQuery } from "@/src/domain/destination-query";
 import type { RequirementFieldName } from "@/src/domain/extraction";
 import { CURRENT_INVENTORY_VERSION } from "@/src/domain/inventory";
+import { isUsStateName } from "@/src/domain/region-names";
 import type { RoomGroup } from "@/src/domain/rooms";
-import { AmbiguousDestinationNameError, getDestinationByName, type Destination } from "@/src/repositories/destinations";
+import {
+  AmbiguousDestinationNameError,
+  getDestinationByName,
+  listDestinationCountries,
+  listDestinationsByCountry,
+  matchDestinationsByName,
+  type Destination,
+} from "@/src/repositories/destinations";
 import type { Flight } from "@/src/repositories/flights";
 import type { Hotel } from "@/src/repositories/hotels";
 import {
@@ -86,6 +94,101 @@ export async function resolveTripDestination(
     throw new UnknownDestinationError(tripId, destinationName);
   }
   return destination;
+}
+
+export interface PendingDestinationClarification {
+  /** The free-text the user actually gave for `destination`. */
+  cityQuery: string;
+  /**
+   * Real destination names to confirm/pick from — non-empty means "did you
+   * mean X?" (one candidate) or "which did you mean, X or Y?" (several).
+   * Empty (with `regionKind` set) means `cityQuery` matched a whole US
+   * state or an already-seeded country instead of any specific city.
+   */
+  candidates: string[];
+  /** Set when `cityQuery` matched a recognized US state or an existing seeded country rather than any specific city — a different question ("which city?") than "did you mean X?". */
+  regionKind: "state" | "country" | null;
+}
+
+/**
+ * The destination-matching equivalent of `checkAirportReadiness` below —
+ * same shape, same "fails soft, never blocks on something it can't itself
+ * resolve" philosophy — gating a "which destination did you mean?"
+ * clarification turn instead of "which airport?". Added 2026-09-19,
+ * debugging two real stuck trips live: `matchDestinationsByName`
+ * (`destinations.ts`) already knows how to fuzzy-resolve a shorthand like
+ * "New York" -> "New York City" on its own, but doing that *silently* means
+ * the user never finds out their exact wording didn't match anything —
+ * this gate catches the non-exact case BEFORE `requirements_ready`, asks
+ * for explicit confirmation instead, and only once the user confirms does
+ * the `destination` requirement itself get rewritten to the exact resolved
+ * name (the Intake agent does this via the ordinary `record_extraction`
+ * path — see `intake.ts`'s system prompt) — so by the time any step
+ * actually calls `resolveTripDestination`, it's always an exact match, and
+ * `getDestinationByName`'s own silent-fuzzy-fallback is only ever a
+ * defensive backstop, not the primary resolution path anymore.
+ *
+ * Checked in this order — deliberately not "exact -> fuzzy -> state/country",
+ * see the two comments inline below for why: exact match (nothing to ask)
+ * -> an already-seeded country matched exactly (ask which city, listing
+ * real options) -> a fuzzy city match (ask "did you mean X?") -> a
+ * recognized US state with no fuzzy match of its own (ask which city, no
+ * real options to list) -> nothing recognized at all (not a clarification
+ * case — left for the flight step's own `UnknownDestinationError`
+ * handling, same as `checkAirportReadiness` leaves a genuinely
+ * airport-less city for the flight step to report).
+ */
+export async function checkDestinationReadiness(
+  supabase: SupabaseClient<Database>,
+  reqs: Map<RequirementFieldName, unknown>,
+  tripId: string,
+): Promise<PendingDestinationClarification[]> {
+  void tripId; // kept for signature symmetry with checkAirportReadiness; nothing here needs it (never throws).
+  const destination = reqs.get("destination");
+  if (typeof destination !== "string") {
+    return [];
+  }
+
+  const { city, country } = parseDestinationQuery(destination);
+  const match = await matchDestinationsByName(supabase, city, CURRENT_INVENTORY_VERSION, country);
+  if (match.exact) {
+    return [];
+  }
+
+  // Checked BEFORE the fuzzy candidates below, deliberately: an exact
+  // country match is a precise hit on a real structured column, whereas
+  // the fuzzy search is a plain substring scan that can coincidentally
+  // false-positive on an unrelated place (found live testing this exact
+  // function: "Spain" fuzzy-matches the seeded "Port of Spain" — Trinidad
+  // and Tobago's capital, nothing to do with Spain — which would otherwise
+  // wrongly ask "did you mean Port of Spain?" instead of the far more
+  // useful "which city in Spain?").
+  const countriesInCatalog = await listDestinationCountries(supabase, CURRENT_INVENTORY_VERSION);
+  const matchedCountry = countriesInCatalog.find((c) => c.toLowerCase() === city.toLowerCase());
+  if (matchedCountry) {
+    const citiesInCountry = await listDestinationsByCountry(supabase, matchedCountry, CURRENT_INVENTORY_VERSION);
+    return [{ cityQuery: destination, candidates: citiesInCountry.map((d) => d.name), regionKind: "country" }];
+  }
+
+  if (match.fuzzyCandidates.length > 0) {
+    return [{ cityQuery: destination, candidates: match.fuzzyCandidates.map((d) => d.name), regionKind: null }];
+  }
+
+  // Checked AFTER the fuzzy candidates, unlike country above — deliberately
+  // the opposite order, and for the opposite reason: "New York" the US
+  // state and "New York City" the seeded destination share a real,
+  // meaningful prefix relationship (not a coincidental substring match
+  // like Spain/Port of Spain), and the concrete real case this was built
+  // for (a user typing "New York" and clearly meaning the city) needs the
+  // fuzzy "did you mean New York City?" to win over "which city in New
+  // York?". A state whose name has no such overlap with any real
+  // destination (the common case) reaches this branch regardless, since
+  // fuzzyCandidates was empty.
+  if (isUsStateName(city)) {
+    return [{ cityQuery: destination, candidates: [], regionKind: "state" }];
+  }
+
+  return [];
 }
 
 /** A trip's origin or destination city has no scheduled-commercial airport in `src/domain/airport-lookup.ts`'s dataset — a genuine gap (no clarifying question can fix it), distinct from `AirportAmbiguousError` below. Only ever thrown by the SerpAPI-backed flight search; the seed-backed path (evals) has no airport concept at all. */

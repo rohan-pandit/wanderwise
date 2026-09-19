@@ -84,9 +84,15 @@ Each turn you receive the current trip state (already-recorded requirements, pre
 
 Valid requirement fields: ${REQUIREMENT_FIELDS.join(", ")}. Never invent a field outside this list, and never fabricate a value the user didn't state or clearly imply.
 
-The trip state below includes today, today's real date (YYYY-MM-DD) — you have no other way to know it. When the user states a date without a year (e.g. "October 2nd", "next Tuesday"), resolve it relative to today to the correct upcoming occurrence, never a date that's already in the past relative to today. Only use a different year than that inference would produce if the user explicitly states one.
+The trip state below includes today, today's real date (YYYY-MM-DD) — you have no other way to know it. When the user states a date without a year (e.g. "October 2nd", "next Tuesday"), resolve it relative to today to the correct upcoming occurrence, never a date that's already in the past relative to today. Only use a different year than that inference would produce if the user explicitly states one. This also applies to a relative range with no literal date at all — "next weekend" means the Saturday-Sunday of the week following today, "this weekend" the coming Saturday-Sunday (even if today is itself a weekend day), "in two weeks" a single date 14 days from today (not a range, unless the user also states how long the trip is). Never leave departureDate/returnDate unset just because the phrase was relative rather than a literal date — resolve it yourself using today, the same way you already do for "next Tuesday".
+
+budgetTotalUsd must be a specific number — never invent one to fill it in. If the user only gives a qualitative descriptor with no number ("cheap", "budget-friendly", "as cheap as possible", "doesn't need to be fancy"), still call request_clarification for budgetTotalUsd since it's required either way, but also record that framing as a travelStyle preference (e.g. "budget-conscious") via record_extraction in the same turn so it isn't silently dropped — it should still be able to influence which options look best later, not just gate on the eventual number.
 
 originAirportCode/destinationAirportCode are special: almost every trip never needs them (most cities have exactly one commercial airport, resolved automatically downstream), so never ask about or extract these unprompted. The trip state's pendingAirportClarification array is the only signal that they're needed right now — when it's non-empty, the deterministic system (not you) already asked the user which airport for each listed city+candidate-list, in the same shape you see it. If the user's latest message answers that — names one of the listed airports, by its code, its name, or a description that clearly picks one (e.g. "the one closest to Manhattan") — call record_extraction with the matching field set to that airport's exact iata code from the candidate list, never a code you're inferring on your own. If their message doesn't answer it (asks something else, or is ambiguous even against the candidate list), don't guess — leave the field unset; the same question will be asked again next turn.
+
+pendingDestinationClarification works the same way, for destination itself rather than which airport: non-empty means the deterministic system already asked the user to confirm or pick a destination, for one of two reasons distinguished by each entry's regionKind. regionKind null means their wording didn't exactly match a known destination and the system is confirming a close match — candidates lists the real destination name(s) it found (one candidate: "did you mean X?"; several: "which did you mean?"). regionKind "state" or "country" means they named a whole US state or country, not a specific city, and the system is asking which city instead — candidates, if non-empty, lists real cities already available in that region. Either way, if the user's latest message answers it — confirms a candidate, names one of the listed candidates directly, or (for a state/country ask) names a specific city — call record_extraction with destination set to that exact resolved city name, never a value you're inferring or normalizing yourself. If their message doesn't answer it, don't guess — leave destination unset; the same question will be asked again next turn.
+
+lastStepFailure, when not null, is the deterministic system's own record of the active chain step's most recent search/propose attempt failing — already known fact, not something you need to (or should) guess about. When the user asks about search results or progress ("check again", "why isn't this working", "any updates?"), ground your reply in this message rather than inventing a different or more optimistic explanation — do not suggest an unrelated fix (like adjusting the budget) unless the message itself points at one. If the user's current message just changed something that plausibly addresses the failure, it's fine to acknowledge a fresh attempt is happening instead of repeating the old failure verbatim.
 
 When calling propose_trip_revision with revisionType "decision", target must be exactly "flight" or "hotel" — the chain step being revised, not a specific leg or field ("flight" covers both the outbound and return legs together). Activities can't be revised this way yet. The currently active, not-yet-confirmed step is given to you as activeChainStep in the trip state below; you may also target an earlier step that's already confirmed if the user is asking to change something already picked.
 
@@ -97,6 +103,13 @@ export interface PendingAirportClarificationInput {
   field: "originAirportCode" | "destinationAirportCode";
   cityQuery: string;
   candidates: { iata: string; name: string }[];
+}
+
+/** A pending "which destination did you mean?" disambiguation — computed deterministically by `checkDestinationReadiness` (`src/workflow/step-shared.ts`), not by this agent. Same minimal-local-shape reasoning as `PendingAirportClarificationInput` above. */
+export interface PendingDestinationClarificationInput {
+  cityQuery: string;
+  candidates: string[];
+  regionKind: "state" | "country" | null;
 }
 
 export interface IntakeAgentInput {
@@ -129,6 +142,24 @@ export interface IntakeAgentInput {
    * the user's answer to an actual IATA code rather than guessing one.
    */
   pendingAirportClarification?: PendingAirportClarificationInput[];
+  /**
+   * Non-empty exactly when the trip is stuck waiting on a deterministic
+   * "did you mean X?" / "which city?" answer (`processIntakeTurn`'s own
+   * pre-turn check, `checkDestinationReadiness`) — same reasoning as
+   * `pendingAirportClarification`: this agent has no conversation history,
+   * so without this a bare "yes" or "New York City" reply gives it no
+   * signal about what's being confirmed.
+   */
+  pendingDestinationClarification?: PendingDestinationClarificationInput[];
+  /**
+   * The active chain step's most recent propose/revision failure, if one
+   * exists and nothing more recent (a later success) already superseded it
+   * (`getLatestChainStepFailure`, `src/repositories/trip-events.ts`) — lets
+   * this agent answer a follow-up like "check again?" with the real reason
+   * instead of guessing one. Null/omitted means either nothing has failed
+   * yet, or a later attempt already succeeded.
+   */
+  lastStepFailure?: { message: string } | null;
 }
 
 export interface IntakeAgentResult {
@@ -151,6 +182,8 @@ function buildUserContent(input: IntakeAgentInput): string {
     decisions: input.currentDecisions ?? [],
     activeChainStep: input.activeChainStep ?? "flight",
     pendingAirportClarification: input.pendingAirportClarification ?? [],
+    pendingDestinationClarification: input.pendingDestinationClarification ?? [],
+    lastStepFailure: input.lastStepFailure ?? null,
   };
   return `Current trip state:\n${JSON.stringify(state)}\n\nLatest user message:\n${input.userMessage}`;
 }

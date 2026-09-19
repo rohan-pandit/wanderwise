@@ -122,25 +122,30 @@ function escapeIlikeLiteral(value: string): string {
  * ongoing-maintenance fix deliberately not built here without deciding
  * that's worth it first.
  */
+function baseDestinationQuery(
+  supabase: SupabaseClient<Database>,
+  inventoryVersion: number,
+  country: string | undefined,
+) {
+  let query = supabase.from("destinations").select("*").eq("inventory_version", inventoryVersion);
+  if (country) {
+    query = query.ilike("country", escapeIlikeLiteral(country.trim()));
+  }
+  return query;
+}
+
 export async function getDestinationByName(
   supabase: SupabaseClient<Database>,
   name: string,
   inventoryVersion: number = CURRENT_INVENTORY_VERSION,
   country?: string | null,
 ): Promise<Destination | null> {
-  const trimmedName = name.trim();
-  const escapedName = escapeIlikeLiteral(trimmedName);
+  const escapedName = escapeIlikeLiteral(name.trim());
   const trimmedCountry = country?.trim();
 
-  function baseQuery() {
-    let query = supabase.from("destinations").select("*").eq("inventory_version", inventoryVersion);
-    if (trimmedCountry) {
-      query = query.ilike("country", escapeIlikeLiteral(trimmedCountry));
-    }
-    return query;
-  }
-
-  const exactRows = await unwrapOrThrow(baseQuery().ilike("name", escapedName).limit(2));
+  const exactRows = await unwrapOrThrow(
+    baseDestinationQuery(supabase, inventoryVersion, trimmedCountry).ilike("name", escapedName).limit(2),
+  );
   if (exactRows.length > 1) {
     throw new AmbiguousDestinationNameError(name, inventoryVersion);
   }
@@ -148,9 +153,97 @@ export async function getDestinationByName(
     return exactRows[0];
   }
 
-  const fuzzyRows = await unwrapOrThrow(baseQuery().ilike("name", `%${escapedName}%`).limit(2));
+  const fuzzyRows = await unwrapOrThrow(
+    baseDestinationQuery(supabase, inventoryVersion, trimmedCountry).ilike("name", `%${escapedName}%`).limit(2),
+  );
   if (fuzzyRows.length > 1) {
     throw new AmbiguousDestinationNameError(name, inventoryVersion);
   }
   return fuzzyRows[0] ?? null;
+}
+
+export interface DestinationNameMatch {
+  /** Set when the name resolves unambiguously and exactly — nothing to confirm. */
+  exact: Destination | null;
+  /**
+   * Populated only when there's no exact match: every destination whose
+   * name contains the query (case-insensitive), up to a handful — the raw
+   * material for a "did you mean X?" (one candidate) or "which did you
+   * mean, X or Y?" (several) clarification. Empty means genuinely no
+   * matching destination exists at all.
+   */
+  fuzzyCandidates: Destination[];
+}
+
+const MAX_FUZZY_DESTINATION_CANDIDATES = 6;
+
+/**
+ * The richer sibling of `getDestinationByName`, for `checkDestinationReadiness`
+ * (`src/workflow/step-shared.ts`) — that function needs to *ask the user to
+ * confirm* a non-exact match rather than silently resolving it the way
+ * `getDestinationByName` does, so it needs the full fuzzy candidate list,
+ * not just a collapsed single result or a thrown `AmbiguousDestinationNameError`.
+ * Shares the same two-query exact-then-contains strategy and the same
+ * `AmbiguousDestinationNameError` semantics for a genuinely ambiguous
+ * *exact* match (two destinations with the identical name) — only the
+ * fuzzy side is exposed as a list instead of collapsed/thrown.
+ */
+export async function matchDestinationsByName(
+  supabase: SupabaseClient<Database>,
+  name: string,
+  inventoryVersion: number = CURRENT_INVENTORY_VERSION,
+  country?: string | null,
+): Promise<DestinationNameMatch> {
+  const escapedName = escapeIlikeLiteral(name.trim());
+  const trimmedCountry = country?.trim();
+
+  const exactRows = await unwrapOrThrow(
+    baseDestinationQuery(supabase, inventoryVersion, trimmedCountry).ilike("name", escapedName).limit(2),
+  );
+  if (exactRows.length > 1) {
+    throw new AmbiguousDestinationNameError(name, inventoryVersion);
+  }
+  if (exactRows.length === 1) {
+    return { exact: exactRows[0], fuzzyCandidates: [] };
+  }
+
+  const fuzzyCandidates = await unwrapOrThrow(
+    baseDestinationQuery(supabase, inventoryVersion, trimmedCountry)
+      .ilike("name", `%${escapedName}%`)
+      .limit(MAX_FUZZY_DESTINATION_CANDIDATES),
+  );
+  return { exact: null, fuzzyCandidates };
+}
+
+/**
+ * Every distinct `country` value already in the seed catalog (deduped,
+ * case as stored) — used by `checkDestinationReadiness` to recognize when a
+ * trip's `destination` requirement is a whole country ("Spain") rather than
+ * a specific city, so it can ask which city instead of failing outright.
+ * Small, cached-free (this table is tiny and rarely read this way), plain
+ * query — no new column needed since `country` already exists per-row.
+ */
+export async function listDestinationCountries(
+  supabase: SupabaseClient<Database>,
+  inventoryVersion: number = CURRENT_INVENTORY_VERSION,
+): Promise<string[]> {
+  const rows = await unwrapOrThrow(
+    supabase.from("destinations").select("country").eq("inventory_version", inventoryVersion).not("country", "is", null),
+  );
+  return [...new Set(rows.map((r) => r.country).filter((c): c is string => Boolean(c)))];
+}
+
+/** Every destination whose `country` case-insensitively matches `country` exactly — for `checkDestinationReadiness`'s "which city in {country}?" clarification once a whole-country `destination` is recognized. */
+export async function listDestinationsByCountry(
+  supabase: SupabaseClient<Database>,
+  country: string,
+  inventoryVersion: number = CURRENT_INVENTORY_VERSION,
+): Promise<Destination[]> {
+  return unwrapOrThrow(
+    supabase
+      .from("destinations")
+      .select("*")
+      .eq("inventory_version", inventoryVersion)
+      .ilike("country", escapeIlikeLiteral(country.trim())),
+  );
 }

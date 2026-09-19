@@ -204,6 +204,32 @@ function friendlyStepErrorMessage(err: unknown): string | null {
   return null;
 }
 
+/**
+ * Records a cold-start propose failure to `trip_events` — the counterpart
+ * to the existing `chain_revision_failed` write below (`sendMessage`'s
+ * `after()` block), but for the three direct propose* actions below
+ * instead of a chat-driven revision. Until this existed, a cold-start
+ * failure (the very first search every trip goes through) left no
+ * persisted signal anywhere — `getLatestChainStepFailure`
+ * (`src/repositories/trip-events.ts`) reads this back into the Intake
+ * agent's context so a follow-up "check again?" gets an answer grounded in
+ * what actually happened (found live 2026-09-19, debugging a real stuck
+ * trip: the model had no such signal and guessed wrong). Best-effort —
+ * logging shouldn't stop the user from getting their friendly error back.
+ */
+async function logChainProposeFailed(
+  supabase: ReturnType<typeof createServiceClient>,
+  tripId: string,
+  step: "flight" | "hotel" | "activities",
+  message: string,
+): Promise<void> {
+  await appendTripEvent(supabase, {
+    tripId,
+    eventType: "chain_propose_failed",
+    payload: { step, message },
+  }).catch((logErr) => console.error(`failed to log chain_propose_failed event for trip ${tripId}:`, logErr));
+}
+
 export interface StepActionError {
   error: string;
 }
@@ -326,6 +352,14 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
     // just a city name. Evals' own `processIntakeTurn` calls leave this off
     // — the seed-backed path they use has no airport concept at all.
     enableAirportDisambiguation: true,
+    // Always on for the same reason as above (evals leave this off too) —
+    // debugging two real stuck trips live (2026-09-19): a natural, common
+    // destination phrasing ("New York" for the seeded "New York City")
+    // resolved *silently* via `getDestinationByName`'s fuzzy fallback,
+    // which meant the user never found out their exact wording didn't
+    // match — this asks them to confirm instead, before the trip ever
+    // reaches requirements_ready.
+    enableDestinationDisambiguation: true,
   });
 
   // Auto-chain a chat-requested revision, scheduled via `after()` so this
@@ -419,7 +453,10 @@ export async function proposeFlightCandidates(input: ProposeFlightCandidatesInpu
     return await proposeFlightStep(supabase, { tripId: input.tripId, flightProvider: stepwiseChainClients().flightProvider });
   } catch (err) {
     const friendly = friendlyStepErrorMessage(err);
-    if (friendly) return { error: friendly };
+    if (friendly) {
+      await logChainProposeFailed(supabase, input.tripId, "flight", friendly);
+      return { error: friendly };
+    }
     throw err;
   }
 }
@@ -466,7 +503,10 @@ export async function proposeHotelCandidates(input: ProposeHotelCandidatesInput)
     return await proposeHotelStep(supabase, { tripId: input.tripId });
   } catch (err) {
     const friendly = friendlyStepErrorMessage(err);
-    if (friendly) return { error: friendly };
+    if (friendly) {
+      await logChainProposeFailed(supabase, input.tripId, "hotel", friendly);
+      return { error: friendly };
+    }
     throw err;
   }
 }
@@ -519,7 +559,10 @@ export async function proposeActivityCandidates(
     });
   } catch (err) {
     const friendly = friendlyStepErrorMessage(err);
-    if (friendly) return { error: friendly };
+    if (friendly) {
+      await logChainProposeFailed(supabase, input.tripId, "activities", friendly);
+      return { error: friendly };
+    }
     throw err;
   }
 }
