@@ -278,7 +278,19 @@ function ItineraryDrawerShell({
       }}
     >
       <Drawer.Portal>
-        {open ? <Drawer.Backdrop className="fixed inset-0 z-30 bg-navy-900/40" /> : null}
+        {/* Always mounted (like `Popup` below), not `{open ? <Backdrop/> :
+            null}` — a freshly-mounted element has no prior style to
+            transition *from*, so the old conditional-render version popped
+            in at full darkness instantly the moment the sheet expanded,
+            part of what read as "a glitch" rather than an entrance. Driving
+            its opacity from `open` with a real `transition` lets the same
+            element fade in/out instead. `pointer-events-none` while
+            collapsed for the same reason `Viewport` needs it below — an
+            always-mounted `fixed inset-0` element must not swallow clicks
+            when it's not supposed to be visually present. */}
+        <Drawer.Backdrop
+          className={`fixed inset-0 z-30 bg-navy-900/40 transition-opacity duration-[450ms] ease-[cubic-bezier(0.32,0.72,0,1)] ${open ? "opacity-100" : "pointer-events-none opacity-0"}`}
+        />
         {/* `Viewport` is a `fixed inset-0` positioning box that stays mounted
             even at the peek snap point (see above) — without
             `pointer-events-none` here, it silently intercepts every tap
@@ -294,19 +306,27 @@ function ItineraryDrawerShell({
               `Content` is the exact split Base UI's own bottom-sheet/snap-point
               demos use — without it, a touch-drag anywhere in `Popup`
               (including inside a long scrollable list) is ambiguous between
-              "resize the sheet" and "scroll the content," and it was
-              resolving in the drawer's favor: found live on a phone, the
-              activities list couldn't be scrolled at all — every drag moved
-              the sheet instead. Restricting `Popup` itself to no native touch
-              handling (drag physics are JS-driven) while explicitly opting
-              `Content` back into normal touch scrolling removes the
-              ambiguity: a drag that starts over the scrollable list scrolls
-              it; the peek bar / drag handle, which sit outside `Content`,
-              still resize the sheet as before. */}
-          <Drawer.Popup className="pointer-events-auto touch-none flex w-full flex-col rounded-t-2xl border-t border-sand-200 bg-sand-50 shadow-[0_-8px_24px_rgba(22,35,58,0.16)] outline-none [height:var(--drawer-height)] [transform:translateY(calc(var(--drawer-snap-point-offset)_+_var(--drawer-swipe-movement-y)))]">
+              "resize the sheet" and "scroll the content." That alone wasn't
+              enough on a real phone (the activities list still dragged the
+              sheet instead of scrolling): the docs separately call out that
+              swipe-dismiss recognition on touch can capture a descendant
+              regardless of its own `touch-action`, and `data-base-ui-swipe-ignore`
+              (below, on `Content`) is the documented way to opt an element out
+              of that for every input type, not just tell the browser how to
+              handle native panning. `transition-[height,transform]` on `Popup`
+              itself is the other half of "looked like a glitch" — the
+              snap-point transform (and the height swap between the peek
+              button and the full `Content`) had no transition at all, so it
+              snapped instantly instead of sliding. */}
+          <Drawer.Popup className="pointer-events-auto touch-none flex w-full flex-col rounded-t-2xl border-t border-sand-200 bg-sand-50 shadow-[0_-8px_24px_rgba(22,35,58,0.16)] outline-none transition-[height,transform] duration-[450ms] ease-[cubic-bezier(0.32,0.72,0,1)] [height:var(--drawer-height)] [transform:translateY(calc(var(--drawer-snap-point-offset)_+_var(--drawer-swipe-movement-y)))]">
             <div aria-hidden="true" className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-sand-300" />
             {open ? (
-              <Drawer.Content className="min-h-0 flex-1 touch-auto overflow-y-auto overscroll-contain px-6 pb-6">{children}</Drawer.Content>
+              <Drawer.Content
+                data-base-ui-swipe-ignore
+                className="min-h-0 flex-1 touch-auto overflow-y-auto overscroll-contain px-6 pb-6"
+              >
+                {children}
+              </Drawer.Content>
             ) : (
               <button type="button" onClick={onExpand} className="flex w-full flex-1 items-center gap-2 px-6">
                 <span className="text-sm font-medium text-navy-900">Itinerary</span>
