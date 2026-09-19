@@ -317,8 +317,33 @@ function ItineraryDrawerShell({
               itself is the other half of "looked like a glitch" — the
               snap-point transform (and the height swap between the peek
               button and the full `Content`) had no transition at all, so it
-              snapped instantly instead of sliding. */}
-          <Drawer.Popup className="pointer-events-auto touch-none flex w-full flex-col rounded-t-2xl border-t border-sand-200 bg-sand-50 shadow-[0_-8px_24px_rgba(22,35,58,0.16)] outline-none transition-[height,transform] duration-[450ms] ease-[cubic-bezier(0.32,0.72,0,1)] [height:var(--drawer-height)] [transform:translateY(calc(var(--drawer-snap-point-offset)_+_var(--drawer-swipe-movement-y)))]">
+              snapped instantly instead of sliding.
+
+              `[height:var(--drawer-height)]` (removed) was a real bug, not
+              just a missing transition: `--drawer-height` is Base UI's own
+              measurement of the popup's *natural* content height (exposed
+              for its internal nested-drawer-stacking math), not a value
+              clamped to the snap point. Feeding it back into the popup's own
+              `height` is a no-op for short content, which is why this looked
+              fine until a genuinely long itinerary was tested — found live
+              2026-09-18 on a finalized trip's full day-by-day text: the popup
+              grew to its full ~1387px natural height on a 812px-tall phone
+              viewport, positioned via transform for an ~666px-tall (82vh)
+              sheet, leaving roughly the bottom half of the content rendered
+              below the visible screen with no way to reach it (`Content`'s
+              own `overflow-y-auto` never engaged, since nothing was actually
+              overflowing *its* box — the box itself was just too tall).
+              A `max-height` tied to `DRAWER_FULL_SNAP` (via inline `style`,
+              not a Tailwind arbitrary class — Tailwind's JIT scanner needs a
+              literal class string at build time, so it can't pick up a
+              value interpolated from the JS constant; inline `style` has no
+              such constraint) caps the popup so `Content`'s existing
+              internal scroll actually has something to do; the peek
+              button's own content is short enough that the cap never
+              affects the collapsed state. */}
+          <Drawer.Popup
+            style={{ maxHeight: `${DRAWER_FULL_SNAP * 100}vh` }}
+            className="pointer-events-auto touch-none flex w-full flex-col rounded-t-2xl border-t border-sand-200 bg-sand-50 shadow-[0_-8px_24px_rgba(22,35,58,0.16)] outline-none transition-transform duration-[450ms] ease-[cubic-bezier(0.32,0.72,0,1)] [transform:translateY(calc(var(--drawer-snap-point-offset)_+_var(--drawer-swipe-movement-y)))]">
             <div aria-hidden="true" className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-sand-300" />
             {open ? (
               <Drawer.Content
