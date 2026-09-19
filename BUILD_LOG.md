@@ -1699,3 +1699,23 @@ Testing the scroll fix from earlier today against a finalized trip's genuinely l
 **Verification:** `npx tsc --noEmit`/`npm run lint`/`npm test` (452/452, unchanged) all pass. #12 confirmed live (scrolled a real finalized trip's full itinerary into view on mobile). #10 and #11 not yet re-verified live post-deploy.
 
 **Next recommended task:** Push, then return to the one instruction not yet acted on: investigate why every route tried today (NY→Lisbon, Boston→London, both with generous budgets) returned zero real flights, now that SerpAPI quota is confirmed not the cause.
+
+---
+
+## 2026-09-18 (continued) — Root-caused and fixed the systemic "zero flights" bug via a diagnostic chain, verified live #12/#10/#11
+
+**What happened:** Confirmed #12 (drawer max-height) live — scrolled a real finalized trip's full itinerary into view on mobile, previously impossible. Confirmed #10 live twice (fresh trips with ambiguous origins correctly show "Answer the chat's questions" instead of a premature error). Confirmed #11 live via measurement (chat panel content now 672px/`max-w-2xl`, centered, not full-width). Also confirmed the earlier "clipped nav" observation from the tablet-landscape screenshot was this session's own screenshot-capture tooling limitation (caps around 800px regardless of emulated viewport) — checked via `getBoundingClientRect`, not a real bug; corrected before it got reported as one.
+
+Then returned to the flight-search issue as instructed, with no access to Vercel's server logs or the database to inspect directly. Root-caused it the only way available: a deliberate chain of three temporary diagnostics, each committed, deployed, tested against a real trip, read, then fully reverted before moving to the next layer — never left in the codebase. The trail: (1) raw-SerpAPI-response diagnostic in the provider client never fired, meaning SerpAPI was never even being called for the failing routes; (2) a candidate-count diagnostic at the hard-constraint filter showed one leg with zero candidates and zero active constraints — nothing to even filter; (3) an unconditional-throw diagnostic in `findFlightsFromProvider` produced a result that was only possible if the live provider path wasn't being exercised at all, which is what pointed at the call site instead of SerpAPI itself.
+
+**Real bug**: `proposeFlightCandidates` (`app/app/actions.ts`) — the client's direct cold-start propose call, the very first search every trip goes through — never passed a `flightProvider` to `proposeFlightStep`, unlike every other flight-related action in the same file. Omitting it silently falls back to the seed-backed synthetic generator instead of the "SerpAPI-only" live path this codebase's own comments claim is used everywhere. The synthetic generator's per-weekday route-availability logic explains the exact pattern seen live (one direction finds nothing, the reverse finds something) — nothing to do with budget, hard constraints, or SerpAPI quota, all of which were reasonably suspected along the way.
+
+**What I built:** `proposeFlightCandidates` now passes `flightProvider: stepwiseChainClients().flightProvider`, matching `confirmFlightCandidate`/`confirmCascadeAndRevise`. All temporary diagnostics fully reverted — diffed the final state against the pre-diagnostic commit to confirm zero leftover debug code.
+
+**Decisions made:** none needing the user's input — a real, unambiguous wiring gap, not an architectural choice.
+
+**Verification:** `npx tsc --noEmit`/`npm run lint`/`npm test` (452/452, unchanged) all pass. Not yet re-verified live — every route tested today had already been driven through the buggy cold-start path at least once, so a clean confirmation needs a fresh trip with an ambiguous origin, not yet attempted post-fix.
+
+**Known limitations:** this agent still has no way to inspect Vercel server logs or query the database directly — every diagnostic here had to route through the client-visible error-message path, which worked but is a slow, deploy-per-hypothesis way to debug. Worth the user considering read-only DB/log access for future sessions if this pattern recurs.
+
+**Next recommended task:** Confirm the fix live — a fresh trip through an ambiguous-origin city (repeating today's exact repro) should now find real SerpAPI results instead of "no flights match." Also worth deciding whether `findFlightsFromProvider`'s complete lack of a synthetic fallback (only the seed-backed `findFlights` has one) is itself a gap worth closing, now that the live path will actually run on every cold start.

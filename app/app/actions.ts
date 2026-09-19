@@ -163,10 +163,7 @@ function stepwiseChainClients(): StepwiseChainClients {
  */
 function friendlyStepErrorMessage(err: unknown): string | null {
   if (err instanceof NoViableFlightCandidatesError) {
-    // TEMPORARY DIAGNOSTIC (2026-09-18) — surfacing the real message (which
-    // now includes raw candidate counts, see flight-step.ts) instead of the
-    // normal friendly text. Revert alongside the other temporary diagnostics.
-    return `DIAGNOSTIC: ${err.message}`;
+    return "No flights match your current requirements — try relaxing the budget or other constraints.";
   }
   if (err instanceof NoViableHotelCandidatesError) {
     return "No hotels match your current requirements — try relaxing the price or rating constraints.";
@@ -188,11 +185,7 @@ function friendlyStepErrorMessage(err: unknown): string | null {
     return "Which airport to search wasn't fully resolved — try asking again, naming the specific airport.";
   }
   if (err instanceof FlightProviderError) {
-    // TEMPORARY DIAGNOSTIC (2026-09-18) — surfacing the real message instead
-    // of the normal friendly text, to read the raw-response diagnostic
-    // thrown in serpapi-flight-provider.ts without Vercel server-log access.
-    // Revert alongside that diagnostic once root-caused.
-    return `DIAGNOSTIC: ${err.message}`;
+    return "Live flight search is temporarily unavailable — try again in a moment.";
   }
   if (err instanceof HotelStepNotConfirmedError) {
     return "Confirm a hotel first — activities aren't ready to search yet.";
@@ -366,11 +359,30 @@ export interface ProposeFlightCandidatesInput {
   tripId: string;
 }
 
+/**
+ * The real bug behind "every route returns zero flights regardless of
+ * budget," found 2026-09-18: this is the client's own direct cold-start
+ * propose call (`itinerary-panel.tsx`'s auto-propose effect, the very first
+ * search every trip goes through) — but unlike every other flight-related
+ * action here (`confirmFlightCandidate` → `advanceOrRefreshChain`,
+ * `confirmCascadeAndRevise` → `reviseChainStep`, both via
+ * `stepwiseChainClients()`), it never passed a `flightProvider` at all.
+ * `proposeFlightStep` silently falls back to the seed-backed `findFlights`
+ * path when `flightProvider` is omitted — so the cold-start search was never
+ * actually hitting the "SerpAPI-only" live path this module's own docstring
+ * says the whole app uses; it was hitting the synthetic generator instead,
+ * whose per-weekday route availability explains the outbound-fails/
+ * return-succeeds pattern seen live (a real SerpAPI query for the same
+ * route+date, from a later revision, found real results). Root-caused via a
+ * chain of temporary diagnostics (reverted): the raw-response diagnostic in
+ * `serpapi-flight-provider.ts` never fired (SerpAPI was never even being
+ * called), which pointed here.
+ */
 export async function proposeFlightCandidates(input: ProposeFlightCandidatesInput): Promise<ProposeFlightStepResult | StepActionError> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId);
   try {
-    return await proposeFlightStep(supabase, { tripId: input.tripId });
+    return await proposeFlightStep(supabase, { tripId: input.tripId, flightProvider: stepwiseChainClients().flightProvider });
   } catch (err) {
     const friendly = friendlyStepErrorMessage(err);
     if (friendly) return { error: friendly };
