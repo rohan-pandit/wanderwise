@@ -85,6 +85,14 @@ Nothing to do. Any `*.vercel.app` deployment gets a valid TLS cert automatically
 
 **What you need to do:** nothing extra — this app already points at your one hosted Supabase project, and `supabase/migrations/*.sql` are already applied there (same project local dev uses). No new migration step for this deployment.
 
+**Deliberate decision (2026-09-18): one shared Supabase project, not separate dev/prod databases.** Local dev and the deployed Vercel app (production + any preview deployments) all point at the same `NEXT_PUBLIC_SUPABASE_URL`/keys — there is no environment-level database isolation. Consequences accepted knowingly, not overlooked:
+- Peer reviewers' trip data and your local dev/testing activity land in the same tables and the same `/internal/analytics` dashboard.
+- A future schema migration is applied once, against that one project, and is immediately live everywhere — there's nothing to "promote" between environments.
+
+This is fine for a portfolio project with no real user data at stake; revisit only if that stops being true.
+
+**Migrations remain a manual step, not a Vercel/GitHub-triggered one.** Pushing code to `main` only redeploys the Next.js app (`next build`) — it does not run `supabase db push` or anything else against the database (confirmed: no such step exists in `.github/workflows/ci.yml` or anywhere else in the repo). A schema change still needs, in order: write the `.sql` migration → apply it manually via `supabase db push --db-url <connection-string>` or the Supabase SQL editor → hand-edit `database.types.ts` to match (it's hand-maintained, not generated — see `BUILD_LOG.md`) → commit and push both files so Vercel's deployed code matches the new schema.
+
 ---
 
 ## 7. Verify and share

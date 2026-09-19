@@ -257,11 +257,40 @@ function ItineraryDrawerShell({
         if (snapPoint === DRAWER_FULL_SNAP) onExpand();
         else onCollapse();
       }}
+      // `open` above is always `true` (this sheet never unmounts), but Base
+      // UI's own gesture/dismissal logic doesn't know that — a strong-enough
+      // downward swipe still crosses its internal dismiss threshold and
+      // requests a real close via `onOpenChange`, same as ESC/outside-press
+      // would. With no handler, that request lands on nothing (a fixed
+      // `open` prop can't become false) but Base UI still runs its "closing"
+      // transition — the source of the reported "swipe down is broken/not
+      // smooth" (swipe up never hits this path, since `swipeDirection` only
+      // treats down as a dismiss direction, matching the docs' own note that
+      // an uncanceled dismiss request also force-resets the active snap
+      // point out from under `onSnapPointChange`). Canceling it and routing
+      // to `onCollapse` ourselves — the documented pattern for "this drawer
+      // must not actually close" (see the Drawer docs' "Close confirmation"
+      // example) — makes a hard downward swipe just settle at the peek snap
+      // point instead of fighting an unhandled close animation.
+      onOpenChange={(_nextOpen, eventDetails) => {
+        eventDetails.cancel();
+        onCollapse();
+      }}
     >
       <Drawer.Portal>
         {open ? <Drawer.Backdrop className="fixed inset-0 z-30 bg-navy-900/40" /> : null}
-        <Drawer.Viewport className="fixed inset-0 z-40 flex items-end">
-          <Drawer.Popup className="flex w-full flex-col rounded-t-2xl border-t border-sand-200 bg-sand-50 shadow-[0_-8px_24px_rgba(22,35,58,0.16)] outline-none [height:var(--drawer-height)] [transform:translateY(calc(var(--drawer-snap-point-offset)_+_var(--drawer-swipe-movement-y)))]">
+        {/* `Viewport` is a `fixed inset-0` positioning box that stays mounted
+            even at the peek snap point (see above) — without
+            `pointer-events-none` here, it silently intercepts every tap
+            across the *entire* screen, including the chat input below it,
+            because its hit-testing area is the full box regardless of how
+            little of it the peek bar actually fills (found live on a real
+            phone: the chat box was unclickable the instant the drawer
+            existed, focused or not). `pointer-events-auto` on `Popup` opts
+            the actually-visible sheet back in — the same split the Drawer
+            docs' own "Non-modal" example uses for exactly this reason. */}
+        <Drawer.Viewport className="pointer-events-none fixed inset-0 z-40 flex items-end">
+          <Drawer.Popup className="pointer-events-auto flex w-full flex-col rounded-t-2xl border-t border-sand-200 bg-sand-50 shadow-[0_-8px_24px_rgba(22,35,58,0.16)] outline-none [height:var(--drawer-height)] [transform:translateY(calc(var(--drawer-snap-point-offset)_+_var(--drawer-swipe-movement-y)))]">
             <div aria-hidden="true" className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-sand-300" />
             {open ? (
               <Drawer.Content className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">{children}</Drawer.Content>
