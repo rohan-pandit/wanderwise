@@ -42,6 +42,7 @@ export interface Database {
           user_id: string;
           status: string;
           correlation_id: string | null;
+          name: string | null;
           created_at: string;
         };
         Insert: {
@@ -50,6 +51,7 @@ export interface Database {
           user_id: string;
           status?: string;
           correlation_id?: string | null;
+          name?: string | null;
           created_at?: string;
         };
         Relationships: [];

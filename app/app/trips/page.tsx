@@ -25,7 +25,7 @@ export default async function TripsPage() {
   const supabase = await createClient();
   const { data: trips, error } = await supabase
     .from("trips")
-    .select("id, status, created_at")
+    .select("id, name, status, created_at")
     .order("created_at", { ascending: false });
 
   const decisionsByTrip = new Map<string, ChainDecision[]>();
@@ -59,7 +59,7 @@ export default async function TripsPage() {
         ) : !trips || trips.length === 0 ? (
           <p className="mt-4 text-sm text-navy-400">
             No trips yet.{" "}
-            <Link href="/app" className="text-teal-700 underline hover:text-teal-800">
+            <Link href="/app/new" className="text-teal-700 underline hover:text-teal-800">
               Start planning one
             </Link>
             .
@@ -72,8 +72,8 @@ export default async function TripsPage() {
                   href={`/app/trips/${trip.id}`}
                   className="flex items-center justify-between rounded-lg border border-sand-200 bg-sand-100 px-4 py-3 text-sm transition-colors hover:border-teal-600"
                 >
-                  <span className="text-navy-900">
-                    Trip {trip.id.slice(0, 8)}
+                  <span className={trip.name ? "font-semibold text-navy-900" : "text-navy-400 italic"}>
+                    {trip.name ?? `Untitled trip · ${trip.id.slice(0, 8)}`}
                   </span>
                   <span className="text-navy-400">
                     {describeProgress(trip.status, decisionsByTrip.get(trip.id) ?? [])}

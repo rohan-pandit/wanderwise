@@ -3,13 +3,96 @@ import { createClient } from "@/src/config/supabase/server";
 import { REQUIRED_FOR_READY, checkDatesNotInThePast, type RequirementFieldName } from "@/src/domain/extraction";
 import { listActiveTripRequirements } from "@/src/repositories/trip-requirements";
 import { checkAirportReadiness } from "@/src/workflow/step-shared";
+import type { Flight } from "@/src/repositories/flights";
+import type { Hotel } from "@/src/repositories/hotels";
+import type { ProposedScheduledActivity } from "@/src/workflow/activities-step";
 import { type ChatMessage } from "../../_components/chat-panel";
 import { TripWorkspace } from "../../_components/trip-workspace";
+import { TripReview } from "../../_components/trip-review";
+
+interface BudgetDecision {
+  totalEstimate?: { amount: number; currency: string };
+}
+
+function formatDateRange(startIso: string, endIso: string): string {
+  const start = new Date(`${startIso}T00:00:00`);
+  const end = new Date(`${endIso}T00:00:00`);
+  const startLabel = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(start);
+  const endLabel = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(end);
+  return `${startLabel}–${endLabel}`;
+}
 
 /**
- * A specific trip's chat + live itinerary, resumed. RLS enforces ownership —
- * a trip belonging to another user simply won't be returned by this query,
- * so we don't need a separate authorization check here.
+ * Builds the finalized review page's props (`TripReview`) — a finalized
+ * trip's flight/hotel/activities/itineraryText/budget decisions are all
+ * confirmed and immutable by this point (`ItineraryPanel`'s own `finalized`
+ * gating, `docs/END_TO_END_TESTING_ISSUES.md`-adjacent session work), so
+ * this is a one-shot server-side fetch+join, not a live subscription.
+ */
+async function loadTripReviewProps(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  tripId: string,
+  tripName: string | null,
+  messages: ChatMessage[],
+) {
+  const [{ data: decisionRows }, requirementRows] = await Promise.all([
+    supabase.from("trip_decisions").select("field, value, status").eq("trip_id", tripId).eq("status", "confirmed"),
+    listActiveTripRequirements(supabase, tripId),
+  ]);
+
+  const decisions = decisionRows ?? [];
+  const confirmedValue = (field: string) => decisions.find((d) => d.field === field)?.value as string | undefined;
+
+  const outboundId = confirmedValue("outboundFlight");
+  const returnId = confirmedValue("returnFlight");
+  let flight: { outboundFlight: Flight; returnFlight: Flight } | null = null;
+  if (outboundId && returnId) {
+    const { data: flightRows } = await supabase.from("flights").select("*").in("id", [outboundId, returnId]);
+    const outboundFlight = flightRows?.find((f) => f.id === outboundId) as Flight | undefined;
+    const returnFlight = flightRows?.find((f) => f.id === returnId) as Flight | undefined;
+    if (outboundFlight && returnFlight) flight = { outboundFlight, returnFlight };
+  }
+
+  const hotelId = confirmedValue("hotel");
+  let hotel: Hotel | null = null;
+  if (hotelId) {
+    const { data: hotelRow } = await supabase.from("hotels").select("*").eq("id", hotelId).maybeSingle();
+    if (hotelRow) hotel = hotelRow as Hotel;
+  }
+
+  const activities = decisions.find((d) => d.field === "activities")?.value as ProposedScheduledActivity[] | undefined;
+  const itineraryText = confirmedValue("itineraryText") ?? null;
+  const budget = decisions.find((d) => d.field === "budget")?.value as BudgetDecision | undefined;
+
+  const reqsMap = new Map(requirementRows.map((r) => [r.field, r.value as string | number]));
+  const destination = reqsMap.get("destination") as string | undefined;
+  const departureDate = reqsMap.get("departureDate") as string | undefined;
+  const returnDate = reqsMap.get("returnDate") as string | undefined;
+  const partySize = reqsMap.get("partySize") as number | undefined;
+  const summaryParts = [
+    destination,
+    departureDate && returnDate ? formatDateRange(departureDate, returnDate) : null,
+    partySize ? `${partySize} traveler${partySize === 1 ? "" : "s"}` : null,
+  ].filter(Boolean);
+
+  return {
+    tripName,
+    summaryLine: summaryParts.length > 0 ? summaryParts.join(" · ") : null,
+    flight,
+    hotel,
+    activities: activities ?? null,
+    itineraryText,
+    totalEstimate: budget?.totalEstimate,
+    messages,
+  };
+}
+
+/**
+ * A specific trip's chat + live itinerary, resumed — or, once finalized, a
+ * dedicated read-only review page instead (`TripReview`; see its own
+ * docstring). RLS enforces ownership — a trip belonging to another user
+ * simply won't be returned by this query, so we don't need a separate
+ * authorization check here.
  */
 export default async function TripPage({
   params,
@@ -20,7 +103,7 @@ export default async function TripPage({
   const supabase = await createClient();
   const { data: trip, error } = await supabase
     .from("trips")
-    .select("id, session_id, status, created_at")
+    .select("id, session_id, status, name, created_at")
     .eq("id", tripId)
     .single();
 
@@ -44,6 +127,11 @@ export default async function TripPage({
     role: m.role as ChatMessage["role"],
     content: m.content,
   }));
+
+  if (trip.status === "finalized") {
+    const reviewProps = await loadTripReviewProps(supabase, trip.id, trip.name, initialMessages);
+    return <TripReview {...reviewProps} />;
+  }
 
   // `ItineraryPanel` must not attempt to search flights before the trip's
   // requirements are actually complete (`RequirementsNotReadyError` — found

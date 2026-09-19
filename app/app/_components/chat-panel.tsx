@@ -18,7 +18,6 @@
  * either this panel (chat) or that one (a direct "Change" click) can
  * trigger it.
  */
-import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { sendMessage, type PendingCascadeConfirmation } from "../actions";
 import type { LayoutMode } from "./use-layout-mode";
@@ -43,7 +42,7 @@ const ACTIVITY_CATEGORY_OPTIONS: { value: string; label: string }[] = [
 ];
 
 export function ChatPanel({
-  tripId: initialTripId,
+  tripId,
   initialMessages,
   onPendingCascade,
   onRequirementsReady,
@@ -51,7 +50,7 @@ export function ChatPanel({
   onSubmitActivityPreferences,
   layoutMode,
 }: {
-  tripId?: string;
+  tripId: string;
   initialMessages: ChatMessage[];
   onPendingCascade?: (pending: PendingCascadeConfirmation) => void;
   /** Fired once a turn's completeness check (`result.ready`) first reports the trip's requirements are complete — `ItineraryPanel` uses this to know it's safe to search, rather than guessing from an empty decisions list (see its own docstring). Never fired with `false`: going from ready back to not-ready isn't a real transition once `requirements_ready` is reached (`checkRequirementsComplete` only ever gates the one-way `collecting_requirements`/`awaiting_clarification` -> `requirements_ready` hop). */
@@ -63,8 +62,6 @@ export function ChatPanel({
   /** In `"drawer"` mode (`use-layout-mode.ts`), `ItineraryPanel` renders as a `position: fixed` bottom sheet that's always at least a 64px peek bar — without this, that bar sits on top of the message input whenever the sheet is collapsed. Unused in `"split"`/`"sidebar"` mode, where the itinerary is a normal flex sibling instead. */
   layoutMode?: LayoutMode;
 }) {
-  const router = useRouter();
-  const [tripId, setTripId] = useState(initialTripId);
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
@@ -72,18 +69,6 @@ export function ChatPanel({
 
   const [activitySelectedCategories, setActivitySelectedCategories] = useState<string[]>([]);
   const [activityNotesInput, setActivityNotesInput] = useState("");
-
-  // Stable across every send attempt until a trip exists — a lost response
-  // followed by a retry (double-click, network-level resend) reuses this
-  // same key, so `startTrip` (src/workflow/controller.ts) resolves it to
-  // the same trip instead of creating a second, orphaned one. Generated
-  // lazily rather than eagerly on mount, since most sessions resume an
-  // existing trip and never need one.
-  const startCorrelationIdRef = useRef<string | null>(null);
-  function startCorrelationId(): string {
-    if (!startCorrelationIdRef.current) startCorrelationIdRef.current = crypto.randomUUID();
-    return startCorrelationIdRef.current;
-  }
 
   // Announces the inline activities prompt once per activation (a rising
   // edge of `activitiesPreferencePrompt`) as a normal assistant message, so
@@ -131,7 +116,6 @@ export function ChatPanel({
       const result = await sendMessage({
         tripId,
         message: trimmed,
-        startCorrelationId: tripId ? undefined : startCorrelationId(),
         turnCorrelationId: crypto.randomUUID(),
       });
       if ("error" in result) {
@@ -139,10 +123,6 @@ export function ChatPanel({
         return;
       }
       setMessages((prev) => [...prev, { role: "assistant", content: result.assistantMessage }]);
-      if (!tripId) {
-        setTripId(result.tripId);
-        router.push(`/app/trips/${result.tripId}`);
-      }
       if (result.pendingCascadeConfirmation) {
         onPendingCascade?.(result.pendingCascadeConfirmation);
       }

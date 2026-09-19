@@ -208,19 +208,61 @@ export interface StepActionError {
   error: string;
 }
 
-export interface SendMessageInput {
-  /** Omit to start a new trip (and its session) for this message. */
-  tripId?: string;
-  message: string;
+const MAX_TRIP_NAME_LENGTH = 200;
+
+export interface CreateTripInput {
+  name: string;
   /**
-   * Client-generated idempotency key for starting a new trip, required only
-   * when `tripId` is omitted. `ChatPanel` generates one once per compose
-   * attempt and reuses it across retries of that same attempt, so a lost
-   * response followed by a retry (or a network-level resend) resolves to
-   * the same trip instead of creating a second, orphaned one — see
-   * `startTrip`'s docstring (`src/workflow/controller.ts`).
+   * Client-generated idempotency key — the same pattern `sendMessage` used
+   * to use for its own now-removed implicit trip creation (see
+   * `startTrip`'s docstring, `src/workflow/controller.ts`): a fresh value
+   * per submit attempt, reused across retries of that same attempt, so a
+   * lost response followed by a retry resolves to the same trip instead of
+   * creating a second, orphaned one.
    */
-  startCorrelationId?: string;
+  correlationId?: string;
+}
+
+export interface CreateTripResult {
+  tripId: string;
+}
+
+/**
+ * The one real-user path to creating a trip (naming happens before chat
+ * starts, not implicitly on the first message — see `app/app/new/page.tsx`).
+ * `name` is required and non-empty here; `NewTrip.name` itself stays
+ * optional at the repository layer (`src/repositories/trips.ts`) since
+ * internal/eval callers of `startTrip` don't go through this screen.
+ */
+export async function createTripAction(input: CreateTripInput): Promise<CreateTripResult> {
+  const authClient = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await authClient.auth.getUser();
+  if (authError || !user) {
+    throw new Error("Not authenticated.");
+  }
+
+  const name = input.name.trim().slice(0, MAX_TRIP_NAME_LENGTH);
+  if (!name) {
+    throw new Error("A trip name is required.");
+  }
+
+  const supabase = createServiceClient();
+  const session = await createSession(supabase, user.id);
+  const { trip } = await startTrip(supabase, {
+    sessionId: session.id,
+    userId: user.id,
+    correlationId: input.correlationId,
+    name,
+  });
+  return { tripId: trip.id };
+}
+
+export interface SendMessageInput {
+  tripId: string;
+  message: string;
   /**
    * Client-generated idempotency key for this turn's chat-message writes
    * (`processIntakeTurn`'s `appendMessageOnce`, `src/workflow/intake-orchestrator.ts`)
@@ -258,28 +300,16 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
   }
 
   const supabase = createServiceClient();
-  let tripId = input.tripId;
-  let sessionId: string;
+  const tripId = input.tripId;
 
-  if (tripId) {
-    const trip = await getTrip(supabase, tripId);
-    if (!trip || trip.user_id !== user.id) {
-      throw new Error(`Trip ${tripId} not found.`);
-    }
-    if (trip.status === "cancelled") {
-      return { error: "This trip has been cancelled — start a new one to keep planning." };
-    }
-    sessionId = trip.session_id;
-  } else {
-    const session = await createSession(supabase, user.id);
-    const { trip } = await startTrip(supabase, {
-      sessionId: session.id,
-      userId: user.id,
-      correlationId: input.startCorrelationId,
-    });
-    tripId = trip.id;
-    sessionId = trip.session_id;
+  const trip = await getTrip(supabase, tripId);
+  if (!trip || trip.user_id !== user.id) {
+    throw new Error(`Trip ${tripId} not found.`);
   }
+  if (trip.status === "cancelled") {
+    return { error: "This trip has been cancelled — start a new one to keep planning." };
+  }
+  const sessionId = trip.session_id;
 
   const modelClient = new AnthropicModelClient(AGENT_MODELS.intake);
   const result = await processIntakeTurn(supabase, modelClient, {

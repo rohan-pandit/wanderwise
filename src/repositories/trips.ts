@@ -9,6 +9,14 @@ export interface NewTrip {
   userId: string;
   /** Idempotency key for trip creation (`startTrip`, `src/workflow/controller.ts`) — see `getTripByCorrelationId`. */
   correlationId?: string;
+  /**
+   * User-facing trip name, required by the app's own `createTripAction`
+   * (`app/app/actions.ts`) — the only real-user path to `startTrip` — but
+   * left optional here so internal/eval callers of `startTrip` that don't
+   * go through that screen (`evals/lib/scenario-harness.ts`,
+   * `controller.test.ts`) aren't forced to invent one.
+   */
+  name?: string;
 }
 
 export const TRIP_CORRELATION_ID_UNIQUE_VIOLATION = "23505";
@@ -20,7 +28,12 @@ export async function createTrip(
   return unwrapOrThrow(
     supabase
       .from("trips")
-      .insert({ session_id: trip.sessionId, user_id: trip.userId, correlation_id: trip.correlationId ?? null })
+      .insert({
+        session_id: trip.sessionId,
+        user_id: trip.userId,
+        correlation_id: trip.correlationId ?? null,
+        name: trip.name ?? null,
+      })
       .select()
       .single(),
   );

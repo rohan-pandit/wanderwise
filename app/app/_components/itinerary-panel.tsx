@@ -42,7 +42,8 @@ import {
   type ChainDecision,
   type ChainStep,
 } from "@/src/domain/chain";
-import { parseMarkdownLite, type InlineSegment } from "@/src/domain/markdown-lite";
+import { formatFlightTime, formatMoney, formatTime } from "@/src/domain/itinerary-format";
+import { ItineraryText } from "./itinerary-text";
 import type { Flight } from "@/src/repositories/flights";
 import type { Hotel } from "@/src/repositories/hotels";
 import {
@@ -85,70 +86,6 @@ interface BudgetDecision {
 
 const STEP_LABELS: Record<ChainStep, string> = { flight: "Flight", hotel: "Hotel", activities: "Activities" };
 const DOWNSTREAM_LABEL: Record<ChainStep, string> = { flight: "hotel and activities", hotel: "activities", activities: "" };
-
-function formatMoney(m?: { amount: number; currency: string }): string | null {
-  if (!m) return null;
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: m.currency }).format(m.amount);
-}
-
-function formatTime(minutes: number): string {
-  const h = Math.floor(minutes / 60) % 24;
-  const m = minutes % 60;
-  const period = h < 12 ? "AM" : "PM";
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return `${hour12}:${String(m).padStart(2, "0")} ${period}`;
-}
-
-function formatFlightTime(iso: string, timeZone: string | null): string {
-  try {
-    return new Intl.DateTimeFormat("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-      timeZone: timeZone ?? "UTC",
-    }).format(new Date(iso));
-  } catch {
-    return iso;
-  }
-}
-
-function renderInline(segments: InlineSegment[], keyPrefix: string): ReactNode[] {
-  return segments.map((segment, i) => {
-    const key = `${keyPrefix}-${i}`;
-    if (segment.type === "bold") return <strong key={key}>{segment.text}</strong>;
-    if (segment.type === "italic") return <em key={key}>{segment.text}</em>;
-    return segment.text;
-  });
-}
-
-/** Renders the Itinerary Writer agent's free-text output (`src/domain/markdown-lite.ts` — a narrow Markdown subset, not a general renderer). */
-function ItineraryText({ text }: { text: string }) {
-  return (
-    <div className="flex flex-col gap-3 text-sm text-navy-700">
-      {parseMarkdownLite(text).map((block, i) => {
-        const key = `md-${i}`;
-        if (block.type === "heading") {
-          const className = "font-serif font-semibold text-navy-900";
-          if (block.level === 1) return <h3 key={key} className={`${className} text-base`}>{renderInline(block.inline, key)}</h3>;
-          if (block.level === 2) return <h4 key={key} className={`${className} text-sm`}>{renderInline(block.inline, key)}</h4>;
-          return <h5 key={key} className={`${className} text-sm`}>{renderInline(block.inline, key)}</h5>;
-        }
-        if (block.type === "list") {
-          const ListTag = block.ordered ? "ol" : "ul";
-          return (
-            <ListTag key={key} className={block.ordered ? "list-decimal space-y-1 pl-5" : "list-disc space-y-1 pl-5"}>
-              {block.items.map((item, j) => (
-                <li key={`${key}-${j}`}>{renderInline(item, `${key}-${j}`)}</li>
-              ))}
-            </ListTag>
-          );
-        }
-        return <p key={key}>{renderInline(block.inline, key)}</p>;
-      })}
-    </div>
-  );
-}
 
 const OPTIMISTIC_ID_PREFIX = "optimistic:";
 
