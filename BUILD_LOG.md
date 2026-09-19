@@ -1603,3 +1603,17 @@ Read `node_modules/@base-ui/react/docs/react/components/drawer.md` (the installe
 **Verification:** `npx tsc --noEmit`/`npm run lint`/`npm test` (451/451, unchanged) all pass. Not verified live on a phone — same access constraint as every entry today.
 
 **Next recommended task:** User to re-test both issues on their phone. If the keyboard-accessory-bar complaint still has substance left after the zoom fix, get a screenshot — that's OS chrome, so any further move (if one even exists) would need to see exactly what's rendering.
+
+---
+
+## 2026-09-18 (continued) — Third drawer bug: activities list couldn't be scrolled, dragged the sheet instead
+
+**What happened:** The keyboard-zoom fix looked good on the user's phone. Next issue: once the activities candidate list is long enough to need scrolling inside the expanded itinerary drawer, touch-dragging it moves the whole drawer instead of scrolling the list.
+
+Compared `ItineraryDrawerShell` (`app/app/_components/itinerary-panel.tsx`) against every bottom-sheet/snap-point example in the installed `@base-ui/react` Drawer docs — all of them apply a specific `touch-action` split that this component was missing entirely: `touch-none` on `Drawer.Popup` (so native touch handling is disabled there and the library's own JS drag physics own the gesture) and `touch-auto overscroll-contain` on `Drawer.Content` (so touches starting over the actual scrollable content get native scrolling instead of being captured as a drag). Without that split, a touch-move anywhere in `Popup` — including inside the activities list, which lives inside `Content` — was ambiguous between "resize the sheet" and "scroll the list," and it was resolving in the drawer's favor every time.
+
+**What I built:** added `touch-none` to `Popup`'s className and `touch-auto overscroll-contain` to `Content`'s className, matching the docs' own bottom-sheet examples exactly (no invented values).
+
+**Verification:** `npx tsc --noEmit`/`npm run lint`/`npm test` (451/451, unchanged) all pass. Not verified live on a phone — same constraint as every fix today; this is the third drawer bug found this way (docs/source comparison, not guessing) and the third still pending the user's own device confirmation.
+
+**Next recommended task:** User to retest scrolling the activities list on their phone. If there's a fourth drawer issue, it's worth stepping back and doing one clean end-to-end gesture pass (expand, collapse, scroll, swipe-down-to-peek, swipe-down-past-peek) in one sitting rather than fixing one report at a time, since several of today's bugs came from the same handful of missing docs-recommended attributes.

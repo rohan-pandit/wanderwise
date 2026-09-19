@@ -290,10 +290,23 @@ function ItineraryDrawerShell({
             the actually-visible sheet back in — the same split the Drawer
             docs' own "Non-modal" example uses for exactly this reason. */}
         <Drawer.Viewport className="pointer-events-none fixed inset-0 z-40 flex items-end">
-          <Drawer.Popup className="pointer-events-auto flex w-full flex-col rounded-t-2xl border-t border-sand-200 bg-sand-50 shadow-[0_-8px_24px_rgba(22,35,58,0.16)] outline-none [height:var(--drawer-height)] [transform:translateY(calc(var(--drawer-snap-point-offset)_+_var(--drawer-swipe-movement-y)))]">
+          {/* `touch-none` on `Popup` + `touch-auto overscroll-contain` on
+              `Content` is the exact split Base UI's own bottom-sheet/snap-point
+              demos use — without it, a touch-drag anywhere in `Popup`
+              (including inside a long scrollable list) is ambiguous between
+              "resize the sheet" and "scroll the content," and it was
+              resolving in the drawer's favor: found live on a phone, the
+              activities list couldn't be scrolled at all — every drag moved
+              the sheet instead. Restricting `Popup` itself to no native touch
+              handling (drag physics are JS-driven) while explicitly opting
+              `Content` back into normal touch scrolling removes the
+              ambiguity: a drag that starts over the scrollable list scrolls
+              it; the peek bar / drag handle, which sit outside `Content`,
+              still resize the sheet as before. */}
+          <Drawer.Popup className="pointer-events-auto touch-none flex w-full flex-col rounded-t-2xl border-t border-sand-200 bg-sand-50 shadow-[0_-8px_24px_rgba(22,35,58,0.16)] outline-none [height:var(--drawer-height)] [transform:translateY(calc(var(--drawer-snap-point-offset)_+_var(--drawer-swipe-movement-y)))]">
             <div aria-hidden="true" className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-sand-300" />
             {open ? (
-              <Drawer.Content className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">{children}</Drawer.Content>
+              <Drawer.Content className="min-h-0 flex-1 touch-auto overflow-y-auto overscroll-contain px-6 pb-6">{children}</Drawer.Content>
             ) : (
               <button type="button" onClick={onExpand} className="flex w-full flex-1 items-center gap-2 px-6">
                 <span className="text-sm font-medium text-navy-900">Itinerary</span>
