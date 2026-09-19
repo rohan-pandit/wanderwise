@@ -1528,3 +1528,27 @@ They added the redirect URL and could load the page from their phone, but the ma
 **Known limitations:** the underlying rate limit itself isn't something to "fix" in code — it's Supabase's default, deliberately-limited built-in mailer. A real fix (if this keeps being a testing friction point) would be configuring a custom SMTP provider (e.g. via `[auth.email.smtp]` in `supabase/config.toml` plus the hosted project's own dashboard settings) — not done here since it needs a real external email provider and credentials the user would need to supply.
 
 **Next recommended task:** Confirm sign-in via the Supabase dashboard's Auth logs (rate limit vs. something else), then resume the deferred live device testing of the drawer's swipe behavior once sign-in is unblocked.
+
+---
+
+## 2026-09-18 (continued) — Deployment planning: Vercel hosting brief, `/internal` access narrowed
+
+**What happened:** The user wants to host the app on Vercel over HTTPS so peers can review it, and asked for the concrete steps from current state to a working public deployment. Read the repo (not PROJECT_BRIEF.md/ADRs, since hosting wasn't previously specified there) to answer from what's actually true rather than generic Vercel advice: confirmed it's already a hosted (not local) Supabase project, `emailRedirectTo` already uses `window.location.origin` (no hardcoded localhost), `next.config.ts` is default (no adapter work needed), and `npm run build` passes clean as-is. Found two real gaps while checking: `SERPAPI_API_KEY` is required unconditionally by `app/app/actions.ts` (no seeded-data fallback) but was missing from `.env.local.example`, and magic-link email delivery goes through Supabase's default rate-limited mailer (2/hour), which was already the cause of last entry's sign-in issue and would only get worse with multiple reviewers.
+
+The user then asked for a written deployment brief, plus two specific asks: they'll set up their own SMTP provider for auth email (a Supabase dashboard change, no app code involved), and they want `/internal/*` (the analytics/product-metrics dashboards) locked to their own email specifically — explicitly not worried about API cost abuse (existing per-provider budget caps cover that) or data confidentiality, just the dashboard visibility.
+
+**What I built:**
+- `proxy.ts`: added an `INTERNAL_ACCESS_EMAIL` check for `/internal/*`, on top of the existing deny-by-default signed-in check — fails closed (unset env var denies everyone) rather than falling back to "any signed-in user."
+- Updated the docstrings in `app/internal/analytics/page.tsx` and `app/internal/product-metrics/page.tsx`, which had explicitly documented "any signed-in user is fine, a role system would be unjustified complexity" as a deliberate Phase 8 decision — noted that this reverses that call now that the app is reachable by more than its one operator, rather than leaving stale reasoning next to code that now contradicts it.
+- `.env.local.example`: added the missing `SERPAPI_API_KEY` and the new `INTERNAL_ACCESS_EMAIL`.
+- `docs/DEPLOYMENT.md`: the actual brief — step-by-step, each step labeled with what's already done, what only the user can do (Vercel/Supabase dashboard actions, SMTP provider signup), and what (if anything) needs to be handed to the agent (nothing — every remaining step is a dashboard setting or copying already-held `.env.local` values into a dashboard).
+
+**Decisions made:** narrowing `/internal/*` to a single-email allowlist was the user's explicit request this session, not something decided unprompted — but it does reverse a previously-documented architectural call, so the reversal itself (and why) is now recorded in both the docstrings and this entry rather than silently overwritten.
+
+**Verification:** `npm run eval:ci` (typecheck + lint + 451/451 tests) and `npm run build` both pass clean with the `proxy.ts` change. No test added for `proxy.ts` itself — consistent with existing project convention (only `src/` pure-function code has Vitest coverage; route/middleware files like `app/auth/callback/route.ts` have none either). Not verified live in a browser (no code path here is meaningfully different to exercise visually beyond the redirect, which the brief's own step 7 has the user confirm post-deploy).
+
+**Known limitations / open items:**
+- Custom SMTP setup, the actual Vercel project creation, and the Supabase Auth URL-configuration change are all outside this agent's access (dashboard-only) and are called out as such in the brief — they're the user's remaining steps, not deferred work.
+- `INTERNAL_ACCESS_EMAIL` is a single hardcoded allowlist entry, not a role system — correct for the stated single-reviewer-dashboard need, but wouldn't extend cleanly to "let a second internal person in" without revisiting.
+
+**Next recommended task:** Once the user finishes the dashboard-side steps in `docs/DEPLOYMENT.md`, confirm the deployed sign-in flow and the `/internal` allowlist both behave as expected against the live URL.

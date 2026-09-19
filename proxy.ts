@@ -11,6 +11,17 @@ import { NextResponse, type NextRequest } from "next/server";
 const PUBLIC_PATHS = new Set(["/", "/auth/callback"]);
 
 /**
+ * `/internal/*` (engineering/product dashboards) additionally requires the
+ * signed-in user's email to match `INTERNAL_ACCESS_EMAIL`. This narrows the
+ * "any signed-in user" bar those pages previously relied on (see
+ * app/internal/analytics/page.tsx's docstring for why that was the original,
+ * deliberate call) now that the app is reachable by more than its single
+ * operator. Fails closed: an unset env var denies everyone rather than
+ * silently falling back to "any signed-in user."
+ */
+const INTERNAL_PREFIX = "/internal";
+
+/**
  * Runs on every request (Next.js 16 "proxy", formerly "middleware").
  * Refreshes the Supabase auth session (required by @supabase/ssr so
  * server components always see a valid session) and enforces the auth
@@ -49,6 +60,13 @@ export async function proxy(request: NextRequest) {
     const redirectUrl = new URL("/", request.url);
     redirectUrl.searchParams.set("redirectTo", request.nextUrl.pathname);
     return NextResponse.redirect(redirectUrl);
+  }
+
+  if (user && request.nextUrl.pathname.startsWith(INTERNAL_PREFIX)) {
+    const allowedEmail = process.env.INTERNAL_ACCESS_EMAIL?.toLowerCase();
+    if (!allowedEmail || user.email?.toLowerCase() !== allowedEmail) {
+      return NextResponse.redirect(new URL("/app", request.url));
+    }
   }
 
   return response;

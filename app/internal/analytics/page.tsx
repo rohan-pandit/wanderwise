@@ -11,11 +11,15 @@
  * `/app/*` route relies on (`app/app/layout.tsx`'s own docstring — no
  * second in-page auth check, for the same reason). Whether this needs a
  * *stricter* check than "any signed-in user" was `docs/IMPLEMENTATION_PLAN.md`
- * §22's open "Phase 8 decision" — resolved here as no: this is a
+ * §22's open "Phase 8 decision" — originally resolved here as no ("this is a
  * single-operator portfolio project with no multi-tenant admin concept
  * anywhere else in the app, so inventing one just for this page would be
- * unjustified complexity (CLAUDE.md: "don't design for hypothetical future
- * requirements").
+ * unjustified complexity"). Revisited once the app was actually deployed for
+ * peer review (docs/DEPLOYMENT.md): `proxy.ts` now additionally requires the
+ * signed-in user's email to match `INTERNAL_ACCESS_EMAIL` for `/internal/*`
+ * specifically — still not a general admin-role system, just a single
+ * hardcoded allowlist entry, so it doesn't reintroduce the complexity this
+ * page originally declined.
  *
  * This project's data volume is small enough (a portfolio demo, not a
  * production system with real traffic) that fetching full row sets and

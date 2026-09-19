@@ -10,8 +10,9 @@
  * for `trips` (it's RLS-scoped to the *querying* user; an aggregate product
  * view needs every user's trips) and for the others (RLS-locked-out
  * internal tables). Route access is `proxy.ts`'s deny-by-default
- * middleware, same bar as every other route (see that page's docstring for
- * why this project doesn't need a separate admin role).
+ * middleware, plus (as of docs/DEPLOYMENT.md) the same `INTERNAL_ACCESS_EMAIL`
+ * allowlist check `/internal/analytics` uses — see that page's docstring for
+ * the full history of that decision.
  *
  * No qualitative user feedback exists anywhere in this app yet (no
  * feedback-collection mechanism was ever built) — shown honestly as "not
