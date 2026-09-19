@@ -1286,10 +1286,10 @@ export function ItineraryPanel({
                 </ul>
               ) : activityCandidates === null ? (
                 activitiesProposePending ? (
-                  <div className="mt-2 flex flex-col gap-2">
-                    <SkeletonActivityCard padCls="px-2 py-2" />
-                    <SkeletonActivityCard padCls="px-2 py-2" />
-                    <SkeletonActivityCard padCls="px-2 py-2" />
+                  <div className="mt-2 flex flex-col gap-2.5">
+                    <SkeletonActivityCard padCls="px-4 py-3" />
+                    <SkeletonActivityCard padCls="px-4 py-3" />
+                    <SkeletonActivityCard padCls="px-4 py-3" />
                   </div>
                 ) : (
                   <p className={`mt-2 ${clsLabel} text-navy-400`}>Answer the chat&apos;s question to choose your activities.</p>
@@ -1299,10 +1299,14 @@ export function ItineraryPanel({
                   {addedActivities.size > 0 ? (
                     <div>
                       <p className="font-medium text-navy-700">In your itinerary ({addedActivities.size})</p>
-                      <ul className="mt-1 flex flex-col gap-1">
+                      <ul className="mt-1 flex flex-col gap-1.5">
                         {[...addedActivities.values()].map((a) => (
-                          <li key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-sand-200 px-2 py-1">
+                          <li
+                            key={a.id}
+                            className="flex items-center justify-between gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2"
+                          >
                             <span className="text-navy-900">
+                              <span className="text-teal-700" aria-hidden="true">✓ </span>
                               {a.name} — {formatMoney({ amount: a.priceUsd, currency: "USD" })}
                             </span>
                             <button
@@ -1328,9 +1332,12 @@ export function ItineraryPanel({
                   {activityCandidates.length > 0 ? (
                     <div>
                       <p className="font-medium text-navy-700">Suggestions</p>
-                      <ul className="mt-1 flex flex-col gap-2">
+                      <ul className="mt-1 flex flex-col gap-2.5">
                         {activityCandidates.map((c) => (
-                          <li key={c.id} className="rounded-lg border border-sand-200 px-2 py-2">
+                          <li
+                            key={c.id}
+                            className="rounded-xl bg-white px-4 py-3 shadow-[0_1px_2px_rgba(22,35,58,0.06),0_4px_12px_rgba(22,35,58,0.08)]"
+                          >
                             <p className="font-medium text-navy-900">
                               {c.name} — {formatMoney({ amount: c.priceUsd, currency: "USD" })}
                             </p>
@@ -1344,7 +1351,7 @@ export function ItineraryPanel({
                               type="button"
                               disabled={pendingActivityId === c.id}
                               onClick={() => void handleAddActivity(c.id)}
-                              className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-teal-600 px-2 py-1 text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+                              className="mt-2.5 inline-flex items-center gap-1.5 rounded-md bg-teal-700 px-3 py-1.5 font-medium text-sand-50 transition-colors hover:bg-teal-800 disabled:opacity-50"
                             >
                               {pendingActivityId === c.id ? (
                                 <>

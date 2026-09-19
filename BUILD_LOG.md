@@ -1867,3 +1867,17 @@ Tried baking the strip into the schema itself first via `z.string().min(1).trans
 **Known limitations / do not deploy yet:** same as the naming/landing/review work two entries back — this migration is **not applied** to the hosted project (no DB credentials available to this agent). Holding at a local commit until the user applies `supabase/migrations/0017_trips_slug.sql` and confirms.
 
 **Next recommended task:** Apply the migration, then push and confirm live: start a new trip, check the URL bar shows a slug immediately after naming it; open an existing (pre-migration) trip from "Your trips" and confirm its old ID-based URL still resolves correctly.
+
+---
+
+## 2026-09-19 (continued) — Redesigned the activity suggestion cards
+
+**What happened:** User flagged the activities section as looking unfinished — suggestion cards had no visual separation from the panel background (same sand-50 as everything else, only a thin border), and the "Add to itinerary" button's outline-teal style read as weak/ambiguous. Presented 3 mockup options (an Artifact design canvas) before implementing; user picked Option A.
+
+**What I built (`itinerary-panel.tsx`):** Suggestion cards go from a flat `border border-sand-200` box to a white card with a soft two-layer shadow (`shadow-[0_1px_2px_rgba(22,35,58,0.06),0_4px_12px_rgba(22,35,58,0.08)]`, `rounded-xl`) — the same `rgba(22,35,58,…)` shadow-color convention already used elsewhere in this file (the drawer popup) and in `chat-history-panel.tsx`, not a new ad hoc value. "Add to itinerary" is now a solid `bg-teal-700` fill instead of a teal-outline ghost button. Along the way, upgraded the "In your itinerary" (already-added) row to match the same locked-in visual language the confirmed flight/hotel cards already use elsewhere in this panel — `border-teal-200 bg-teal-50` plus a "✓ " prefix — instead of a plain bordered box with just a text "Remove" link; hadn't been brought in line with that pattern when it was added. `SkeletonActivityCard` (`skeleton.tsx`) updated to the same white-card-plus-shadow shape and padding, so the loading-state-to-real-content transition (this session's earlier loading-state work) doesn't visibly jump between two different card styles.
+
+**Decisions made:** none needing further input — a fully-specified visual pick from reviewed mockups.
+
+**Verification:** `npm run typecheck`/`npm run lint`/`npm test` (481/481, unchanged — pure styling) all pass. Dev server boots clean. Pure CSS/JSX change with no DB dependency, so pushed immediately rather than held (unlike the two migration-gated entries above).
+
+**Next recommended task:** None outstanding from this change. `supabase/migrations/0017_trips_slug.sql` (the name-derived trip URL slug work, `0016_trips_name.sql`'s own migration already confirmed applied earlier this session) is still the one held-back, unpushed commit — worth checking in on whether that's been applied yet.
