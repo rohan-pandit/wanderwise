@@ -1743,3 +1743,21 @@ Then returned to the flight-search issue as instructed, with no access to Vercel
 - `findFlightsFromProvider` (the now-actually-used live SerpAPI path) has no synthetic fallback at all, unlike the seed-backed `findFlights` — flagged, not yet decided whether that asymmetry is worth closing.
 
 **Next recommended task (resume point):** Either (a) the user does a real keyboard test for #9 while a future session resumes the remaining design-review corners (hotel/activities screens, internal dashboards, finalize/budget-override UI), or (b) treat the review as sufficient for now and move to other work. No code changes are pending — working tree is clean, everything pushed to `main` through commit `141c7b3`.
+
+---
+
+## 2026-09-19 (continued) — Desktop chat/itinerary split widened to 2:1, itinerary panel type sized up
+
+**What I built:** On desktop (`layoutMode === "sidebar"` only — mobile drawer and tablet split view untouched), `ItineraryPanel`'s `<aside>` (`itinerary-panel.tsx`) changed from a fixed `w-96` (384px) to `flex-[1]` with a `min-w-[320px]` floor, and `ChatPanel`'s outer `<section>` (`chat-panel.tsx`) changed from `flex-1` to `flex-[2]` in sidebar mode — together giving a proportional 2:1 (chat:itinerary) split that holds at any desktop width, instead of the old fixed-384px panel that read as roughly a quarter of a 1440px screen. Inside the itinerary panel's shared `content` (the JSX reused across all three layout modes), a `sidebar` boolean now gates a set of size variables (`clsHeading`, `clsLabel`, `clsBody`, plus spacing/padding classes) so the "Your itinerary" heading, section labels, confirmed/candidate flight and hotel cards, and status/error messages all step up roughly one Tailwind size notch on desktop only (e.g. card body `text-xs`→`text-base`, section labels and secondary lines `text-xs`→`text-sm`, heading `text-lg`→`text-xl`), while every other layout mode keeps its existing classes byte-for-byte.
+
+**Why:** User feedback: on desktop the itinerary panel read as "about a 4th of the page" and everything in it was too small. Confirmed the direction with a side-by-side mockup (Artifact canvas, `Current.dc.html` vs `Proposed.dc.html`) built from the real component tree's actual structure/colors before writing any code, approved as-is.
+
+**Decisions made:** Scoped the whole change to `layoutMode === "sidebar"` rather than touching the shared JSX unconditionally, since a first pass at the activities pick-list sub-section revealed some of that JSX had no explicit text-size class at all (silently inheriting the browser default ~16px) — sizing it via the same `clsBody` variable would have accidentally *shrunk* it to `text-xs` on mobile/tablet where it wasn't touched at all before. Caught before committing; left that specific sub-tree's sizing alone rather than gate it too, since it wasn't part of what looked wrong to begin with.
+
+**What didn't work / dead ends:** none — a straightforward, low-risk CSS-only change once the sizing-variable approach was set up.
+
+**Verification:** `npx tsc --noEmit`/`npm run lint`/`npm test` (452/452, unchanged — no logic touched) all pass. Not verified live against real authenticated trip data — this session's fresh browser tab has no Supabase Auth session (the earlier session's authenticated cookie was scoped to the deployed domain, not `localhost:3000`, and there's no standing dev-signin bypass), and the user asked to push and review live rather than wait on a fresh magic-link round trip for a low-risk layout change. Reviewed by re-reading every touched line and cross-checking against the approved mockup instead.
+
+**Known limitations:** none new. Same standing gap as prior sessions — no way to get a real authenticated browser render from this agent without either a live deploy or a fresh magic-link click from the user.
+
+**Next recommended task:** User reviews live on the deployed app at desktop width; if the 2:1 ratio or type sizes need tuning, the four size variables (`clsHeading`/`clsLabel`/`clsBody`) and the `flex-[2]`/`flex-[1]` split are the two places to adjust.

@@ -1028,16 +1028,32 @@ export function ItineraryPanel({
     setManualDrawerState("closed");
   }
 
+  // Desktop's sidebar has real room to breathe (see `ItineraryPanel`'s
+  // sidebar `<aside>` below, now a proportional 1/3 of the workspace
+  // instead of a fixed 384px) — step every itinerary text size up
+  // roughly one Tailwind notch there, gated to `"sidebar"` specifically
+  // so the mobile drawer and tablet split view (which don't have that
+  // extra width) are untouched.
+  const sidebar = layoutMode === "sidebar";
+  const clsHeading = sidebar ? "text-xl" : "text-lg";
+  const clsLabel = sidebar ? "text-sm" : "text-xs";
+  const clsBody = sidebar ? "text-base" : "text-xs";
+  const sectionsTopCls = sidebar ? "mt-6" : "mt-4";
+  const sectionGapCls = sidebar ? "gap-8" : "gap-5";
+  const cardPadCls = sidebar ? "px-4 py-3" : "px-3 py-2";
+  const cardTopCls = sidebar ? "mt-2.5" : "mt-2";
+  const changeTopCls = sidebar ? "mt-2" : "mt-1";
+
   const content = (
     <>
       <div className="flex items-center justify-between">
-        <h2 className="font-serif text-lg font-semibold text-navy-900">Your itinerary</h2>
+        <h2 className={`font-serif ${clsHeading} font-semibold text-navy-900`}>Your itinerary</h2>
         {!finalized && !cancelled ? (
           <button
             type="button"
             disabled={actionPending}
             onClick={() => setConfirmingCancel(true)}
-            className="text-xs text-navy-400 underline decoration-dotted hover:text-terracotta-600 disabled:opacity-50"
+            className={`${clsLabel} text-navy-400 underline decoration-dotted hover:text-terracotta-600 disabled:opacity-50`}
           >
             Cancel trip
           </button>
@@ -1045,7 +1061,7 @@ export function ItineraryPanel({
       </div>
 
       {confirmingCancel ? (
-        <div className="mt-4 rounded-lg border border-terracotta-200 bg-terracotta-50 px-3 py-3 text-xs text-terracotta-700">
+        <div className={`mt-4 rounded-lg border border-terracotta-200 bg-terracotta-50 px-3 py-3 ${clsLabel} text-terracotta-700`}>
           <p>Cancel this trip? Nothing is booked yet, but this can&apos;t be undone — you&apos;ll need to start a new trip to keep planning.</p>
           <div className="mt-2 flex gap-2">
             <button
@@ -1075,13 +1091,13 @@ export function ItineraryPanel({
       ) : null}
 
       {needsAttention ? (
-        <p className="mt-4 rounded-lg bg-terracotta-50 px-3 py-2 text-xs text-terracotta-600">
+        <p className={`mt-4 rounded-lg bg-terracotta-50 px-3 py-2 ${clsLabel} text-terracotta-600`}>
           {needsAttention}
         </p>
       ) : null}
 
       {pendingCascade ? (
-        <div className="mt-4 rounded-lg border border-terracotta-200 bg-terracotta-50 px-3 py-3 text-xs text-terracotta-700">
+        <div className={`mt-4 rounded-lg border border-terracotta-200 bg-terracotta-50 px-3 py-3 ${clsLabel} text-terracotta-700`}>
           <p>
             Changing your {STEP_LABELS[pendingCascade.step]} may also change your {DOWNSTREAM_LABEL[pendingCascade.step]}. Continue?
           </p>
@@ -1106,17 +1122,17 @@ export function ItineraryPanel({
         </div>
       ) : null}
 
-      {actionError ? <p className="mt-4 text-xs text-red-600">{actionError}</p> : null}
+      {actionError ? <p className={`mt-4 ${clsLabel} text-red-600`}>{actionError}</p> : null}
 
       {initialLoad ? (
         <p className="mt-4 text-sm text-navy-400">Loading your itinerary…</p>
       ) : (
-        <div className="mt-4 flex flex-col gap-5">
+        <div className={`${sectionsTopCls} flex flex-col ${sectionGapCls}`}>
           {/* Flight step */}
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-navy-400">Flight</h3>
+            <h3 className={`${clsLabel} font-semibold uppercase tracking-wide text-navy-400`}>Flight</h3>
             {flightConfirmed && !revisingFlightCandidates ? (
-              <div className="mt-2 rounded-lg border border-sand-200 px-3 py-2 text-xs">
+              <div className={`${cardTopCls} rounded-lg border border-sand-200 ${cardPadCls} ${clsBody}`}>
                 {confirmedFlightSummary ? (
                   <p className="text-navy-700">
                     {confirmedFlightSummary.outboundFlight.airline ?? "Flight"} · {formatFlightTime(confirmedFlightSummary.outboundFlight.departure_time, confirmedFlightSummary.outboundFlight.departure_time_zone)}
@@ -1130,7 +1146,7 @@ export function ItineraryPanel({
                   type="button"
                   disabled={actionPending}
                   onClick={() => handleChangeClick("flight")}
-                  className="mt-1 text-xs font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50"
+                  className={`${changeTopCls} ${clsLabel} font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50`}
                 >
                   Change
                 </button>
@@ -1143,12 +1159,12 @@ export function ItineraryPanel({
                       type="button"
                       disabled={actionPending}
                       onClick={() => void handleConfirmFlight(c.outboundFlight.id, c.returnFlight.id)}
-                      className="w-full rounded-lg border border-sand-200 px-3 py-2 text-left text-xs hover:border-teal-600 disabled:opacity-50"
+                      className={`w-full rounded-lg border border-sand-200 ${cardPadCls} text-left ${clsBody} hover:border-teal-600 disabled:opacity-50`}
                     >
                       <p className="font-medium text-navy-900">
                         {c.outboundFlight.airline ?? "Flight"} — {formatMoney({ amount: c.totalPriceUsd, currency: "USD" })}
                       </p>
-                      <p className="mt-0.5 text-navy-400">
+                      <p className={`mt-0.5 ${clsLabel} text-navy-400`}>
                         {formatFlightTime(c.outboundFlight.departure_time, c.outboundFlight.departure_time_zone)} → {formatFlightTime(c.returnFlight.arrival_time, c.returnFlight.arrival_time_zone)}
                       </p>
                     </button>
@@ -1157,21 +1173,21 @@ export function ItineraryPanel({
               </ul>
             ) : requirementsReady ? (
               flightProposeFailed ? (
-                <p className="mt-2 text-xs text-terracotta-600">Couldn&apos;t find matching flights — see the message above, then try adjusting your requirements in chat.</p>
+                <p className={`mt-2 ${clsLabel} text-terracotta-600`}>Couldn&apos;t find matching flights — see the message above, then try adjusting your requirements in chat.</p>
               ) : (
-                <p className="mt-2 text-xs text-navy-400">Finding flights…</p>
+                <p className={`mt-2 ${clsLabel} text-navy-400`}>Finding flights…</p>
               )
             ) : (
-              <p className="mt-2 text-xs text-navy-400">Answer the chat&apos;s questions to start planning.</p>
+              <p className={`mt-2 ${clsLabel} text-navy-400`}>Answer the chat&apos;s questions to start planning.</p>
             )}
           </section>
 
           {/* Hotel step */}
           {flightConfirmed || hotelConfirmed ? (
             <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-navy-400">Hotel</h3>
+              <h3 className={`${clsLabel} font-semibold uppercase tracking-wide text-navy-400`}>Hotel</h3>
               {hotelConfirmed && !revisingHotelCandidates ? (
-                <div className="mt-2 rounded-lg border border-sand-200 px-3 py-2 text-xs">
+                <div className={`${cardTopCls} rounded-lg border border-sand-200 ${cardPadCls} ${clsBody}`}>
                   {confirmedHotelSummary ? (
                     <p className="text-navy-700">
                       {confirmedHotelSummary.name} · {formatMoney({ amount: confirmedHotelSummary.price_per_night_usd, currency: "USD" })}/night
@@ -1183,7 +1199,7 @@ export function ItineraryPanel({
                     type="button"
                     disabled={actionPending}
                     onClick={() => handleChangeClick("hotel")}
-                    className="mt-1 text-xs font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50"
+                    className={`${changeTopCls} ${clsLabel} font-medium text-teal-700 underline hover:text-teal-800 disabled:opacity-50`}
                   >
                     Change
                   </button>
@@ -1196,12 +1212,12 @@ export function ItineraryPanel({
                         type="button"
                         disabled={actionPending}
                         onClick={() => void handleConfirmHotel(h.id)}
-                        className="w-full rounded-lg border border-sand-200 px-3 py-2 text-left text-xs hover:border-teal-600 disabled:opacity-50"
+                        className={`w-full rounded-lg border border-sand-200 ${cardPadCls} text-left ${clsBody} hover:border-teal-600 disabled:opacity-50`}
                       >
                         <p className="font-medium text-navy-900">
                           {h.name} — {formatMoney({ amount: h.price_per_night_usd, currency: "USD" })}/night
                         </p>
-                        <p className="mt-0.5 text-navy-400">
+                        <p className={`mt-0.5 ${clsLabel} text-navy-400`}>
                           {h.neighborhood ?? h.destination}
                           {h.rating ? ` · ${h.rating}★` : ""}
                         </p>
@@ -1210,9 +1226,9 @@ export function ItineraryPanel({
                   ))}
                 </ul>
               ) : hotelProposeFailed ? (
-                <p className="mt-2 text-xs text-terracotta-600">Couldn&apos;t find matching hotels — see the message above, then try adjusting your requirements in chat.</p>
+                <p className={`mt-2 ${clsLabel} text-terracotta-600`}>Couldn&apos;t find matching hotels — see the message above, then try adjusting your requirements in chat.</p>
               ) : (
-                <p className="mt-2 text-xs text-navy-400">Finding hotels…</p>
+                <p className={`mt-2 ${clsLabel} text-navy-400`}>Finding hotels…</p>
               )}
             </section>
           ) : null}
@@ -1220,10 +1236,10 @@ export function ItineraryPanel({
           {/* Activities step — chat prompt -> candidate pick-list -> finalize (see the module docstring's "ACTIVITIES" note). The preference prompt itself renders in `ChatPanel`, not here. */}
           {hotelConfirmed || confirmedActivities ? (
             <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-navy-400">Activities</h3>
+              <h3 className={`${clsLabel} font-semibold uppercase tracking-wide text-navy-400`}>Activities</h3>
               {confirmedActivities ? (
                 itineraryText ? null : (
-                  <ul className="mt-2 flex flex-col gap-1 text-xs">
+                  <ul className={`mt-2 flex flex-col gap-1 ${clsBody}`}>
                     {[...confirmedActivities]
                       .sort((a, b) => (a.date === b.date ? a.startMinutes - b.startMinutes : a.date < b.date ? -1 : 1))
                       .map((a) => (
@@ -1235,7 +1251,7 @@ export function ItineraryPanel({
                   </ul>
                 )
               ) : activityCandidates === null ? (
-                <p className="mt-2 text-xs text-navy-400">Answer the chat&apos;s question to choose your activities.</p>
+                <p className={`mt-2 ${clsLabel} text-navy-400`}>Answer the chat&apos;s question to choose your activities.</p>
               ) : (
                 <div className="mt-2 flex flex-col gap-3">
                   {addedActivities.size > 0 ? (
@@ -1323,7 +1339,7 @@ export function ItineraryPanel({
           {itineraryText ? <ItineraryText text={itineraryText} /> : null}
 
           {budgetOverrideViolations ? (
-            <div className="rounded-lg border border-terracotta-200 bg-terracotta-50 px-3 py-3 text-xs text-terracotta-700">
+            <div className={`rounded-lg border border-terracotta-200 bg-terracotta-50 px-3 py-3 ${clsLabel} text-terracotta-700`}>
               {budgetOverrideViolations.map((v, i) => (
                 <p key={i}>{v.message}</p>
               ))}
@@ -1389,7 +1405,7 @@ export function ItineraryPanel({
     );
   }
   return (
-    <aside className="flex w-96 flex-shrink-0 flex-col overflow-y-auto border-l border-sand-200 px-6 py-6">
+    <aside className="flex min-w-[320px] flex-[1] flex-col overflow-y-auto border-l border-sand-200 px-7 py-7">
       {content}
     </aside>
   );

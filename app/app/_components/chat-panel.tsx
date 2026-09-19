@@ -157,7 +157,7 @@ export function ChatPanel({
   }
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col">
+    <section className={`flex min-h-0 ${layoutMode === "sidebar" ? "flex-[2]" : "flex-1"} flex-col`}>
       {/* `mx-auto max-w-2xl` on the content, not the scroll container itself
           — without a width cap here, message bubbles and the input row
           stretched edge-to-edge on a wide desktop screen (measured at
