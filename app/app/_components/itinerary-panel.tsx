@@ -33,6 +33,7 @@
  * Curator call before the handler's own response comes back.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { Drawer } from "@base-ui/react/drawer";
 import { createClient } from "@/src/config/supabase/client";
 import {
@@ -1025,16 +1026,21 @@ export function ItineraryPanel({
         <h2 className={`font-serif ${clsHeading} font-semibold text-navy-900`}>
           {tripName ? `Your itinerary for ${tripName}` : "Your itinerary"}
         </h2>
-        {!finalized && !cancelled ? (
-          <button
-            type="button"
-            disabled={actionPending}
-            onClick={() => setConfirmingCancel(true)}
-            className={`${clsLabel} text-navy-400 underline decoration-dotted hover:text-terracotta-600 disabled:opacity-50`}
-          >
-            Cancel trip
-          </button>
-        ) : null}
+        <div className="flex items-center gap-4">
+          <Link href="/app/new" className={`${clsLabel} font-medium text-teal-700 hover:text-teal-800`}>
+            New trip
+          </Link>
+          {!finalized && !cancelled ? (
+            <button
+              type="button"
+              disabled={actionPending}
+              onClick={() => setConfirmingCancel(true)}
+              className={`${clsLabel} text-navy-400 underline decoration-dotted hover:text-terracotta-600 disabled:opacity-50`}
+            >
+              Cancel trip
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {confirmingCancel ? (

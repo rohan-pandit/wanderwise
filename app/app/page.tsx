@@ -18,7 +18,9 @@ export default async function AppHome() {
   return (
     <main className="flex min-h-0 flex-1 items-center justify-center px-6">
       <div className="flex w-full max-w-3xl flex-col items-center text-center">
-        <p className="text-xs font-semibold tracking-widest text-teal-700 uppercase">Welcome back</p>
+        <p className="text-xs font-semibold tracking-widest text-teal-700 uppercase">
+          {tripCount > 0 ? "Welcome back" : "Let's get started"}
+        </p>
         <h1 className="mt-3 font-serif text-4xl font-semibold text-navy-900">Where are we headed?</h1>
         <p className="mt-3 max-w-md text-base text-navy-400">
           Start a brand-new trip, or pick up right where you left off.

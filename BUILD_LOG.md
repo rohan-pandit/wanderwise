@@ -1925,3 +1925,23 @@ Tried baking the strip into the schema itself first via `z.string().min(1).trans
 **Known limitations:** `travelStyle`'s actual downstream effect on curation is unverified (flagged, not fixed here). The chat-status-awareness fix (#3) only closes the *cold-start* propose-failure gap — the revision path already had `chain_revision_failed`, unchanged. Region/state detection is US-only (a 50-state static list) — a non-US region/province given as a destination still falls through to the generic "unknown destination" path, not a targeted "which city?" ask.
 
 **Next recommended task:** Live click-through once deployed: try "New York" as a destination and confirm the "did you mean New York City?" prompt appears instead of silent resolution; try "New Hampshire" and confirm "which city?" instead of the old dead-end; try "I want a cheap trip to Boston" and a "next weekend" date phrase in a fresh trip.
+
+---
+
+## 2026-09-21 — Sign-in copy and "start a new trip" entry points
+
+**What I built:**
+- Sign-in screen (`app/page.tsx`): replaced the process-y subhead ("reasons over a deterministic, testable planning engine — not a booking platform") with plain outcome-focused copy: "A travel-planning concierge that helps you plan and book your dream trip."
+- Post-sign-in landing (`app/app/page.tsx`): the "Welcome back" eyebrow above "Where are we headed?" is now conditional on `tripCount` — a brand-new user (0 trips) sees "Let's get started" instead, since "Welcome back" read oddly for someone signing in for the first time. The two-callout layout (start new / review trips) itself was unchanged — it already handled the zero-trips case via the right card's copy.
+- Trip history list (`app/app/trips/page.tsx`): added a persistent "New trip" button next to the "Your trips" heading, visible whether the list is empty or populated (previously there was no way to start a new trip from this page once at least one trip existed — only a link inside the now-removed empty state). Simplified the empty-state message since the button now covers that CTA.
+- Individual trip pages: extended the same "start a new trip" entry point to the two per-trip views, which had no navigation at all previously (`app/app/_components/trip-workspace.tsx` renders full-bleed with no header/nav). Added a "New trip" link to the in-progress trip's existing header row in `ItineraryPanel` (next to "Cancel trip", always visible regardless of trip status) and to the finalized trip's existing header bar in `TripReview` (next to the chat-history toggle).
+
+**Why:** user-requested copy/UX polish after noticing the sign-in copy read as an engineering pitch rather than a user-facing one, and that a returning user with existing trips had no obvious way to start another one without navigating back to `/app` first.
+
+**Decisions made:** reused each page's existing header-row pattern for the new "New trip" links (`ItineraryPanel`'s title row, `TripReview`'s title bar) rather than introducing a new shared nav/layout component across `/app/*` — no such shared layout exists today, and adding one was a larger, out-of-scope change for a copy/entry-point request.
+
+**Verification:** `npm run eval:ci` (typecheck + lint + 503/503 tests) clean. Visually verified the sign-in screen and the pre-auth copy change directly in a browser preview (screenshot). Could not visually verify the four post-auth screens (`/app`, `/app/trips`, in-progress trip, finalized trip) in the same browser preview pane — it's an isolated browser session from wherever the user's magic-link email opens, and the pane also refused direct navigation to the Supabase `/auth/v1/verify` domain when tried via a copied link. Verified those changes by code review and the type check only.
+
+**Known limitations:** the four post-auth UI changes are unverified visually — worth a manual click-through once deployed to Vercel (this session's next task).
+
+**Next recommended task:** push to `main` and deploy to Vercel per `docs/DEPLOYMENT.md`, then click through `/app` (new vs. returning-user eyebrow copy), `/app/trips` (New trip button, both empty and populated), and both an in-progress and a finalized trip page to confirm the new "New trip" links render and work as expected.

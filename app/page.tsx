@@ -54,9 +54,8 @@ export default function Home() {
           Wanderwise
         </h1>
         <p className="mt-3 text-sm leading-6 text-navy-700">
-          A travel-planning concierge that reasons over a deterministic,
-          testable planning engine — not a booking platform. Sign in to plan
-          a trip.
+          A travel-planning concierge that helps you plan and book your
+          dream trip.
         </p>
 
         <div className="mt-8 rounded-2xl border border-sand-200 bg-sand-100 p-6 shadow-sm">

@@ -48,22 +48,24 @@ export default async function TripsPage() {
           reason — measured at 1440px, this list rendered at ~1377px wide
           with no cap at all, reading as very sparse on a large screen. */}
       <div className="mx-auto w-full max-w-2xl">
-        <h1 className="font-serif text-2xl font-semibold text-navy-900">
-          Your trips
-        </h1>
+        <div className="flex items-center justify-between">
+          <h1 className="font-serif text-2xl font-semibold text-navy-900">
+            Your trips
+          </h1>
+          <Link
+            href="/app/new"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-terracotta-600 px-4 py-2 text-sm font-semibold text-sand-50 transition-colors hover:bg-terracotta-700"
+          >
+            New trip
+          </Link>
+        </div>
 
         {error ? (
           <p className="mt-4 text-sm text-red-600">
             Couldn&apos;t load trips: {error.message}
           </p>
         ) : !trips || trips.length === 0 ? (
-          <p className="mt-4 text-sm text-navy-400">
-            No trips yet.{" "}
-            <Link href="/app/new" className="text-teal-700 underline hover:text-teal-800">
-              Start planning one
-            </Link>
-            .
-          </p>
+          <p className="mt-4 text-sm text-navy-400">No trips yet — start planning your first one above.</p>
         ) : (
           <ul className="mt-4 flex flex-col gap-2">
             {trips.map((trip) => (
