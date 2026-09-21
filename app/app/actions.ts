@@ -43,6 +43,7 @@ import { createSession } from "@/src/repositories/sessions";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
+import { recordFeedback } from "@/src/repositories/feedback";
 import { getLatestTripState } from "@/src/repositories/trip-state";
 import { generateUniqueTripSlug, getTrip, type Trip } from "@/src/repositories/trips";
 import { startTrip } from "@/src/workflow/controller";
@@ -792,6 +793,44 @@ export async function cancelTrip(input: CancelTripInput): Promise<CancelTripResu
   });
 
   return { tripId: input.tripId, workflowState };
+}
+
+export interface SubmitFeedbackInput {
+  tripId: string;
+  categories: string[];
+  message?: string;
+}
+
+/**
+ * "Report an issue" (`feedback-widget.tsx`) — a deterministic write, no
+ * agent involved. `context` (where the user was) is computed here from the
+ * trip's own current status/decisions, the same source `describeProgress`
+ * (`app/app/trips/page.tsx`) reads for the trip list, rather than trusted
+ * from whatever the client had rendered at click time (which could be
+ * stale by the time the request lands). Deliberately not a snapshot of the
+ * trip's requirements/messages: `trip_id` alone is enough for
+ * `/internal/product-metrics` to join back to `trip_requirements` (what the
+ * user entered) and `messages` (the agent's own responses) live, so nothing
+ * here duplicates data those tables already record. Allowed on a cancelled
+ * trip (`allowCancelled: true`) — reporting a problem is exactly the kind
+ * of thing a user might still want to do after giving up on a trip.
+ */
+export async function submitFeedback(input: SubmitFeedbackInput): Promise<{ ok: true }> {
+  const supabase = createServiceClient();
+  const trip = await requireOwnedTrip(supabase, input.tripId, { allowCancelled: true });
+  const decisions = await listActiveTripDecisions(supabase, input.tripId);
+  const context =
+    trip.status === "finalized" || trip.status === "cancelled"
+      ? trip.status
+      : `chain step: ${getCurrentChainStep(decisions)}`;
+
+  await recordFeedback(supabase, {
+    tripId: input.tripId,
+    categories: input.categories,
+    message: input.message?.trim() || null,
+    context,
+  });
+  return { ok: true };
 }
 
 export type { PendingCascadeConfirmation };

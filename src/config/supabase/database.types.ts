@@ -229,6 +229,26 @@ export interface Database {
           Database["public"]["Tables"]["approval_records"]["Insert"]
         >;
       };
+      feedback: {
+        Row: {
+          id: string;
+          trip_id: string;
+          categories: string[];
+          message: string | null;
+          context: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          trip_id: string;
+          categories?: string[];
+          message?: string | null;
+          context: string;
+          created_at?: string;
+        };
+        Relationships: [];
+        Update: Partial<Database["public"]["Tables"]["feedback"]["Insert"]>;
+      };
       workflow_runs: {
         Row: {
           id: string;

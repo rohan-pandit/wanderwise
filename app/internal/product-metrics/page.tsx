@@ -14,15 +14,21 @@
  * allowlist check `/internal/analytics` uses — see that page's docstring for
  * the full history of that decision.
  *
- * No qualitative user feedback exists anywhere in this app yet (no
- * feedback-collection mechanism was ever built) — shown honestly as "not
- * yet collected" rather than omitted or faked.
+ * Qualitative feedback (`docs/END_TO_END_TESTING_ISSUES.md`-informed "Report
+ * an issue" entry point, `app/app/_components/feedback-widget.tsx`) is read
+ * here too, joined with a lightweight trip-context reconstruction — the
+ * requirements the user entered and the full chat transcript, exactly the
+ * same `messages`/`trip_requirements` tables the rest of this app already
+ * writes to, not a separate copy captured at report time (see
+ * `feedback.ts`'s docstring for why not).
  */
 import { createServiceClient } from "@/src/config/supabase/service";
 import { checkRequirementsComplete } from "@/src/domain/extraction";
 import type { RequirementRecord, RequirementFieldName } from "@/src/domain/extraction";
 import { getCurrentChainStep, type ChainDecision } from "@/src/domain/chain";
 import type { WorkflowState } from "@/src/workflow/state-machine";
+import { listAllFeedback } from "@/src/repositories/feedback";
+import { FeedbackList, type FeedbackEntryView } from "./feedback-list";
 
 function pct(numerator: number, denominator: number): string {
   if (denominator === 0) return "—";
@@ -32,6 +38,27 @@ function pct(numerator: number, denominator: number): string {
 function duration(ms: number): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
   return `${(ms / 60_000).toFixed(1)}min`;
+}
+
+/** A one-line "what the user entered" summary for a feedback report's trip context — reads whatever's present rather than requiring completeness, since a report can happen mid-intake before every field is filled in. */
+function summarizeRequirements(rows: { field: string; value: unknown }[]): string | null {
+  const byField = new Map(rows.map((r) => [r.field, r.value]));
+  const destination = byField.get("destination");
+  const origin = byField.get("origin");
+  const departureDate = byField.get("departureDate");
+  const returnDate = byField.get("returnDate");
+  const partySize = byField.get("partySize");
+  const budget = byField.get("budgetTotalUsd");
+
+  const parts = [
+    destination ? String(destination) : null,
+    origin ? `from ${origin}` : null,
+    departureDate && returnDate ? `${departureDate} → ${returnDate}` : null,
+    typeof partySize === "number" ? `${partySize} traveler${partySize === 1 ? "" : "s"}` : null,
+    typeof budget === "number" ? `$${budget.toLocaleString()} budget` : null,
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 const STAGE_LABELS: Record<WorkflowState, string> = {
@@ -57,11 +84,12 @@ const STAGE_LABELS: Record<WorkflowState, string> = {
 export default async function ProductMetricsPage() {
   const supabase = createServiceClient();
 
-  const [tripsRes, stateVersionsRes, requirementsRes, decisionsRes] = await Promise.all([
-    supabase.from("trips").select("id, session_id, status, created_at"),
+  const [tripsRes, stateVersionsRes, requirementsRes, decisionsRes, feedbackRows] = await Promise.all([
+    supabase.from("trips").select("id, name, session_id, status, created_at"),
     supabase.from("trip_state_versions").select("trip_id, version, state, created_at").order("version", { ascending: true }),
     supabase.from("trip_requirements").select("trip_id, field, status"),
     supabase.from("trip_decisions").select("trip_id, field, status"),
+    listAllFeedback(supabase),
   ]);
 
   const trips = tripsRes.data ?? [];
@@ -137,6 +165,58 @@ export default async function ProductMetricsPage() {
   }
   const abandonmentRows = [...abandonmentCounts.entries()].sort((a, b) => b[1] - a[1]);
 
+  // --- Qualitative feedback: join each report back to the trip data the
+  // user entered and the agent's own responses, rather than duplicating
+  // either — `feedback.ts`'s own docstring explains why not. ---
+  const tripsById = new Map(trips.map((t) => [t.id, t]));
+  const feedbackTripIds = [...new Set(feedbackRows.map((f) => f.trip_id))];
+  const feedbackSessionIds = [
+    ...new Set(
+      feedbackTripIds
+        .map((id) => tripsById.get(id)?.session_id)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+
+  const [feedbackRequirementsRes, feedbackMessagesRes] = await Promise.all([
+    feedbackTripIds.length > 0
+      ? supabase.from("trip_requirements").select("trip_id, field, value").in("trip_id", feedbackTripIds).neq("status", "retracted")
+      : Promise.resolve({ data: [] as { trip_id: string; field: string; value: unknown }[] }),
+    feedbackSessionIds.length > 0
+      ? supabase.from("messages").select("session_id, role, content").in("session_id", feedbackSessionIds).order("created_at", { ascending: true })
+      : Promise.resolve({ data: [] as { session_id: string; role: string; content: string }[] }),
+  ]);
+
+  const requirementsByTripForFeedback = new Map<string, { field: string; value: unknown }[]>();
+  for (const r of feedbackRequirementsRes.data ?? []) {
+    const list = requirementsByTripForFeedback.get(r.trip_id) ?? [];
+    list.push({ field: r.field, value: r.value });
+    requirementsByTripForFeedback.set(r.trip_id, list);
+  }
+
+  const messagesBySession = new Map<string, { role: string; content: string }[]>();
+  for (const m of feedbackMessagesRes.data ?? []) {
+    const list = messagesBySession.get(m.session_id) ?? [];
+    list.push({ role: m.role, content: m.content });
+    messagesBySession.set(m.session_id, list);
+  }
+
+  const feedbackEntries: FeedbackEntryView[] = feedbackRows.map((f) => {
+    const trip = tripsById.get(f.trip_id);
+    return {
+      id: f.id,
+      categories: f.categories,
+      message: f.message,
+      context: f.context,
+      createdAt: f.created_at,
+      tripName: trip?.name ?? null,
+      requirementsSummary: summarizeRequirements(requirementsByTripForFeedback.get(f.trip_id) ?? []),
+      messages: trip?.session_id ? (messagesBySession.get(trip.session_id) ?? []) : [],
+    };
+  });
+  const weekAgoMs = new Date().getTime() - 7 * 24 * 60 * 60 * 1000;
+  const feedbackThisWeekCount = feedbackEntries.filter((e) => new Date(e.createdAt).getTime() >= weekAgoMs).length;
+
   return (
     <div className="mx-auto flex max-w-5xl flex-1 flex-col gap-8 px-6 py-8">
       <div>
@@ -199,9 +279,14 @@ export default async function ProductMetricsPage() {
 
       <section>
         <h2 className="text-sm font-semibold text-navy-900">Qualitative feedback</h2>
-        <p className="mt-2 rounded-lg border border-dashed border-sand-300 px-4 py-3 text-sm text-navy-400">
-          Not yet collected — no feedback-collection mechanism exists in the app yet (no post-trip survey, thumbs up/down, or free-text field). Shown here rather than omitted, per §13.4&apos;s own list.
-        </p>
+        <p className="mt-1 text-xs text-navy-400">User-submitted &quot;Report an issue&quot; entries, newest first — each expandable to the trip&apos;s own requirements and full chat transcript.</p>
+        {feedbackEntries.length === 0 ? (
+          <p className="mt-2 rounded-lg border border-dashed border-sand-300 px-4 py-3 text-sm text-navy-400">
+            No reports yet — nothing submitted through the trip workspace&apos;s &quot;Report an issue&quot; button so far.
+          </p>
+        ) : (
+          <FeedbackList entries={feedbackEntries} thisWeekCount={feedbackThisWeekCount} />
+        )}
       </section>
     </div>
   );

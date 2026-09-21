@@ -148,8 +148,8 @@ function proposedSignature(step: ChainStep, decisions: DecisionRow[]): string {
  * scrim are the only ways to toggle it — real swipe-to-dismiss (drag
  * physics) is a deliberately deferred fast-follow, not built here.
  */
-/** The peek bar's height and the expanded sheet's height, both expressed as fractions of the viewport height (Base UI's `snapPoints` accept 0-1 as a viewport-height fraction, >1 as a literal pixel value, or a `px`/`rem` string) — fractions track real device height variation better than a fixed pixel peek bar would. */
-const DRAWER_PEEK_SNAP = 0.08;
+/** The peek bar's height and the expanded sheet's height, both expressed as fractions of the viewport height (Base UI's `snapPoints` accept 0-1 as a viewport-height fraction, >1 as a literal pixel value, or a `px`/`rem` string) — fractions track real device height variation better than a fixed pixel peek bar would. Exported so `feedback-widget.tsx`'s floating trigger can sit just above the always-mounted peek bar in `"drawer"` layout mode instead of guessing at a magic number that could silently drift out of sync with this one. */
+export const DRAWER_PEEK_SNAP = 0.08;
 const DRAWER_FULL_SNAP = 0.82;
 
 /**
