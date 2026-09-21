@@ -27,7 +27,6 @@ import { checkRequirementsComplete } from "@/src/domain/extraction";
 import type { RequirementRecord, RequirementFieldName } from "@/src/domain/extraction";
 import { getCurrentChainStep, type ChainDecision } from "@/src/domain/chain";
 import type { WorkflowState } from "@/src/workflow/state-machine";
-import { listAllFeedback } from "@/src/repositories/feedback";
 import { FeedbackList, type FeedbackEntryView } from "./feedback-list";
 
 function pct(numerator: number, denominator: number): string {
@@ -84,18 +83,29 @@ const STAGE_LABELS: Record<WorkflowState, string> = {
 export default async function ProductMetricsPage() {
   const supabase = createServiceClient();
 
-  const [tripsRes, stateVersionsRes, requirementsRes, decisionsRes, feedbackRows] = await Promise.all([
+  const [tripsRes, stateVersionsRes, requirementsRes, decisionsRes, feedbackRes] = await Promise.all([
     supabase.from("trips").select("id, name, session_id, status, created_at"),
     supabase.from("trip_state_versions").select("trip_id, version, state, created_at").order("version", { ascending: true }),
     supabase.from("trip_requirements").select("trip_id, field, status"),
     supabase.from("trip_decisions").select("trip_id, field, status"),
-    listAllFeedback(supabase),
+    // Not `listAllFeedback` (which throws on a query error, `unwrapOrThrow`) —
+    // this page is statically prerendered (no `cookies()`/`headers()` call
+    // anywhere in it, so Next attempts it at *build* time, not request time),
+    // and every other query here already degrades to `?? []` instead of
+    // failing the whole build if Supabase is briefly unreachable (exactly
+    // what happened in CI, which builds against a placeholder URL that
+    // can't resolve at all — `ci.yml`'s own comment: "build ... never makes
+    // a real Supabase call"). A thrown error took the entire page down;
+    // matching the file's existing tolerant convention here keeps it down
+    // to just an empty feedback list instead.
+    supabase.from("feedback").select("*").order("created_at", { ascending: false }),
   ]);
 
   const trips = tripsRes.data ?? [];
   const stateVersions = stateVersionsRes.data ?? [];
   const requirementRows = requirementsRes.data ?? [];
   const decisionRows = decisionsRes.data ?? [];
+  const feedbackRows = feedbackRes.data ?? [];
 
   const totalTrips = trips.length;
   const totalSessions = new Set(trips.map((t) => t.session_id)).size;

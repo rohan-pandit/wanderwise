@@ -30,10 +30,3 @@ export async function recordFeedback(
       .single(),
   );
 }
-
-/** Every submitted report, newest first — read with the service-role client for the aggregate internal view (`/internal/product-metrics`), same reasoning as that page's other cross-user reads (RLS on `feedback` scopes to one trip's owner, but the dashboard needs every user's). */
-export async function listAllFeedback(supabase: SupabaseClient<Database>): Promise<FeedbackRow[]> {
-  return unwrapOrThrow(
-    supabase.from("feedback").select("*").order("created_at", { ascending: false }),
-  );
-}
