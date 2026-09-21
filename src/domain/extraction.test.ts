@@ -7,6 +7,7 @@ import {
   RevisionProposal,
   checkDatesNotInThePast,
   checkRequirementsComplete,
+  checkReturnBeforeDeparture,
   toPreferenceRecord,
   toRequirementRecord,
   type RequirementFieldName,
@@ -229,6 +230,38 @@ describe("checkDatesNotInThePast", () => {
 
   it("ignores fields that aren't present yet, rather than treating a missing date as past", () => {
     expect(checkDatesNotInThePast(new Map(), TODAY)).toEqual([]);
+  });
+});
+
+describe("checkReturnBeforeDeparture", () => {
+  it("flags a returnDate before the departureDate (the exact live case: 'leaving April 20th, returning April 10th')", () => {
+    const reqs = new Map<RequirementFieldName, unknown>([
+      ["departureDate", "2027-04-20"],
+      ["returnDate", "2027-04-10"],
+    ]);
+    expect(checkReturnBeforeDeparture(reqs)).toBe(true);
+  });
+
+  it("passes a real forward-ordered pair", () => {
+    const reqs = new Map<RequirementFieldName, unknown>([
+      ["departureDate", "2027-04-10"],
+      ["returnDate", "2027-04-20"],
+    ]);
+    expect(checkReturnBeforeDeparture(reqs)).toBe(false);
+  });
+
+  it("allows a same-day round trip (a legitimate day trip, not a reversed range)", () => {
+    const reqs = new Map<RequirementFieldName, unknown>([
+      ["departureDate", "2027-04-10"],
+      ["returnDate", "2027-04-10"],
+    ]);
+    expect(checkReturnBeforeDeparture(reqs)).toBe(false);
+  });
+
+  it("doesn't flag anything when either date isn't present yet", () => {
+    expect(checkReturnBeforeDeparture(new Map([["departureDate", "2027-04-20"]]))).toBe(false);
+    expect(checkReturnBeforeDeparture(new Map([["returnDate", "2027-04-10"]]))).toBe(false);
+    expect(checkReturnBeforeDeparture(new Map())).toBe(false);
   });
 });
 

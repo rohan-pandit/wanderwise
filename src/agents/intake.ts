@@ -90,7 +90,11 @@ budgetTotalUsd must be a specific number — never invent one to fill it in. If 
 
 originAirportCode/destinationAirportCode are special: almost every trip never needs them (most cities have exactly one commercial airport, resolved automatically downstream), so never ask about or extract these unprompted. The trip state's pendingAirportClarification array is the only signal that they're needed right now — when it's non-empty, the deterministic system (not you) already asked the user which airport for each listed city+candidate-list, in the same shape you see it. If the user's latest message answers that — names one of the listed airports, by its code, its name, or a description that clearly picks one (e.g. "the one closest to Manhattan") — call record_extraction with the matching field set to that airport's exact iata code from the candidate list, never a code you're inferring on your own. If their message doesn't answer it (asks something else, or is ambiguous even against the candidate list), don't guess — leave the field unset; the same question will be asked again next turn.
 
-pendingDestinationClarification works the same way, for destination itself rather than which airport: non-empty means the deterministic system already asked the user to confirm or pick a destination, for one of two reasons distinguished by each entry's regionKind. regionKind null means their wording didn't exactly match a known destination and the system is confirming a close match — candidates lists the real destination name(s) it found (one candidate: "did you mean X?"; several: "which did you mean?"). regionKind "state" or "country" means they named a whole US state or country, not a specific city, and the system is asking which city instead — candidates, if non-empty, lists real cities already available in that region. Either way, if the user's latest message answers it — confirms a candidate, names one of the listed candidates directly, or (for a state/country ask) names a specific city — call record_extraction with destination set to that exact resolved city name, never a value you're inferring or normalizing yourself. If their message doesn't answer it, don't guess — leave destination unset; the same question will be asked again next turn.
+origin and destination must both be specific cities, not a state, country, region, or vague description ("somewhere warm", "the Midwest", "Tuscany"). If the user's wording doesn't name an actual city, don't extract the field yet — ask them to name one instead. This version of Wanderwise only supports departures from within the United States: if the user's home city is clearly outside the US, or they only give a non-US country/region for where they're leaving from, ask for a specific US departure city the same way you would for any other too-vague origin, rather than trying to record a non-US one.
+
+pendingDestinationClarification works the same way as pendingAirportClarification, for destination itself rather than which airport: non-empty means the deterministic system already asked the user to confirm or pick a destination, for one of a few reasons distinguished by each entry's regionKind. regionKind null means their wording didn't exactly match a known destination and the system is confirming a close match — candidates lists the real destination name(s) it found (one candidate: "did you mean X?"; several: "which did you mean?"). regionKind "state" or "country" means they named a whole US state or a whole country, not a specific city, and the system is asking which city instead — candidates, if non-empty, lists real cities already available in that region. regionKind "state_or_country" means the name matches both a US state and a real country Wanderwise has inventory for (e.g. "Georgia") — the system genuinely can't tell which one was meant, so ask the user to clarify, not just "which city" (candidates lists the country's cities, but a US state city is just as valid an answer). In every case, if the user's latest message answers it — confirms a candidate, names one of the listed candidates directly, or (for a state/country/state_or_country ask) names a specific city — call record_extraction with destination set to that exact resolved city name, never a value you're inferring or normalizing yourself. If their message doesn't answer it, don't guess — leave destination unset; the same question will be asked again next turn.
+
+pendingOriginClarification is the same mechanic, narrower: it only ever fires when origin was given as a bare US state name with no specific city (e.g. "Texas") — cityQuery is that free text; there are no candidates to list, since (unlike destination) there's no catalog of "cities in this state" to offer. If the user's latest message names a specific city, call record_extraction with origin set to that city. If it doesn't, leave origin unset; the same question will be asked again next turn.
 
 lastStepFailure, when not null, is the deterministic system's own record of the active chain step's most recent search/propose attempt failing — already known fact, not something you need to (or should) guess about. When the user asks about search results or progress ("check again", "why isn't this working", "any updates?"), ground your reply in this message rather than inventing a different or more optimistic explanation — do not suggest an unrelated fix (like adjusting the budget) unless the message itself points at one. If the user's current message just changed something that plausibly addresses the failure, it's fine to acknowledge a fresh attempt is happening instead of repeating the old failure verbatim.
 
@@ -109,7 +113,12 @@ export interface PendingAirportClarificationInput {
 export interface PendingDestinationClarificationInput {
   cityQuery: string;
   candidates: string[];
-  regionKind: "state" | "country" | null;
+  regionKind: "state" | "country" | "state_or_country" | null;
+}
+
+/** A pending "which city are you leaving from?" disambiguation — computed deterministically by `checkOriginReadiness` (`src/workflow/step-shared.ts`), not by this agent. Narrower than `PendingDestinationClarificationInput`: origin has no candidate cities to list (see that function's own docstring for why), just the free text that turned out to be a bare US state name. */
+export interface PendingOriginClarificationInput {
+  cityQuery: string;
 }
 
 export interface IntakeAgentInput {
@@ -152,6 +161,15 @@ export interface IntakeAgentInput {
    */
   pendingDestinationClarification?: PendingDestinationClarificationInput[];
   /**
+   * Non-empty exactly when the trip is stuck waiting on a deterministic
+   * "which city are you leaving from?" answer (`processIntakeTurn`'s own
+   * pre-turn check, `checkOriginReadiness`) — same reasoning as
+   * `pendingDestinationClarification`, narrower scope (see that function's
+   * own docstring: this app's origin support is currently US-only, and this
+   * only ever fires for a bare US state name).
+   */
+  pendingOriginClarification?: PendingOriginClarificationInput[];
+  /**
    * The active chain step's most recent propose/revision failure, if one
    * exists and nothing more recent (a later success) already superseded it
    * (`getLatestChainStepFailure`, `src/repositories/trip-events.ts`) — lets
@@ -183,6 +201,7 @@ function buildUserContent(input: IntakeAgentInput): string {
     activeChainStep: input.activeChainStep ?? "flight",
     pendingAirportClarification: input.pendingAirportClarification ?? [],
     pendingDestinationClarification: input.pendingDestinationClarification ?? [],
+    pendingOriginClarification: input.pendingOriginClarification ?? [],
     lastStepFailure: input.lastStepFailure ?? null,
   };
   return `Current trip state:\n${JSON.stringify(state)}\n\nLatest user message:\n${input.userMessage}`;

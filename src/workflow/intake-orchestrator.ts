@@ -26,6 +26,7 @@ import {
   ExtractedRequirement,
   checkDatesNotInThePast,
   checkRequirementsComplete,
+  checkReturnBeforeDeparture,
   type ClarificationRequest,
   type ExtractionSource,
   type PreferenceFieldName,
@@ -70,8 +71,10 @@ import {
   REVISABLE_CHAIN_STEPS,
   checkAirportReadiness,
   checkDestinationReadiness,
+  checkOriginReadiness,
   type PendingAirportDisambiguation,
   type PendingDestinationClarification,
+  type PendingOriginClarification,
 } from "./step-shared";
 import type { WorkflowEvent, WorkflowState } from "./state-machine";
 
@@ -193,14 +196,21 @@ function buildAirportClarificationMessage(pending: PendingAirportDisambiguation[
 /**
  * The destination-matching equivalent of `buildAirportClarificationMessage`
  * above — same "always deterministic, never trust the model's own text"
- * reasoning. Two shapes depending on `regionKind` (`step-shared.ts`'s
+ * reasoning. Shape depends on `regionKind` (`step-shared.ts`'s
  * `PendingDestinationClarification`): a plain "did you mean X?" /
- * "which did you mean, X or Y?" for a fuzzy-matched city name, or "which
+ * "which did you mean, X or Y?" for a fuzzy-matched city name; "which
  * city?" (optionally listing real options) when the input turned out to be
- * a whole state or country rather than any specific city.
+ * a whole state or country rather than any specific city; or, for the
+ * narrower "state_or_country" case (a name like "Georgia" that's both a
+ * real US state and a real seeded country), an explicit "which did you
+ * mean" between the two rather than silently assuming either.
  */
 function buildDestinationClarificationMessage(pending: PendingDestinationClarification[]): string {
   const parts = pending.map((p) => {
+    if (p.regionKind === "state_or_country") {
+      const options = p.candidates.length > 0 ? ` (e.g. ${p.candidates.join(", ")} for the country)` : "";
+      return `whether "${p.cityQuery}" means the U.S. state or the country, and which specific city you mean${options}`;
+    }
     if (p.regionKind) {
       const options = p.candidates.length > 0 ? ` — we have ${p.candidates.join(", or ")}` : "";
       return `which city in ${p.cityQuery} you'd like to visit${options}`;
@@ -214,6 +224,13 @@ function buildDestinationClarificationMessage(pending: PendingDestinationClarifi
   return `Before I can search flights, could you confirm ${list}?`;
 }
 
+/** The origin-side equivalent of `buildDestinationClarificationMessage`'s "state"/"country" shape, but narrower — `checkOriginReadiness` only ever fires for a bare US state name, so there's exactly one shape, no `regionKind` branching needed. */
+function buildOriginClarificationMessage(pending: PendingOriginClarification[]): string {
+  const parts = pending.map((p) => `which city in ${p.cityQuery} you'd be flying from`);
+  const list = parts.length === 1 ? parts[0] : parts.join("; and ");
+  return `Before I can search flights, could you tell me ${list}?`;
+}
+
 /** Always fully deterministic, same reasoning as `buildAirportClarificationMessage` — discovered strictly after the model already responded, so its own text can't possibly be addressing it. */
 function buildPastDateClarificationMessage(fields: RequirementFieldName[], today: string): string {
   const labels = fields.map((f) => (f === "departureDate" ? "departure date" : "return date"));
@@ -221,6 +238,11 @@ function buildPastDateClarificationMessage(fields: RequirementFieldName[], today
   const verb = labels.length === 1 ? "is" : "are";
   const suffix = labels.length === 1 ? "" : "s";
   return `Your ${list} ${verb} already in the past (today is ${today}) — could you give me the correct date${suffix}?`;
+}
+
+/** Always fully deterministic, same reasoning as `buildPastDateClarificationMessage` — a different date-sanity failure (reversed, not past), discovered the same way. */
+function buildReversedDateClarificationMessage(): string {
+  return "Your return date is before your departure date — could you give me the correct departure and return dates?";
 }
 
 /**
@@ -437,6 +459,15 @@ export interface ProcessIntakeTurnParams {
    */
   enableDestinationDisambiguation?: boolean;
   /**
+   * Gates the "which city are you leaving from?" origin clarification turn
+   * (`checkOriginReadiness`, `src/workflow/step-shared.ts`) — same opt-in,
+   * defaults-`false` reasoning as `enableDestinationDisambiguation`, so an
+   * existing eval caller that happens to use a US-state name as a
+   * placeholder origin (or a real one, deliberately, to test something
+   * else) keeps its exact current behavior unless it explicitly opts in.
+   */
+  enableOriginDisambiguation?: boolean;
+  /**
    * Today's real date (YYYY-MM-DD) — given to the Intake agent (which has
    * no other way to know it, `src/agents/intake.ts`) and used by the
    * deterministic `checkDatesNotInThePast` guardrail below. Defaults to the
@@ -579,10 +610,20 @@ export async function processIntakeTurn(
     params.enableDestinationDisambiguation && checkRequirementsComplete(currentRequirements).ready
       ? await checkDestinationReadiness(supabase, preTurnRequirementsMap, params.tripId)
       : [];
+  // Origin clarification, same "ask one thing at a time" reasoning as
+  // destination-before-airport above — skipped while a destination
+  // clarification is already pending.
+  const preTurnPendingOriginClarification =
+    params.enableOriginDisambiguation &&
+    checkRequirementsComplete(currentRequirements).ready &&
+    preTurnPendingDestinationClarification.length === 0
+      ? checkOriginReadiness(preTurnRequirementsMap)
+      : [];
   const preTurnPendingAirportClarification =
     params.enableAirportDisambiguation &&
     checkRequirementsComplete(currentRequirements).ready &&
-    preTurnPendingDestinationClarification.length === 0
+    preTurnPendingDestinationClarification.length === 0 &&
+    preTurnPendingOriginClarification.length === 0
       ? await checkAirportReadiness(supabase, preTurnRequirementsMap, params.tripId)
       : [];
 
@@ -611,6 +652,7 @@ export async function processIntakeTurn(
       activeChainStep,
       pendingAirportClarification: preTurnPendingAirportClarification,
       pendingDestinationClarification: preTurnPendingDestinationClarification,
+      pendingOriginClarification: preTurnPendingOriginClarification,
       lastStepFailure,
     });
   } catch (err) {
@@ -784,14 +826,37 @@ export async function processIntakeTurn(
       ? { missingFields: pastDateFields, reason: `Stated date(s) already in the past relative to today (${today}): ${pastDateFields.join(", ")}.` }
       : null;
 
-  // A third deterministic gate on top of both above — only meaningful once
-  // completeness AND dates already passed (no point asking which
+  // A third deterministic gate, same tier as the past-date one above (no
+  // point resolving which destination/city was meant for a trip whose dates
+  // are already known to be nonsensical) — a reversed departure/return pair
+  // is a distinct failure mode from either date individually being in the
+  // past, found live pressure-testing the Intake agent with deliberately
+  // contradictory dates. See `checkReturnBeforeDeparture`'s own docstring
+  // (`src/domain/extraction.ts`) for why this needs to be a real gate here,
+  // not just something the model happens to catch on its own.
+  const reversedDates = completeness.ready
+    ? checkReturnBeforeDeparture(new Map(allRequirements.map((r) => [r.field, r.value])))
+    : false;
+  await recordGuardrailEvent(supabase, {
+    tripId: params.tripId,
+    agentName: AGENT_NAME,
+    guardrailName: "dates_return_before_departure",
+    layer: "domain_validation",
+    triggered: reversedDates,
+    workflowRunId: run.id,
+  });
+  const reversedDateClarification: ClarificationRequest | null = reversedDates
+    ? { missingFields: ["departureDate", "returnDate"], reason: "Stated return date is before the stated departure date." }
+    : null;
+
+  // A fourth deterministic gate on top of the three above — only meaningful
+  // once completeness AND dates already passed (no point asking which
   // destination was meant for a trip whose dates are already known to be
   // wrong). Re-checked against *post-turn* requirements (not the pre-turn
   // snapshot used to prompt the agent above), since this turn may have
   // just supplied the confirmation ("yes, New York City") that resolves it.
   const postTurnPendingDestinationClarification =
-    params.enableDestinationDisambiguation && completeness.ready && !pastDateClarification
+    params.enableDestinationDisambiguation && completeness.ready && !pastDateClarification && !reversedDateClarification
       ? await checkDestinationReadiness(supabase, new Map(allRequirements.map((r) => [r.field, r.value])), params.tripId)
       : [];
   await recordGuardrailEvent(supabase, {
@@ -814,11 +879,47 @@ export async function processIntakeTurn(
         }
       : null;
 
-  // A fourth gate, skipped while destination clarification is pending —
-  // see the pre-turn block's comment on why (asking about an airport for a
-  // not-yet-confirmed destination is both confusing and premature).
+  // A fifth gate, skipped while destination clarification is pending — same
+  // "ask one thing at a time" reasoning as the pre-turn block's origin gate.
+  const postTurnPendingOriginClarification =
+    params.enableOriginDisambiguation &&
+    completeness.ready &&
+    !pastDateClarification &&
+    !reversedDateClarification &&
+    !destinationClarification
+      ? checkOriginReadiness(new Map(allRequirements.map((r) => [r.field, r.value])))
+      : [];
+  await recordGuardrailEvent(supabase, {
+    tripId: params.tripId,
+    agentName: AGENT_NAME,
+    guardrailName: "origin_disambiguation",
+    layer: "domain_validation",
+    triggered: postTurnPendingOriginClarification.length > 0,
+    detail:
+      postTurnPendingOriginClarification.length > 0
+        ? `pending: ${postTurnPendingOriginClarification.map((p) => p.cityQuery).join(", ")}`
+        : null,
+    workflowRunId: run.id,
+  });
+  const originClarification: ClarificationRequest | null =
+    postTurnPendingOriginClarification.length > 0
+      ? {
+          missingFields: ["origin"],
+          reason: `Origin given as a US state, not a specific city: ${postTurnPendingOriginClarification.map((p) => p.cityQuery).join(", ")}`,
+        }
+      : null;
+
+  // A sixth gate, skipped while destination or origin clarification is
+  // pending — see the pre-turn block's comment on why (asking about an
+  // airport for a not-yet-confirmed destination/origin is both confusing and
+  // premature).
   const postTurnPendingAirportClarification =
-    params.enableAirportDisambiguation && completeness.ready && !pastDateClarification && !destinationClarification
+    params.enableAirportDisambiguation &&
+    completeness.ready &&
+    !pastDateClarification &&
+    !reversedDateClarification &&
+    !destinationClarification &&
+    !originClarification
       ? await checkAirportReadiness(supabase, new Map(allRequirements.map((r) => [r.field, r.value])), params.tripId)
       : [];
   await recordGuardrailEvent(supabase, {
@@ -841,9 +942,19 @@ export async function processIntakeTurn(
         }
       : null;
   const effectiveReady =
-    completeness.ready && !pastDateClarification && !destinationClarification && !airportClarification;
+    completeness.ready &&
+    !pastDateClarification &&
+    !reversedDateClarification &&
+    !destinationClarification &&
+    !originClarification &&
+    !airportClarification;
   const effectiveClarification =
-    pastDateClarification ?? destinationClarification ?? airportClarification ?? agentResult.clarification;
+    pastDateClarification ??
+    reversedDateClarification ??
+    destinationClarification ??
+    originClarification ??
+    airportClarification ??
+    agentResult.clarification;
 
   // The model sometimes calls a tool (most often record_extraction) with no
   // accompanying text at all — a real, observed behavior (not a bug in this
@@ -859,22 +970,26 @@ export async function processIntakeTurn(
   // case now gets its own fallback built from the already-computed
   // `missingFields` rather than reusing the extraction-only message.
   //
-  // The past-date, destination-disambiguation, and airport-disambiguation
-  // cases always win over the model's own text when present: all three are
-  // discovered strictly *after* the model already responded (it was never
-  // asked about any of them this turn), so its own text can't possibly be
-  // addressing them — showing it instead of (or blended with) the real
-  // question would just be confusing.
+  // The past-date, reversed-date, destination-, origin-, and
+  // airport-disambiguation cases always win over the model's own text when
+  // present: all five are discovered strictly *after* the model already
+  // responded (it was never asked about any of them this turn), so its own
+  // text can't possibly be addressing them — showing it instead of (or
+  // blended with) the real question would just be confusing.
   const assistantMessage = pastDateClarification
     ? buildPastDateClarificationMessage(pastDateFields, today)
-    : destinationClarification
-      ? buildDestinationClarificationMessage(postTurnPendingDestinationClarification)
-      : airportClarification
-        ? buildAirportClarificationMessage(postTurnPendingAirportClarification)
-        : agentResult.assistantMessage.trim() ||
-          (agentResult.clarification
-            ? fallbackClarificationMessage(agentResult.clarification)
-            : "Got it — updating your trip details now.");
+    : reversedDateClarification
+      ? buildReversedDateClarificationMessage()
+      : destinationClarification
+        ? buildDestinationClarificationMessage(postTurnPendingDestinationClarification)
+        : originClarification
+          ? buildOriginClarificationMessage(postTurnPendingOriginClarification)
+          : airportClarification
+            ? buildAirportClarificationMessage(postTurnPendingAirportClarification)
+            : agentResult.assistantMessage.trim() ||
+              (agentResult.clarification
+                ? fallbackClarificationMessage(agentResult.clarification)
+                : "Got it — updating your trip details now.");
   await appendMessageOnce(supabase, {
     sessionId: params.sessionId,
     role: "assistant",

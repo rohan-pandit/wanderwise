@@ -1134,6 +1134,146 @@ describe("processIntakeTurn", () => {
     expect(getDestinationByName).not.toHaveBeenCalled();
   });
 
+  const READY_WITH_REVERSED_DATES = [
+    { field: "origin", value: "Denver", source: "user_explicit", confidence: 1 },
+    { field: "destination", value: "Seattle", source: "user_explicit", confidence: 1 },
+    { field: "departureDate", value: "2027-04-20", source: "user_explicit", confidence: 1 },
+    { field: "returnDate", value: "2027-04-10", source: "user_explicit", confidence: 1 },
+    { field: "partySize", value: 2, source: "user_explicit", confidence: 1 },
+    { field: "budgetTotalUsd", value: 2000, source: "user_explicit", confidence: 1 },
+  ];
+
+  it("blocks requirements_ready when the return date is before the departure date, even though nothing is individually in the past (found live pressure-testing the Intake agent with deliberately contradictory dates)", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({ requirements: READY_WITH_REVERSED_DATES as never, assistantMessage: "Got it!" }) as never,
+    );
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "awaiting_clarification",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "Leaving April 20th, returning April 10th, Denver to Seattle, 2 people, $2000.",
+      today: "2026-09-18",
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.workflowState).toBe("awaiting_clarification");
+    expect(result.assistantMessage).toContain("return date is before your departure date");
+  });
+
+  it("does not falsely flag a real forward-ordered date pair as reversed", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({
+        requirements: READY_WITH_REVERSED_DATES.map((r) =>
+          r.field === "departureDate" ? { ...r, value: "2027-04-10" } : r.field === "returnDate" ? { ...r, value: "2027-04-20" } : r,
+        ) as never,
+      }) as never,
+    );
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "requirements_ready",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "Denver to Seattle, April 10-20 2027, 2 people, $2000.",
+      today: "2026-09-18",
+    });
+
+    expect(result.ready).toBe(true);
+    expect(result.workflowState).toBe("requirements_ready");
+  });
+
+  const READY_EXCEPT_ORIGIN_STATE = [
+    { field: "origin", value: "Texas", source: "user_explicit", confidence: 1 },
+    { field: "destination", value: "Miami", source: "user_explicit", confidence: 1 },
+    { field: "departureDate", value: "2026-10-02", source: "user_explicit", confidence: 1 },
+    { field: "returnDate", value: "2026-10-07", source: "user_explicit", confidence: 1 },
+    { field: "partySize", value: 2, source: "user_explicit", confidence: 1 },
+    { field: "budgetTotalUsd", value: 3000, source: "user_explicit", confidence: 1 },
+  ];
+
+  it("blocks requirements_ready on a bare US state name given as origin when enableOriginDisambiguation is on (the Texas case)", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({ requirements: READY_EXCEPT_ORIGIN_STATE as never, assistantMessage: "Got it!" }) as never,
+    );
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "awaiting_clarification",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "I'm coming from Texas, want to visit Miami Oct 2-7, 2 people, $3000.",
+      enableOriginDisambiguation: true,
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.workflowState).toBe("awaiting_clarification");
+    expect(result.assistantMessage).toContain("Texas");
+  });
+
+  it("doesn't check origin disambiguation at all when enableOriginDisambiguation is left off (default) — existing eval callers unaffected", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("collecting_requirements", 3) as never);
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({ requirements: READY_EXCEPT_ORIGIN_STATE as never }) as never,
+    );
+    vi.mocked(advanceTrip).mockResolvedValue({
+      status: "applied",
+      fromState: "collecting_requirements",
+      toState: "requirements_ready",
+      version: 4,
+    } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "I'm coming from Texas, want to visit Miami Oct 2-7, 2 people, $3000.",
+    });
+
+    expect(result.ready).toBe(true);
+    expect(result.workflowState).toBe("requirements_ready");
+  });
+
+  it("resolves once the user's reply names a specific city for a previously-flagged state origin", async () => {
+    vi.mocked(getLatestTripState).mockResolvedValue(stateAt("awaiting_clarification", 4) as never);
+    vi.mocked(listActiveTripRequirements).mockResolvedValue(
+      READY_EXCEPT_ORIGIN_STATE.map((r) => requirementRow(r.field, r.value)) as never,
+    );
+    vi.mocked(runIntakeAgent).mockResolvedValue(
+      emptyAgentResult({
+        requirements: [{ field: "origin", value: "Dallas", source: "user_explicit", confidence: 1 }] as never,
+      }) as never,
+    );
+    vi.mocked(advanceTrip)
+      .mockResolvedValueOnce({ status: "applied", fromState: "awaiting_clarification", toState: "collecting_requirements", version: 5 } as never)
+      .mockResolvedValueOnce({ status: "applied", fromState: "collecting_requirements", toState: "requirements_ready", version: 6 } as never);
+
+    const result = await processIntakeTurn(supabase, modelClient, {
+      tripId: TRIP_ID,
+      sessionId: SESSION_ID,
+      userMessage: "Dallas",
+      enableOriginDisambiguation: true,
+    });
+
+    expect(result.ready).toBe(true);
+    expect(result.workflowState).toBe("requirements_ready");
+  });
+
   it("passes the active step's last known failure through to the Intake agent's input", async () => {
     vi.mocked(getLatestTripState).mockResolvedValue(stateAt("requirements_ready", 4) as never);
     vi.mocked(getLatestChainStepFailure).mockResolvedValue({ message: "We don't have inventory for that destination yet — try a different one." });

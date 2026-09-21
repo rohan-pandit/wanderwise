@@ -39,6 +39,7 @@ import { SerpApiFlightProvider } from "@/src/repositories/providers/serpapi-flig
 import { VoyageEmbeddingClient } from "@/src/retrieval/providers/voyage-embedding-client";
 import { getCurrentChainStep, type ChainStep } from "@/src/domain/chain";
 import type { BudgetBreakdown, BudgetViolation } from "@/src/domain/budget";
+import { InvalidDateRangeError } from "@/src/domain/dates";
 import { createSession } from "@/src/repositories/sessions";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
@@ -177,6 +178,15 @@ function friendlyStepErrorMessage(err: unknown): string | null {
   }
   if (err instanceof UnknownAirportError) {
     return "We couldn't find a commercial airport for that city — try a nearby major city instead.";
+  }
+  // Defense in depth, not the primary fix — `checkReturnBeforeDeparture`
+  // (`src/domain/extraction.ts`) is meant to catch a reversed date range
+  // deterministically before requirements_ready, so this should be
+  // unreachable in practice. Mapped anyway so a gap in that gate (or a
+  // caller that doesn't go through processIntakeTurn at all) surfaces as an
+  // actionable message instead of Next's generic unhandled-error page.
+  if (err instanceof InvalidDateRangeError) {
+    return "Your return date is before your departure date — try correcting your travel dates.";
   }
   if (err instanceof AirportAmbiguousError) {
     // Should never actually happen live — `checkAirportReadiness` gates
@@ -361,6 +371,14 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
     // match — this asks them to confirm instead, before the trip ever
     // reaches requirements_ready.
     enableDestinationDisambiguation: true,
+    // Always on for the same reason as both above (evals leave this off
+    // too) — found live pressure-testing the Intake agent: a bare US state
+    // name as origin ("I'm coming from Texas") is usually caught by the
+    // model's own judgment, but nothing guaranteed it, and an uncaught one
+    // silently reached the flight step's `UnknownAirportError` instead of a
+    // natural chat clarification. This app's origin support is US-only for
+    // now (`checkOriginReadiness`'s own docstring, `step-shared.ts`).
+    enableOriginDisambiguation: true,
   });
 
   // Auto-chain a chat-requested revision, scheduled via `after()` so this

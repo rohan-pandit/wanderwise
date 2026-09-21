@@ -102,12 +102,21 @@ export interface PendingDestinationClarification {
   /**
    * Real destination names to confirm/pick from — non-empty means "did you
    * mean X?" (one candidate) or "which did you mean, X or Y?" (several).
-   * Empty (with `regionKind` set) means `cityQuery` matched a whole US
-   * state or an already-seeded country instead of any specific city.
+   * Empty (with `regionKind` "state") means `cityQuery` matched a whole US
+   * state with no seeded-country collision. `regionKind` "country" or
+   * "state_or_country" always lists the real cities in the matched country.
    */
   candidates: string[];
-  /** Set when `cityQuery` matched a recognized US state or an existing seeded country rather than any specific city — a different question ("which city?") than "did you mean X?". */
-  regionKind: "state" | "country" | null;
+  /**
+   * Set when `cityQuery` matched a recognized US state or an existing seeded
+   * country rather than any specific city — a different question ("which
+   * city?") than "did you mean X?". "state_or_country" is the narrower case
+   * where the name matches BOTH (found live: "Georgia" is both a US state
+   * and a real seeded country — Tbilisi/Batumi/Kazbegi — checking country
+   * first unconditionally silently picked the country every time, with no
+   * way for a user who meant the state to say so).
+   */
+  regionKind: "state" | "country" | "state_or_country" | null;
 }
 
 /**
@@ -165,6 +174,22 @@ export async function checkDestinationReadiness(
   // useful "which city in Spain?").
   const countriesInCatalog = await listDestinationCountries(supabase, CURRENT_INVENTORY_VERSION);
   const matchedCountry = countriesInCatalog.find((c) => c.toLowerCase() === city.toLowerCase());
+
+  // Checked before treating a country match as unconditional: "Georgia" is
+  // both a real US state and a real seeded country (Tbilisi/Batumi/Kazbegi)
+  // — found live pressure-testing this exact ambiguity. Silently assuming
+  // the country (the plain `matchedCountry` branch below) meant a user who
+  // typed "Georgia" while meaning Atlanta or Savannah got asked "which city
+  // in Georgia — Tbilisi, Batumi, or Kazbegi?" with no way to say "actually
+  // I meant the state." Asking explicitly instead, rather than guessing
+  // either way — the user can answer with any specific city (from either
+  // Georgia) and the ordinary `record_extraction` path resolves it exactly
+  // like every other regionKind here.
+  if (matchedCountry && isUsStateName(city)) {
+    const citiesInCountry = await listDestinationsByCountry(supabase, matchedCountry, CURRENT_INVENTORY_VERSION);
+    return [{ cityQuery: destination, candidates: citiesInCountry.map((d) => d.name), regionKind: "state_or_country" }];
+  }
+
   if (matchedCountry) {
     const citiesInCountry = await listDestinationsByCountry(supabase, matchedCountry, CURRENT_INVENTORY_VERSION);
     return [{ cityQuery: destination, candidates: citiesInCountry.map((d) => d.name), regionKind: "country" }];
@@ -188,6 +213,54 @@ export async function checkDestinationReadiness(
     return [{ cityQuery: destination, candidates: [], regionKind: "state" }];
   }
 
+  return [];
+}
+
+export interface PendingOriginClarification {
+  /** The free-text the user actually gave for `origin`. */
+  cityQuery: string;
+}
+
+/**
+ * The origin-side counterpart to `checkDestinationReadiness` above — much
+ * narrower, deliberately. `destination` has a real catalog to check against
+ * (`destinations`, with country/fuzzy matching); `origin` has no such
+ * catalog at all — it's resolved only against the static airport dataset
+ * (`airport-lookup.ts`) at search time, city by city, with no notion of
+ * "country" or "known origins" to check membership against. This app's
+ * current scope is deliberately origins-from-the-US only (a product
+ * decision, not a technical limitation of the airport data itself, which
+ * does cover non-US cities) — so the one thing worth catching
+ * deterministically here, matching `destination`'s own state handling, is a
+ * bare US state name with no specific city (found live pressure-testing:
+ * "I'm coming from Texas" — the Intake agent itself already reliably asks
+ * for a specific city in cases like this, unprompted, but nothing
+ * *guarantees* it will every time, and if a bare state name ever did slip
+ * through, nothing catches it until the flight step's own
+ * `UnknownAirportError`, well after the chat conversation looked complete).
+ * A non-US country/region given as origin ("flying in from Canada," "I live
+ * somewhere in the Midwest") is left to the agent's own judgment for now,
+ * consistent with the current US-only origin scope — not something this
+ * function tries to catch, since there's no equivalent "which city in
+ * Canada" candidate list this app could offer for an origin the way it can
+ * for a destination country.
+ *
+ * One real trade-off worth naming: unlike `destination`, there's no fuzzy
+ * city catalog here to tell "New York" the state apart from "New York" the
+ * city someone actually meant — so this asks for both, where
+ * `checkDestinationReadiness` would resolve the city case silently via its
+ * fuzzy match against real destinations. A false positive on the common
+ * "New York City" case, accepted deliberately rather than guessing.
+ */
+export function checkOriginReadiness(reqs: Map<RequirementFieldName, unknown>): PendingOriginClarification[] {
+  const origin = reqs.get("origin");
+  if (typeof origin !== "string") {
+    return [];
+  }
+  const { city } = parseDestinationQuery(origin);
+  if (isUsStateName(city)) {
+    return [{ cityQuery: origin }];
+  }
   return [];
 }
 

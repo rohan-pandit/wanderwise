@@ -196,6 +196,29 @@ export function checkDatesNotInThePast(
   return invalid;
 }
 
+/**
+ * Deterministic guardrail: `returnDate` strictly before `departureDate` is
+ * never valid, independent of `checkDatesNotInThePast` above (a reversed pair
+ * can both individually be in the future). Found by live-pressure-testing
+ * the Intake agent with deliberately contradictory dates
+ * ("leaving April 20th, returning April 10th") — the model happened to catch
+ * it and asked for clarification unprompted, but nothing forced it to, and a
+ * pair that *does* slip through goes uncaught all the way to the activities
+ * step (`dateRange` in `src/domain/dates.ts`, called once real check-in/
+ * check-out dates exist), which throws `InvalidDateRangeError` — not one of
+ * `friendlyStepErrorMessage`'s (`app/app/actions.ts`) recognized cases, so it
+ * would have surfaced as Next's generic unhandled-error page instead of a
+ * clarifying question, after the user already confirmed a flight and a
+ * hotel. Same-day (`returnDate === departureDate`) is allowed — a legitimate
+ * day trip — this only rejects strictly-reversed pairs.
+ */
+export function checkReturnBeforeDeparture(reqs: Map<RequirementFieldName, unknown>): boolean {
+  const departureDate = reqs.get("departureDate");
+  const returnDate = reqs.get("returnDate");
+  if (typeof departureDate !== "string" || typeof returnDate !== "string") return false;
+  return toEpochDay(returnDate) < toEpochDay(departureDate);
+}
+
 // ---------------------------------------------------------------------------
 // Preferences — soft wants (PROJECT_BRIEF.md §7.1). Qualitative and
 // trade-away-able, so the field vocabulary stays looser than requirements:

@@ -11,7 +11,13 @@ import {
   listDestinationsByCountry,
   matchDestinationsByName,
 } from "@/src/repositories/destinations";
-import { UnknownAirportError, checkAirportReadiness, checkDestinationReadiness, resolveFlightAirport } from "./step-shared";
+import {
+  UnknownAirportError,
+  checkAirportReadiness,
+  checkDestinationReadiness,
+  checkOriginReadiness,
+  resolveFlightAirport,
+} from "./step-shared";
 
 const supabase = {} as SupabaseClient<Database>;
 const TRIP_ID = "trip-1";
@@ -144,6 +150,50 @@ describe("checkDestinationReadiness", () => {
     vi.mocked(listDestinationCountries).mockResolvedValue(["Spain", "France"]);
     const result = await checkDestinationReadiness(supabase, reqs({ destination: "Nowheresville" }), TRIP_ID);
     expect(result).toEqual([]);
+  });
+
+  it("asks which one, state or country, for a name that's both a real US state and a real seeded country (the Georgia collision)", async () => {
+    vi.mocked(matchDestinationsByName).mockResolvedValue({ exact: null, fuzzyCandidates: [] });
+    vi.mocked(listDestinationCountries).mockResolvedValue(["Spain", "Georgia"]);
+    vi.mocked(listDestinationsByCountry).mockResolvedValue([
+      { id: "d1", name: "Tbilisi", country: "Georgia" } as never,
+      { id: "d2", name: "Batumi", country: "Georgia" } as never,
+    ]);
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "Georgia" }), TRIP_ID);
+    expect(result).toEqual([{ cityQuery: "Georgia", candidates: ["Tbilisi", "Batumi"], regionKind: "state_or_country" }]);
+  });
+
+  it("still asks the plain country question for a seeded country with no US-state name collision", async () => {
+    vi.mocked(matchDestinationsByName).mockResolvedValue({ exact: null, fuzzyCandidates: [] });
+    vi.mocked(listDestinationCountries).mockResolvedValue(["Japan"]);
+    vi.mocked(listDestinationsByCountry).mockResolvedValue([{ id: "d1", name: "Tokyo", country: "Japan" } as never]);
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "Japan" }), TRIP_ID);
+    expect(result).toEqual([{ cityQuery: "Japan", candidates: ["Tokyo"], regionKind: "country" }]);
+  });
+});
+
+describe("checkOriginReadiness", () => {
+  it("returns no pending clarification when origin isn't present yet", () => {
+    expect(checkOriginReadiness(reqs({ destination: "Lisbon" }))).toEqual([]);
+  });
+
+  it("asks for a specific city when origin is a bare US state name (the Texas case)", () => {
+    const result = checkOriginReadiness(reqs({ origin: "Texas" }));
+    expect(result).toEqual([{ cityQuery: "Texas" }]);
+  });
+
+  it("is case-insensitive", () => {
+    const result = checkOriginReadiness(reqs({ origin: "texas" }));
+    expect(result).toEqual([{ cityQuery: "texas" }]);
+  });
+
+  it("does flag 'New York' too, even though it's usually meant as the city — unlike destination, origin has no fuzzy city catalog to resolve the ambiguity against, so this deliberately asks rather than guessing", () => {
+    expect(checkOriginReadiness(reqs({ origin: "New York" }))).toEqual([{ cityQuery: "New York" }]);
+  });
+
+  it("does not flag a non-US country or vague region — out of scope for this deterministic check (left to the model's own judgment)", () => {
+    expect(checkOriginReadiness(reqs({ origin: "Canada" }))).toEqual([]);
+    expect(checkOriginReadiness(reqs({ origin: "the Midwest" }))).toEqual([]);
   });
 });
 
