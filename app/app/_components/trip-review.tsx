@@ -9,7 +9,6 @@
  * subscription, and no interactivity beyond the one chat-history toggle —
  * a plain server component fetches once and renders.
  */
-import Link from "next/link";
 import type { ChatMessage } from "./chat-panel";
 import { ChatHistoryPanel } from "./chat-history-panel";
 import { ItineraryText } from "./itinerary-text";
@@ -54,12 +53,7 @@ export function TripReview({
             Finalized
           </span>
         </div>
-        <div className="flex items-center gap-4">
-          <Link href="/app/new" className="text-sm font-medium text-teal-700 hover:text-teal-800">
-            New trip
-          </Link>
-          <ChatHistoryPanel messages={messages} />
-        </div>
+        <ChatHistoryPanel messages={messages} />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-10 sm:px-10">
