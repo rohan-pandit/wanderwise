@@ -1983,3 +1983,23 @@ Tried baking the strip into the schema itself first via `z.string().min(1).trans
 **Known limitations:** this class of bug (a thrown-on-error repository call reaching a statically-prerendered page) has no automated guard beyond "the CI failure itself catches it" — a future addition to either internal dashboard that calls a throwing repository function would reproduce this exact failure mode again. Not adding a lint rule or test harness for it now (out of scope for a one-line fix), but worth keeping in mind for any future `/internal/*` work: match the page's existing `?? []`-tolerant convention, or explicitly opt the page into dynamic rendering if a hard failure is ever actually wanted there.
 
 **Next recommended task:** push this fix to `main` and confirm the GitHub Actions run goes green before doing anything else on this branch.
+
+---
+
+## 2026-09-21 (continued) — App header made bigger, responsively
+
+**What happened:** user found `app/app/layout.tsx`'s persistent header (the "Wanderwise" title + "Your trips"/"Sign out" nav — a shared layout across every `/app/*` route that an earlier entry this session had incorrectly said didn't exist) too small, and asked for a before/after mockup, then explicitly asked me to check mobile before implementing.
+
+**What I built:** made the title/nav larger, but only from Tailwind's `sm:` breakpoint (640px) up — `text-lg` → `sm:text-2xl` on the title, `text-sm` → `sm:text-base` on "Your trips"/"Sign out", `py-4` → `sm:py-5` on the header, `gap-4` → `sm:gap-6` between nav items. Below 640px the header keeps today's exact sizing, unchanged.
+
+**Why the responsive split, not a flat size bump:** checked before implementing, per the user's explicit ask. Built a pixel-accurate standalone HTML reproduction of the real header (exact Tailwind px values, same Google Fonts, same hex colors — outside the Next app entirely, since `/app/*` requires magic-link auth this session's browser can't complete, and I didn't want to touch `proxy.ts`'s auth boundary even temporarily for a throwaway test route, the same call an earlier session made explicitly for the same reason). Served it from a one-off local Node static server (not through the app or its middleware at all) and measured real `getBoundingClientRect()` values in the browser pane at 320px, 375px, and 640px:
+- **320px** (smallest realistic phone width): a flat size bump left the title and "Your trips" touching with a *measured 0px gap* (title's right edge and the nav's left edge landed on the exact same pixel, 164.4px) — `justify-content: space-between` clamps at zero rather than actually overflowing the box, so nothing broke outright, but the current header's comfortable ~35px gap at this same width was completely gone. Today's sizes, unchanged, keep that ~35px gap.
+- **375/640px+:** plenty of room at every size tried, including the full enlarged version.
+
+Gating the increase behind `sm:` keeps the proven-safe current sizing for every width where the enlarged version measurably crowded, while still enlarging it everywhere the "feels small" complaint was actually about (this is a desktop-app-in-a-browser-tab portfolio piece — most real usage of this header is on a laptop/desktop screen well past 640px).
+
+**Decisions made:** `sm:` (640px) over a narrower or wider cutoff — measured comfortable at exactly 640px, and it's Tailwind's own named breakpoint rather than a custom arbitrary value, consistent with using the framework's own scale elsewhere in this codebase.
+
+**Verification:** `npm run eval:ci` (typecheck + lint + 506/506 tests) clean — this change has no logic to unit test, just class names. No live authenticated screenshot of the real page (same auth-pane limitation as prior entries), but the responsive-breakpoint reasoning itself was verified against a pixel-faithful reproduction of the real markup/classes/fonts/colors, not just reasoned about in the abstract. Test harness (HTML file + Node static server) was entirely outside the repo and torn down after — nothing committed, no auth boundary touched.
+
+**Next recommended task:** once deployed, confirm the header at a real narrow phone width (a physical device or Chrome DevTools device emulation) still reads comfortably, and that the `sm:` cutover doesn't feel like an abrupt jump when resizing a browser window across 640px.
