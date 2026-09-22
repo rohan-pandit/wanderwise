@@ -148,7 +148,14 @@ export function ChatPanel({
           scroll/border bar full-width (so the border-top still spans the
           whole panel) while the actual conversation stays a readable
           column, the same split every mainstream chat UI uses. */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+      {/* `pt-20` in `"drawer"` mode (vs. the usual `pt-6`) keeps the first
+          message clear of the floating "Report an issue" trigger
+          (`feedback-widget.tsx`), which is `position: fixed` at `top: 88px`
+          in this layout mode — with the normal `py-6` top padding, a short
+          conversation (its whole transcript fitting above the fold) rendered
+          its first bubble directly under that button instead of just
+          scrolling beneath it once the list grows. */}
+      <div className={`min-h-0 flex-1 overflow-y-auto px-6 pb-6 ${layoutMode === "drawer" ? "pt-20" : "pt-6"}`}>
         <div className="mx-auto w-full max-w-2xl">
           {messages.length === 0 ? (
             <p className="text-sm text-navy-400">

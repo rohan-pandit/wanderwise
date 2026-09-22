@@ -1021,8 +1021,8 @@ export function ItineraryPanel({
 
   const content = (
     <>
-      <div className="flex items-center justify-between">
-        <h2 className={`font-serif ${clsHeading} font-semibold text-navy-900`}>
+      <div className="flex items-start justify-between gap-x-3">
+        <h2 className={`min-w-0 flex-1 font-serif ${clsHeading} font-semibold text-navy-900`}>
           {tripName ? `Your itinerary for ${tripName}` : "Your itinerary"}
         </h2>
         {!finalized && !cancelled ? (
@@ -1030,7 +1030,7 @@ export function ItineraryPanel({
             type="button"
             disabled={actionPending}
             onClick={() => setConfirmingCancel(true)}
-            className={`${clsLabel} text-navy-400 underline decoration-dotted hover:text-terracotta-600 disabled:opacity-50`}
+            className={`${clsLabel} shrink-0 whitespace-nowrap text-navy-400 underline decoration-dotted hover:text-terracotta-600 disabled:opacity-50`}
           >
             Cancel trip
           </button>
