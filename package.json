@@ -14,6 +14,7 @@
     "generate-embeddings": "node --env-file=.env.local --conditions=react-server --import tsx scripts/generate-embeddings.ts",
     "generate-large-seed-data": "node --env-file=.env.local --conditions=react-server --import tsx scripts/generate-large-seed-data.ts",
     "generate-airport-data": "node --import tsx scripts/generate-airport-data.ts",
+    "generate-city-coordinates": "node --import tsx scripts/generate-city-coordinates.ts",
     "eval:retrieval": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-retrieval-eval.ts",
     "eval:scenarios": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-scenario-eval.ts",
     "eval:cache-comparison": "node --env-file=.env.local --conditions=react-server --import tsx evals/runners/run-cache-comparison.ts"
@@ -32,15 +33,19 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.20.3",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/tz-lookup": "^6.1.2",
     "@vitejs/plugin-react": "^6.1.1",
+    "adm-zip": "^0.6.1",
     "eslint": "^9",
     "eslint-config-next": "16.3.5",
     "tailwindcss": "^4",
     "tsx": "^4.23.13",
     "typescript": "^5",
+    "tz-lookup": "^6.1.25",
     "vitest": "^5.0.1"
   }
 }

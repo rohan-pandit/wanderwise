@@ -20,7 +20,7 @@ import {
   roomAvailabilityConstraint,
   roomCapacityConstraint,
 } from "@/src/domain/constraints";
-import { findAirportsForCity, type Airport } from "@/src/domain/airport-lookup";
+import { findAirportsForCity, findNearestAirportForCity, type Airport } from "@/src/domain/airport-lookup";
 import { parseDestinationQuery } from "@/src/domain/destination-query";
 import type { RequirementFieldName } from "@/src/domain/extraction";
 import { CURRENT_INVENTORY_VERSION } from "@/src/domain/inventory";
@@ -221,6 +221,9 @@ export interface PendingOriginClarification {
   cityQuery: string;
 }
 
+/** This app's current scope: `origin` support is US-only (see `checkOriginReadiness`'s own docstring below). Used to bias a bare, country-less origin's nearest-airport geocoding fallback toward the US instead of an uncorroborated global guess (`resolveFlightAirport`'s `preferredCountry` param, `findNearestAirportForCity`'s own docstring) — never overrides a country the user actually stated themselves (e.g. "London, UK" as origin still means the UK). */
+export const ORIGIN_DEFAULT_COUNTRY = "United States";
+
 /**
  * The origin-side counterpart to `checkDestinationReadiness` above — much
  * narrower, deliberately. `destination` has a real catalog to check against
@@ -264,7 +267,17 @@ export function checkOriginReadiness(reqs: Map<RequirementFieldName, unknown>): 
   return [];
 }
 
-/** A trip's origin or destination city has no scheduled-commercial airport in `src/domain/airport-lookup.ts`'s dataset — a genuine gap (no clarifying question can fix it), distinct from `AirportAmbiguousError` below. Only ever thrown by the SerpAPI-backed flight search; the seed-backed path (evals) has no airport concept at all. */
+/**
+ * A trip's origin or destination city doesn't itself have a scheduled-
+ * commercial airport, AND it doesn't geocode against `src/domain/geocoding.ts`'s
+ * ~34,000-city dataset either — so `findNearestAirportForCity`
+ * (`src/domain/airport-lookup.ts`) had nothing to fall back to. A genuine
+ * gap (no clarifying question can fix a place this app can't locate at
+ * all), distinct from `AirportAmbiguousError` below. Only ever thrown by the
+ * SerpAPI-backed flight search; the seed-backed path (evals) has no airport
+ * concept at all. Much rarer than before the nearest-airport fallback
+ * existed — see `resolveFlightAirport`'s own docstring.
+ */
 export class UnknownAirportError extends Error {
   constructor(tripId: string, cityQuery: string) {
     super(`Trip ${tripId}: no scheduled-commercial airport found for "${cityQuery}".`);
@@ -275,9 +288,9 @@ export class UnknownAirportError extends Error {
 /**
  * Resolves a free-text city (`origin`, or `destination`/`country` already
  * resolved via `resolveTripDestination`) to a single commercial airport for
- * the SerpAPI flight search. Three outcomes, in order:
+ * the SerpAPI flight search. Outcomes, in order:
  * 1. Exactly one airport serves the city — resolved silently. The
- *    overwhelmingly common case; most cities never touch the other two.
+ *    overwhelmingly common case; most cities never touch the other three.
  * 2. More than one airport matches, but `airportCodeValue` (the trip's
  *    already-recorded `originAirportCode`/`destinationAirportCode`
  *    requirement, if the user already answered a disambiguation question)
@@ -290,16 +303,27 @@ export class UnknownAirportError extends Error {
  *    checked with a different requirements snapshot than the one search
  *    actually runs against — should treat that as a real bug, not something
  *    to silently guess through).
- * Throws `UnknownAirportError` for zero candidates — see that class's
- * docstring for why that's not a clarification case.
+ * 4. Zero airports match the city directly — rather than failing outright,
+ *    falls back to `findNearestAirportForCity` (a real, geocoded "nearest
+ *    real airport" — see its own docstring; found necessary live 2026-09-22
+ *    debugging a real "Sintra, Portugal" trip, a real destination with
+ *    genuinely no airport of its own). `preferredCountry` passes straight
+ *    through to it — see that function's own docstring for why `origin`
+ *    callers pass "United States" and `destination` callers don't need to.
+ *    Only once the fallback also comes back empty does this throw
+ *    `UnknownAirportError` — see that class's own docstring for what's
+ *    actually left in that residual case.
  */
 export function resolveFlightAirport(
   tripId: string,
   cityQuery: string,
   airportCodeValue: unknown,
+  preferredCountry?: string,
 ): { resolved: Airport } | { candidates: Airport[] } {
   const candidates = findAirportsForCity(cityQuery);
   if (candidates.length === 0) {
+    const nearest = findNearestAirportForCity(cityQuery, preferredCountry);
+    if (nearest) return { resolved: nearest };
     throw new UnknownAirportError(tripId, cityQuery);
   }
   if (candidates.length === 1) {
@@ -321,8 +345,13 @@ export class AirportAmbiguousError extends Error {
 }
 
 /** `resolveFlightAirport` for a caller that needs a single definite answer right now (the actual flight search), not a value it can turn into a clarification — see `AirportAmbiguousError`. */
-export function resolveFlightAirportOrThrow(tripId: string, cityQuery: string, airportCodeValue: unknown): Airport {
-  const result = resolveFlightAirport(tripId, cityQuery, airportCodeValue);
+export function resolveFlightAirportOrThrow(
+  tripId: string,
+  cityQuery: string,
+  airportCodeValue: unknown,
+  preferredCountry?: string,
+): Airport {
+  const result = resolveFlightAirport(tripId, cityQuery, airportCodeValue, preferredCountry);
   if ("resolved" in result) return result.resolved;
   throw new AirportAmbiguousError(tripId, cityQuery);
 }
@@ -365,7 +394,7 @@ export async function checkAirportReadiness(
 
   const pending: PendingAirportDisambiguation[] = [];
   try {
-    const originResolution = resolveFlightAirport(tripId, origin, reqs.get("originAirportCode"));
+    const originResolution = resolveFlightAirport(tripId, origin, reqs.get("originAirportCode"), ORIGIN_DEFAULT_COUNTRY);
     if ("candidates" in originResolution) {
       pending.push({ field: "originAirportCode", cityQuery: origin, candidates: originResolution.candidates });
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findAirportByIata, findAirportsForCity } from "./airport-lookup";
+import { findAirportByIata, findAirportsForCity, findNearestAirport, findNearestAirportForCity } from "./airport-lookup";
 
 describe("findAirportsForCity", () => {
   it("resolves an unambiguous city to its single airport", () => {
@@ -53,6 +53,54 @@ describe("findAirportsForCity", () => {
 
   it("returns an empty list for a city with no scheduled-commercial airport", () => {
     expect(findAirportsForCity("Nowheresville")).toEqual([]);
+  });
+});
+
+describe("findNearestAirport", () => {
+  it("finds the closest real airport to a coordinate", () => {
+    // Sintra, Portugal's real coordinates — Cascais (CAT) is genuinely
+    // closer than Lisbon (LIS), the more obvious guess.
+    const result = findNearestAirport(38.80097, -9.37826);
+    expect(result.iata).toBe("CAT");
+  });
+
+  it("always returns something, even for a coordinate with no nearby airport at all", () => {
+    // The middle of the Pacific Ocean.
+    const result = findNearestAirport(-10, -160);
+    expect(result.iata).toBeTruthy();
+  });
+});
+
+describe("findNearestAirportForCity", () => {
+  it("resolves a real destination with no scheduled-commercial airport of its own (the live Sintra, Portugal case)", () => {
+    const result = findNearestAirportForCity("Sintra, Portugal");
+    expect(result?.iata).toBe("CAT");
+  });
+
+  it("resolves a major city whose only real airport is listed under a mismatched municipality name (Paris)", () => {
+    const result = findNearestAirportForCity("Paris, France");
+    expect(result?.country).toBe("France");
+  });
+
+  it("returns null rather than a wrong-country guess when the country doesn't match anything (the Tuscany regression)", () => {
+    expect(findNearestAirportForCity("Tuscany, Italy")).toBeNull();
+  });
+
+  it("returns null for a place that doesn't geocode at all", () => {
+    expect(findNearestAirportForCity("Nowheresville")).toBeNull();
+  });
+
+  it("uses preferredCountry only when the query itself gives no country", () => {
+    // "London" alone is ambiguous (UK vs. Canada, among others) — biasing
+    // toward Canada should resolve there, not fall through to the
+    // highest-population global candidate (London, UK).
+    const result = findNearestAirportForCity("London", "Canada");
+    expect(result?.country).toBe("Canada");
+  });
+
+  it("a country stated in the query itself always wins over preferredCountry", () => {
+    const result = findNearestAirportForCity("London, United Kingdom", "Canada");
+    expect(result?.country).toBe("United Kingdom");
   });
 });
 

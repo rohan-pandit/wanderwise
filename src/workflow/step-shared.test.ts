@@ -56,8 +56,17 @@ describe("resolveFlightAirport", () => {
     expect("candidates" in result).toBe(true);
   });
 
-  it("throws UnknownAirportError for a city with no scheduled-commercial airport", () => {
+  it("falls back to the nearest real airport for a city with none of its own (the live Sintra, Portugal case)", () => {
+    const result = resolveFlightAirport(TRIP_ID, "Sintra, Portugal", undefined);
+    expect("resolved" in result && result.resolved.iata).toBe("CAT");
+  });
+
+  it("only throws UnknownAirportError once the nearest-airport fallback also comes back empty", () => {
     expect(() => resolveFlightAirport(TRIP_ID, "Nowheresville", undefined)).toThrow(UnknownAirportError);
+  });
+
+  it("throws rather than falling back to a same-named place in the wrong country (the Tuscany regression)", () => {
+    expect(() => resolveFlightAirport(TRIP_ID, "Tuscany, Italy", undefined)).toThrow(UnknownAirportError);
   });
 });
 

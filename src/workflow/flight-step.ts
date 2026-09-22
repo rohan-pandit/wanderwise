@@ -73,6 +73,7 @@ import { listActiveTripRequirements, type TripRequirementRow } from "@/src/repos
 import { getOrCreateActiveWorkflowRun } from "@/src/repositories/workflow-runs";
 import { deriveCorrelationId } from "./correlation";
 import {
+  ORIGIN_DEFAULT_COUNTRY,
   confirmDecisionField,
   flightHardConstraints,
   requirementMap,
@@ -185,7 +186,7 @@ export async function proposeFlightStep(
     // unambiguously before `requirements_ready` was reached — this reads
     // whichever answer (single-candidate auto-resolve, or a stored
     // disambiguation answer) that already settled.
-    const originAirport = resolveFlightAirportOrThrow(params.tripId, origin, reqs.get("originAirportCode"));
+    const originAirport = resolveFlightAirportOrThrow(params.tripId, origin, reqs.get("originAirportCode"), ORIGIN_DEFAULT_COUNTRY);
     const destinationAirport = resolveFlightAirportOrThrow(
       params.tripId,
       `${destinationRow.name}, ${destinationRow.country}`,

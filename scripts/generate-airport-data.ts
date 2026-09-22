@@ -17,51 +17,29 @@
  * "Czechia" vs. "Czech Republic") — this file's `country` field is a display
  * string in the same vocabulary as `destinations.country`, not an ISO code.
  *
+ * Timezone is computed directly from each airport's own lat/long via
+ * `tz-lookup` (a small, fully offline lat/long -> IANA-timezone library —
+ * no network call, no second dataset). This replaces an earlier version of
+ * this script that cross-referenced OpenFlights' `airports.dat` by IATA
+ * code for timezone instead: that dataset hasn't been actively maintained
+ * since ~2017, so a real, currently-operating airport with no match in it
+ * (found live 2026-09-22: Istanbul Airport / IST, opened 2018, replacing
+ * the older Atatürk Airport OpenFlights still lists) was silently dropped
+ * from the generated file entirely — not a naming mismatch, a genuine
+ * missing-airport gap. Computing timezone from coordinates instead needs no
+ * second source and can't go stale the same way.
+ *
  * Usage: `npm run generate-airport-data`
  */
 import { writeFileSync } from "node:fs";
 import path from "node:path";
+import tzlookup from "tz-lookup";
+import { countryName } from "./lib/country-names";
 
 const SOURCE_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv";
-/**
- * OurAirports doesn't include an IANA time zone per airport, and every
- * generated `Flight` needs one (`deriveHotelStayDates`,
- * `src/domain/stay.ts`, depends on the flight's own local arrival/departure
- * date, not just a bare timestamp) — SerpAPI's own response only gives a
- * bare local "YYYY-MM-DD HH:MM" string per leg with no offset at all.
- * OpenFlights' separate `airports.dat` has exactly this ("Tz database time
- * zone", e.g. "America/New_York"), keyed by the same IATA code, so it's
- * merged in by IATA code rather than switched to as the primary source —
- * OurAirports' `scheduled_service`/`type` fields (the actual filter this
- * script needs) don't exist in OpenFlights' file.
- */
-const TZ_SOURCE_URL = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat";
 const OUTPUT_PATH = path.join(import.meta.dirname, "../src/domain/airport-data.ts");
 
 const EXCLUDED_TYPES = new Set(["closed", "heliport", "seaplane_base", "balloonport"]);
-
-/** Corrects the handful of `Intl.DisplayNames` outputs that don't match this codebase's existing country-name spelling (`src/domain/geography.ts`'s `COUNTRY_PROFILES` keys) — found by cross-checking every code in the filtered dataset against that list. */
-const COUNTRY_NAME_OVERRIDES: Record<string, string> = {
-  BS: "The Bahamas",
-  CI: "Ivory Coast",
-  CZ: "Czech Republic",
-  HK: "Hong Kong",
-  MO: "Macau",
-  TR: "Turkey",
-};
-
-function countryName(iso2: string): string {
-  if (COUNTRY_NAME_OVERRIDES[iso2]) return COUNTRY_NAME_OVERRIDES[iso2];
-  let name: string | undefined;
-  try {
-    name = new Intl.DisplayNames(["en"], { type: "region" }).of(iso2);
-  } catch {
-    name = undefined;
-  }
-  if (!name) return iso2;
-  // "Antigua & Barbuda" -> "Antigua and Barbuda", "Myanmar (Burma)" -> "Myanmar".
-  return name.replace(/ & /g, " and ").replace(/\s*\([^)]*\)\s*$/, "").trim();
-}
 
 function parseCsvLine(line: string): string[] {
   const fields: string[] = [];
@@ -99,28 +77,11 @@ export interface AirportEntry {
   city: string;
   country: string;
   tz: string;
-}
-
-/** OpenFlights' `airports.dat` is plain (unquoted-mostly) CSV with `\N` for a genuinely missing value — returns `iata -> Tz database time zone`. */
-async function fetchIataToTz(): Promise<Map<string, string>> {
-  console.log(`Fetching ${TZ_SOURCE_URL} ...`);
-  const res = await fetch(TZ_SOURCE_URL);
-  if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
-  const raw = await res.text();
-  const map = new Map<string, string>();
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    const f = parseCsvLine(line);
-    const iata = f[4]; // 0-indexed: ID, Name, City, Country, IATA, ICAO, Lat, Lon, Alt, Timezone(offset), DST, Tz database time zone, ...
-    const tz = f[11];
-    if (iata && iata !== "\\N" && tz && tz !== "\\N") map.set(iata, tz);
-  }
-  return map;
+  lat: number;
+  lon: number;
 }
 
 async function main() {
-  const iataToTz = await fetchIataToTz();
-
   console.log(`Fetching ${SOURCE_URL} ...`);
   const res = await fetch(SOURCE_URL);
   if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
@@ -132,7 +93,7 @@ async function main() {
 
   const seen = new Set<string>();
   const entries: AirportEntry[] = [];
-  let missingTz = 0;
+  let skippedBadCoords = 0;
   for (let i = 1; i < lines.length; i++) {
     const f = parseCsvLine(lines[i]);
     const type = f[idx.type];
@@ -144,10 +105,20 @@ async function main() {
     if (EXCLUDED_TYPES.has(type)) continue;
     if (!city) continue; // unusable for city-name lookup
     if (seen.has(iata)) continue; // a handful of duplicate IATA rows exist in the source
-    const tz = iataToTz.get(iata);
-    if (!tz) {
-      missingTz++;
-      continue; // unusable without a time zone -- can't build a correct Flight row without one
+
+    const lat = Number(f[idx.latitude_deg]);
+    const lon = Number(f[idx.longitude_deg]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      skippedBadCoords++;
+      continue; // can't compute a timezone, or serve as a nearest-airport candidate, without real coordinates
+    }
+
+    let tz: string;
+    try {
+      tz = tzlookup(lat, lon);
+    } catch {
+      skippedBadCoords++;
+      continue; // tz-lookup throws for coordinates outside any known timezone boundary (e.g. open ocean) — shouldn't happen for a real airport, but don't let one bad row crash the whole generator
     }
     seen.add(iata);
 
@@ -157,19 +128,21 @@ async function main() {
       city,
       country: countryName(f[idx.iso_country]),
       tz,
+      lat,
+      lon,
     });
   }
   entries.sort((a, b) => a.iata.localeCompare(b.iata));
 
   console.log(
-    `${lines.length - 1} raw rows -> ${entries.length} scheduled-commercial airports with a usable city and time zone ` +
-      `(${missingTz} otherwise-usable airports dropped for having no match in OpenFlights' time zone data).`,
+    `${lines.length - 1} raw rows -> ${entries.length} scheduled-commercial airports with a usable city and coordinates ` +
+      `(${skippedBadCoords} otherwise-usable airports dropped for missing/invalid coordinates).`,
   );
 
   const body = entries
     .map(
       (e) =>
-        `  [${JSON.stringify(e.iata)}, ${JSON.stringify(e.name)}, ${JSON.stringify(e.city)}, ${JSON.stringify(e.country)}, ${JSON.stringify(e.tz)}]`,
+        `  [${JSON.stringify(e.iata)}, ${JSON.stringify(e.name)}, ${JSON.stringify(e.city)}, ${JSON.stringify(e.country)}, ${JSON.stringify(e.tz)}, ${e.lat}, ${e.lon}]`,
     )
     .join(",\n");
 
@@ -180,13 +153,16 @@ async function main() {
  * script's header comment for the full provenance/filtering/normalization
  * notes. Consumed by `+"`src/domain/airport-lookup.ts`"+`, never imported directly.
  *
- * Tuple shape: [iata, name, city, country, tz] — an array of tuples rather
- * than objects to keep this ${entries.length}-row file's parse cost down (no
- * repeated key names). \`tz\` is an IANA time zone (e.g. "America/New_York"),
- * merged in from OpenFlights' separate dataset — see this script's header
- * comment for why.
+ * Tuple shape: [iata, name, city, country, tz, lat, lon] — an array of
+ * tuples rather than objects to keep this ${entries.length}-row file's parse
+ * cost down (no repeated key names). \`tz\` is an IANA time zone (e.g.
+ * "America/New_York"), computed directly from \`lat\`/\`lon\` via \`tz-lookup\`
+ * (see this script's header comment for why, not cross-referenced from a
+ * second dataset). \`lat\`/\`lon\` are also used directly for nearest-airport
+ * fallback resolution (\`findNearestAirport\`, \`airport-lookup.ts\`) when a
+ * city has no scheduled-commercial airport of its own.
  */
-export const AIRPORTS_RAW: readonly [iata: string, name: string, city: string, country: string, tz: string][] = [
+export const AIRPORTS_RAW: readonly [iata: string, name: string, city: string, country: string, tz: string, lat: number, lon: number][] = [
 ${body},
 ];
 `;
