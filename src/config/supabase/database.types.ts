@@ -296,6 +296,7 @@ export interface Database {
           id: string;
           name: string;
           country: string | null;
+          region: string | null;
           time_zone: string | null;
           description: string | null;
           vibe_tags: string[] | null;
@@ -309,6 +310,7 @@ export interface Database {
           id?: string;
           name: string;
           country?: string | null;
+          region?: string | null;
           time_zone?: string | null;
           description?: string | null;
           vibe_tags?: string[] | null;

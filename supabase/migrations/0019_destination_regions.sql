@@ -1,0 +1,13 @@
+-- Adds a real, structured `region` column to `destinations` — the data-driven
+-- fix for the "Tuscany" gap (docs/IMPLEMENTATION_PLAN.md §5): a named region
+-- with genuinely matching inventory (Florence/Siena/Pisa are all seeded) used
+-- to produce a false "we don't have that destination" instead of a "which
+-- city?" clarification, since nothing connected the region name to its
+-- cities. Mirrors the existing `country` column exactly (nullable — not
+-- every destination resolves to a real GeoNames admin1 region, same
+-- "resolves most of the time, not literally all" boundary the nearest-
+-- airport fallback already accepted) — backfilled by
+-- `scripts/generate-destination-regions.ts` (`npm run generate-destination-regions`),
+-- not by this migration, following this project's existing schema/backfill
+-- split (e.g. 0011_destination_ids.sql).
+alter table destinations add column region text;

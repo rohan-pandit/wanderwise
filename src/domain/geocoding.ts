@@ -42,7 +42,8 @@ function normalize(value: string): string {
  * guessed — so this list only grows when a real destination actually needs
  * it, checked against real data each time.
  */
-const COMMON_NAME_ALIASES: Record<string, string> = {
+/** Exported so `scripts/generate-destination-regions.ts` can reuse the exact same GeoNames-naming-quirk corrections when matching a destination's city name against the same underlying GeoNames data, instead of maintaining a second, driftable copy. */
+export const COMMON_NAME_ALIASES: Record<string, string> = {
   "washington d.c.": "Washington",
   "quebec city": "Quebec",
   bariloche: "San Carlos de Bariloche",
@@ -71,6 +72,8 @@ const COMMON_NAME_ALIASES: Record<string, string> = {
   "koh samui": "Ko Samui",
   ayutthaya: "Phra Nakhon Si Ayutthaya",
   cebu: "Cebu City",
+  zurich: "Zuerich",
+  seville: "Sevilla",
 };
 
 /** Sorted by population descending at generation time (`generate-city-coordinates.ts`) — preserved here so the first entry for an ambiguous bare name (no country given) is its best-known real place, not an arbitrary smaller town that happens to share the name. */

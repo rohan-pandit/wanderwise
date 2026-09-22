@@ -8,7 +8,9 @@ vi.mock("@/src/repositories/destinations");
 import {
   getDestinationByName,
   listDestinationCountries,
+  listDestinationRegions,
   listDestinationsByCountry,
+  listDestinationsByRegion,
   matchDestinationsByName,
 } from "@/src/repositories/destinations";
 import {
@@ -28,6 +30,12 @@ function reqs(entries: Partial<Record<RequirementFieldName, unknown>>): Map<Requ
 
 beforeEach(() => {
   vi.resetAllMocks();
+  // Every checkDestinationReadiness call past the exact-match/country
+  // branches now also checks region — defaulted to "no regions in the
+  // catalog" so every pre-existing test below (written before the region
+  // branch existed) doesn't have to opt out of it individually. Tests for
+  // the region branch itself override this.
+  vi.mocked(listDestinationRegions).mockResolvedValue([]);
 });
 
 describe("resolveFlightAirport", () => {
@@ -178,6 +186,60 @@ describe("checkDestinationReadiness", () => {
     vi.mocked(listDestinationsByCountry).mockResolvedValue([{ id: "d1", name: "Tokyo", country: "Japan" } as never]);
     const result = await checkDestinationReadiness(supabase, reqs({ destination: "Japan" }), TRIP_ID);
     expect(result).toEqual([{ cityQuery: "Japan", candidates: ["Tokyo"], regionKind: "country" }]);
+  });
+
+  it("asks which city, listing real options, for a real named region with no direct city match (the Tuscany gap)", async () => {
+    vi.mocked(matchDestinationsByName).mockResolvedValue({ exact: null, fuzzyCandidates: [] });
+    vi.mocked(listDestinationCountries).mockResolvedValue(["Italy"]);
+    vi.mocked(listDestinationRegions).mockResolvedValue(["Tuscany", "Bavaria"]);
+    vi.mocked(listDestinationsByRegion).mockResolvedValue([
+      { id: "d1", name: "Florence", country: "Italy", region: "Tuscany" } as never,
+      { id: "d2", name: "Siena", country: "Italy", region: "Tuscany" } as never,
+      { id: "d3", name: "Pisa", country: "Italy", region: "Tuscany" } as never,
+    ]);
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "Tuscany" }), TRIP_ID);
+    expect(result).toEqual([
+      { cityQuery: "Tuscany", candidates: ["Florence", "Siena", "Pisa"], regionKind: "region" },
+    ]);
+    expect(listDestinationsByRegion).toHaveBeenCalledWith(supabase, "Tuscany", expect.anything());
+  });
+
+  it("is case-insensitive when matching a real named region", async () => {
+    vi.mocked(matchDestinationsByName).mockResolvedValue({ exact: null, fuzzyCandidates: [] });
+    vi.mocked(listDestinationCountries).mockResolvedValue([]);
+    vi.mocked(listDestinationRegions).mockResolvedValue(["Tuscany"]);
+    vi.mocked(listDestinationsByRegion).mockResolvedValue([{ id: "d1", name: "Florence", region: "Tuscany" } as never]);
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "tuscany" }), TRIP_ID);
+    expect(result[0].regionKind).toBe("region");
+  });
+
+  it("prefers a region match over a coincidental fuzzy substring collision, same reasoning as the country/Port of Spain case", async () => {
+    vi.mocked(listDestinationCountries).mockResolvedValue([]);
+    vi.mocked(listDestinationRegions).mockResolvedValue(["Tuscany"]);
+    vi.mocked(listDestinationsByRegion).mockResolvedValue([{ id: "d1", name: "Florence", region: "Tuscany" } as never]);
+    vi.mocked(matchDestinationsByName).mockResolvedValue({
+      exact: null,
+      fuzzyCandidates: [{ id: "d2", name: "Some Unrelated Place" } as never],
+    });
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "Tuscany" }), TRIP_ID);
+    expect(result[0].regionKind).toBe("region");
+  });
+
+  it("never matches a region value that's actually a US state name (every US destination's GeoNames region is literally its state)", async () => {
+    // Backfilled data can legitimately contain "New York" as a region value
+    // (every NY destination's admin1 region is its state) — but that must
+    // never short-circuit the existing, already-tested "New York" fuzzy
+    // path above, which is why checkDestinationReadiness excludes
+    // isUsStateName matches from this branch.
+    vi.mocked(listDestinationCountries).mockResolvedValue([]);
+    vi.mocked(listDestinationRegions).mockResolvedValue(["New York"]);
+    vi.mocked(matchDestinationsByName).mockResolvedValue({
+      exact: null,
+      fuzzyCandidates: [{ id: "d1", name: "New York City" } as never],
+    });
+    const result = await checkDestinationReadiness(supabase, reqs({ destination: "New York" }), TRIP_ID);
+    expect(result).toEqual([{ cityQuery: "New York", candidates: ["New York City"], regionKind: null }]);
+    expect(listDestinationsByRegion).not.toHaveBeenCalled();
   });
 });
 

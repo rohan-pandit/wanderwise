@@ -12,7 +12,6 @@
 import { useState } from "react";
 import { Dialog } from "@base-ui/react/dialog";
 import { submitFeedback } from "../actions";
-import { DRAWER_PEEK_SNAP } from "./itinerary-panel";
 import type { LayoutMode } from "./use-layout-mode";
 import { FEEDBACK_CATEGORY_OPTIONS } from "@/src/domain/feedback-categories";
 
@@ -57,8 +56,19 @@ export function FeedbackWidget({ tripId, layoutMode }: { tripId: string; layoutM
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Trigger
-        className="fixed right-6 z-20 inline-flex items-center gap-2 rounded-full border border-sand-300 bg-sand-100 px-4 py-2.5 text-sm font-semibold text-navy-700 shadow-[0_6px_16px_rgba(22,35,58,0.14)] transition-colors hover:border-teal-600 hover:text-teal-800"
-        style={{ bottom: layoutMode === "drawer" ? `calc(${DRAWER_PEEK_SNAP * 100}vh + 16px)` : "24px" }}
+        className="fixed right-4 z-20 inline-flex items-center gap-2 rounded-full border border-sand-300 bg-sand-100 px-4 py-2.5 text-sm font-semibold text-navy-700 shadow-[0_6px_16px_rgba(22,35,58,0.14)] transition-colors hover:border-teal-600 hover:text-teal-800 sm:right-6"
+        style={
+          layoutMode === "drawer"
+            ? // Bottom-right collides with the chat's Send button and the
+              // itinerary drawer's always-mounted peek bar on mobile (also
+              // dragged around unpredictably by the on-screen keyboard
+              // resizing the viewport from the bottom) — top-right instead,
+              // clear of the global header (app/app/layout.tsx) at every
+              // width "drawer" mode covers, including its own sm: breakpoint
+              // size step.
+              { top: "88px" }
+            : { bottom: "24px" }
+        }
       >
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V4s-1 1-4 1-5-2-8-2-4 1-4 1z" />

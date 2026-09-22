@@ -247,3 +247,42 @@ export async function listDestinationsByCountry(
       .ilike("country", escapeIlikeLiteral(country.trim())),
   );
 }
+
+/**
+ * Every distinct `region` value already in the seed catalog (deduped, case
+ * as stored) — the region-matching sibling of `listDestinationCountries`,
+ * added 2026-09-22 to close the "Tuscany" gap (`docs/IMPLEMENTATION_PLAN.md`
+ * §5): a real named region with genuinely matching inventory (Florence,
+ * Siena, Pisa are all seeded) used to produce a false "we don't have that
+ * destination" instead of a "which city?" clarification, since nothing
+ * connected the region name to its cities. `region` is a real GeoNames
+ * admin1 name (e.g. "Tuscany", "Bavaria"), backfilled by
+ * `scripts/generate-destination-regions.ts` — not every destination
+ * resolves one (small towns below GeoNames' population cutoff, same
+ * boundary the nearest-airport fallback already accepts), so this only
+ * returns the ones that did.
+ */
+export async function listDestinationRegions(
+  supabase: SupabaseClient<Database>,
+  inventoryVersion: number = CURRENT_INVENTORY_VERSION,
+): Promise<string[]> {
+  const rows = await unwrapOrThrow(
+    supabase.from("destinations").select("region").eq("inventory_version", inventoryVersion).not("region", "is", null),
+  );
+  return [...new Set(rows.map((r) => r.region).filter((r): r is string => Boolean(r)))];
+}
+
+/** Every destination whose `region` case-insensitively matches `region` exactly — for `checkDestinationReadiness`'s "which city in {region}?" clarification once a whole-region `destination` (e.g. "Tuscany") is recognized. Mirrors `listDestinationsByCountry` exactly. */
+export async function listDestinationsByRegion(
+  supabase: SupabaseClient<Database>,
+  region: string,
+  inventoryVersion: number = CURRENT_INVENTORY_VERSION,
+): Promise<Destination[]> {
+  return unwrapOrThrow(
+    supabase
+      .from("destinations")
+      .select("*")
+      .eq("inventory_version", inventoryVersion)
+      .ilike("region", escapeIlikeLiteral(region.trim())),
+  );
+}

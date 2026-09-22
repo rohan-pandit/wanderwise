@@ -16,8 +16,20 @@ export default async function AppHome() {
   const tripCount = count ?? 0;
 
   return (
-    <main className="flex min-h-0 flex-1 items-center justify-center px-6">
-      <div className="flex w-full max-w-3xl flex-col items-center text-center">
+    <main className="flex min-h-0 flex-1 justify-center overflow-y-auto px-6 py-10">
+      <div className="my-auto flex w-full max-w-3xl flex-col items-center text-center">
+        {/*
+          `my-auto` on this child (not `items-center` on <main>) is what
+          actually centers it vertically here — centering via the parent's
+          `align-items` combined with `overflow-y-auto` has a well-known CSS
+          bug where an overflowing centered flex item can be scrolled down
+          to its bottom edge but never up to its top edge (auto margins
+          degrade to a real 0, not a negative offset, so `py-10` above still
+          guarantees a minimum gap once content no longer fits). Verified
+          with a standalone reproduction at a 320px-tall viewport before
+          shipping this — the `items-center` version left the "Let's get
+          started" eyebrow permanently unreachable above the scroll area.
+        */}
         <p className="text-xs font-semibold tracking-widest text-teal-700 uppercase">
           {tripCount > 0 ? "Welcome back" : "Let's get started"}
         </p>

@@ -21,7 +21,7 @@ vi.mock("./controller");
 
 import { runIntakeAgent } from "@/src/agents/intake";
 import { recordAgentRun, recordToolCalls } from "@/src/repositories/agent-runs";
-import { getDestinationByName, listDestinationCountries, matchDestinationsByName } from "@/src/repositories/destinations";
+import { getDestinationByName, listDestinationCountries, listDestinationRegions, matchDestinationsByName } from "@/src/repositories/destinations";
 import { getFlightsByIds } from "@/src/repositories/flights";
 import { getHotelsByIds } from "@/src/repositories/hotels";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
@@ -103,6 +103,7 @@ beforeEach(() => {
   vi.mocked(recordGuardrailEvent).mockResolvedValue({} as never);
   vi.mocked(getLatestChainStepFailure).mockResolvedValue(null);
   vi.mocked(listDestinationCountries).mockResolvedValue([]);
+  vi.mocked(listDestinationRegions).mockResolvedValue([]);
   vi.mocked(appendMessage).mockResolvedValue({} as never);
   vi.mocked(findMessageByCorrelationId).mockResolvedValue(null);
   vi.mocked(listActiveTripRequirements).mockResolvedValue([]);

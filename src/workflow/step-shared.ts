@@ -30,7 +30,9 @@ import {
   AmbiguousDestinationNameError,
   getDestinationByName,
   listDestinationCountries,
+  listDestinationRegions,
   listDestinationsByCountry,
+  listDestinationsByRegion,
   matchDestinationsByName,
   type Destination,
 } from "@/src/repositories/destinations";
@@ -108,15 +110,20 @@ export interface PendingDestinationClarification {
    */
   candidates: string[];
   /**
-   * Set when `cityQuery` matched a recognized US state or an existing seeded
-   * country rather than any specific city — a different question ("which
-   * city?") than "did you mean X?". "state_or_country" is the narrower case
-   * where the name matches BOTH (found live: "Georgia" is both a US state
-   * and a real seeded country — Tbilisi/Batumi/Kazbegi — checking country
-   * first unconditionally silently picked the country every time, with no
-   * way for a user who meant the state to say so).
+   * Set when `cityQuery` matched a recognized US state, an existing seeded
+   * country, or a real named geographic region rather than any specific
+   * city — a different question ("which city?") than "did you mean X?".
+   * "state_or_country" is the narrower case where the name matches BOTH
+   * (found live: "Georgia" is both a US state and a real seeded country —
+   * Tbilisi/Batumi/Kazbegi — checking country first unconditionally
+   * silently picked the country every time, with no way for a user who
+   * meant the state to say so). "region" is the "Tuscany" case — a real,
+   * named sub-country region (a GeoNames admin1 area) with matching
+   * inventory, not a bare state or country (see `checkDestinationReadiness`
+   * below for why US states are deliberately excluded from this branch even
+   * though they're also technically a GeoNames admin1 region).
    */
-  regionKind: "state" | "country" | "state_or_country" | null;
+  regionKind: "state" | "country" | "state_or_country" | "region" | null;
 }
 
 /**
@@ -140,7 +147,9 @@ export interface PendingDestinationClarification {
  * Checked in this order — deliberately not "exact -> fuzzy -> state/country",
  * see the two comments inline below for why: exact match (nothing to ask)
  * -> an already-seeded country matched exactly (ask which city, listing
- * real options) -> a fuzzy city match (ask "did you mean X?") -> a
+ * real options) -> a real named region matched exactly, excluding US states
+ * (ask which city, listing real options — added 2026-09-22 for the
+ * "Tuscany" gap) -> a fuzzy city match (ask "did you mean X?") -> a
  * recognized US state with no fuzzy match of its own (ask which city, no
  * real options to list) -> nothing recognized at all (not a clarification
  * case — left for the flight step's own `UnknownDestinationError`
@@ -193,6 +202,29 @@ export async function checkDestinationReadiness(
   if (matchedCountry) {
     const citiesInCountry = await listDestinationsByCountry(supabase, matchedCountry, CURRENT_INVENTORY_VERSION);
     return [{ cityQuery: destination, candidates: citiesInCountry.map((d) => d.name), regionKind: "country" }];
+  }
+
+  // Checked here — after country, before fuzzy — for the same "precise
+  // structured hit beats a coincidental substring scan" reasoning as
+  // country above: a real named region ("Tuscany", "Bavaria", "Provence")
+  // with genuinely matching seeded inventory (Florence/Siena/Pisa) used to
+  // fall through every branch below and reach the flight step's raw
+  // `UnknownDestinationError`, since nothing connected the region name to
+  // its cities (`docs/IMPLEMENTATION_PLAN.md` §5, found live 2026-09-21).
+  // `region` is backfilled from real GeoNames admin1 data
+  // (`scripts/generate-destination-regions.ts`), which also gives every
+  // *US state* its own admin1 region name (e.g. every NY destination's
+  // region is literally "New York") — deliberately excluded here via
+  // `isUsStateName`, since that would otherwise re-litigate the existing,
+  // already-tested "New York" fuzzy-match precedent below (a state name
+  // sharing a real prefix with a destination name needs fuzzy to win, not
+  // a region ask) and the dedicated `state`/`state_or_country` handling
+  // that already exists for US states specifically.
+  const regionsInCatalog = await listDestinationRegions(supabase, CURRENT_INVENTORY_VERSION);
+  const matchedRegion = regionsInCatalog.find((r) => r.toLowerCase() === city.toLowerCase() && !isUsStateName(r));
+  if (matchedRegion) {
+    const citiesInRegion = await listDestinationsByRegion(supabase, matchedRegion, CURRENT_INVENTORY_VERSION);
+    return [{ cityQuery: destination, candidates: citiesInRegion.map((d) => d.name), regionKind: "region" }];
   }
 
   if (match.fuzzyCandidates.length > 0) {
