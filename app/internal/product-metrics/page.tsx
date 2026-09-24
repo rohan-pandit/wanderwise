@@ -14,9 +14,10 @@
  * allowlist check `/internal/analytics` uses — see that page's docstring for
  * the full history of that decision.
  *
- * Qualitative feedback (`docs/END_TO_END_TESTING_ISSUES.md`-informed "Report
- * an issue" entry point, `app/app/_components/feedback-widget.tsx`) is read
- * here too, joined with a lightweight trip-context reconstruction — the
+ * Qualitative feedback (beta feedback, `app/app/_components/feedback-dialog.tsx`,
+ * sent from any /app page via the header's beta callouts) is read here too,
+ * joined — for reports sent from inside a trip — with a lightweight
+ * trip-context reconstruction: the
  * requirements the user entered and the full chat transcript, exactly the
  * same `messages`/`trip_requirements` tables the rest of this app already
  * writes to, not a separate copy captured at report time (see
@@ -179,7 +180,7 @@ export default async function ProductMetricsPage() {
   // user entered and the agent's own responses, rather than duplicating
   // either — `feedback.ts`'s own docstring explains why not. ---
   const tripsById = new Map(trips.map((t) => [t.id, t]));
-  const feedbackTripIds = [...new Set(feedbackRows.map((f) => f.trip_id))];
+  const feedbackTripIds = [...new Set(feedbackRows.map((f) => f.trip_id).filter((id): id is string => id !== null))];
   const feedbackSessionIds = [
     ...new Set(
       feedbackTripIds
@@ -212,15 +213,18 @@ export default async function ProductMetricsPage() {
   }
 
   const feedbackEntries: FeedbackEntryView[] = feedbackRows.map((f) => {
-    const trip = tripsById.get(f.trip_id);
+    const trip = f.trip_id ? tripsById.get(f.trip_id) : undefined;
     return {
       id: f.id,
+      kind: f.kind,
       categories: f.categories,
       message: f.message,
       context: f.context,
+      route: f.route,
       createdAt: f.created_at,
+      hasTrip: f.trip_id !== null,
       tripName: trip?.name ?? null,
-      requirementsSummary: summarizeRequirements(requirementsByTripForFeedback.get(f.trip_id) ?? []),
+      requirementsSummary: f.trip_id ? summarizeRequirements(requirementsByTripForFeedback.get(f.trip_id) ?? []) : null,
       messages: trip?.session_id ? (messagesBySession.get(trip.session_id) ?? []) : [],
     };
   });
@@ -289,10 +293,10 @@ export default async function ProductMetricsPage() {
 
       <section>
         <h2 className="text-sm font-semibold text-navy-900">Qualitative feedback</h2>
-        <p className="mt-1 text-xs text-navy-400">User-submitted &quot;Report an issue&quot; entries, newest first — each expandable to the trip&apos;s own requirements and full chat transcript.</p>
+        <p className="mt-1 text-xs text-navy-400">Beta feedback — bugs, ideas, and everything else — newest first. Reports sent from inside a trip expand to that trip&apos;s own requirements and full chat transcript.</p>
         {feedbackEntries.length === 0 ? (
           <p className="mt-2 rounded-lg border border-dashed border-sand-300 px-4 py-3 text-sm text-navy-400">
-            No reports yet — nothing submitted through the trip workspace&apos;s &quot;Report an issue&quot; button so far.
+            No feedback yet — nothing submitted through the header&apos;s Beta badge, banner, or Feedback link so far.
           </p>
         ) : (
           <FeedbackList entries={feedbackEntries} thisWeekCount={feedbackThisWeekCount} />

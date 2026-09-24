@@ -10,7 +10,7 @@
  */
 import { useCallback, useState } from "react";
 import { ChatPanel, type ChatMessage } from "./chat-panel";
-import { FeedbackWidget } from "./feedback-widget";
+import { useRegisterFeedbackTrip } from "./beta-context";
 import { ItineraryPanel, type ActivityPreferenceSubmission } from "./itinerary-panel";
 import { useLayoutMode } from "./use-layout-mode";
 import type { PendingCascadeConfirmation } from "../actions";
@@ -31,6 +31,8 @@ export function TripWorkspace({
   const [pendingCascade, setPendingCascade] = useState<PendingCascadeConfirmation | null>(null);
   const [requirementsReady, setRequirementsReady] = useState(initialRequirementsReady);
   const layoutMode = useLayoutMode();
+  // Beta feedback sent from the header while this trip is open gets it attached.
+  useRegisterFeedbackTrip(tripId);
 
   // Bridges the activities preference prompt across panels — `ItineraryPanel`
   // detects when it's needed (from its own Realtime-derived `decisions`
@@ -75,7 +77,6 @@ export function TripWorkspace({
         activityPreferenceSubmission={activityPreferenceSubmission}
         layoutMode={layoutMode}
       />
-      <FeedbackWidget tripId={tripId} layoutMode={layoutMode} />
     </div>
   );
 }

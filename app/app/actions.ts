@@ -40,6 +40,12 @@ import { VoyageEmbeddingClient } from "@/src/retrieval/providers/voyage-embeddin
 import { getCurrentChainStep, type ChainStep } from "@/src/domain/chain";
 import type { BudgetBreakdown, BudgetViolation } from "@/src/domain/budget";
 import { InvalidDateRangeError } from "@/src/domain/dates";
+import {
+  FEEDBACK_MESSAGE_MAX_LENGTH,
+  isFeedbackKind,
+  sanitizeFeedbackRoute,
+  type FeedbackKind,
+} from "@/src/domain/feedback-categories";
 import { createSession } from "@/src/repositories/sessions";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
@@ -814,39 +820,79 @@ export async function cancelTrip(input: CancelTripInput): Promise<CancelTripResu
 }
 
 export interface SubmitFeedbackInput {
-  tripId: string;
+  /** Present only when reported from inside a trip workspace — the beta feedback entry points sit on every `/app` page. */
+  tripId?: string;
+  kind: FeedbackKind;
   categories: string[];
   message?: string;
+  /** The client's current pathname — triage context only, see `sanitizeFeedbackRoute`. */
+  route?: string;
 }
 
+/** Comfortably more than every real category at once — just a bound on what a hand-crafted request can make the insert carry. */
+const FEEDBACK_CATEGORY_LIMIT = 10;
+
 /**
- * "Report an issue" (`feedback-widget.tsx`) — a deterministic write, no
- * agent involved. `context` (where the user was) is computed here from the
- * trip's own current status/decisions, the same source `describeProgress`
- * (`app/app/trips/page.tsx`) reads for the trip list, rather than trusted
- * from whatever the client had rendered at click time (which could be
- * stale by the time the request lands). Deliberately not a snapshot of the
- * trip's requirements/messages: `trip_id` alone is enough for
- * `/internal/product-metrics` to join back to `trip_requirements` (what the
- * user entered) and `messages` (the agent's own responses) live, so nothing
- * here duplicates data those tables already record. Allowed on a cancelled
- * trip (`allowCancelled: true`) — reporting a problem is exactly the kind
- * of thing a user might still want to do after giving up on a trip.
+ * Beta feedback (`feedback-dialog.tsx`, opened from the header's Beta chip,
+ * the beta banner, or the header "Feedback" link) — a deterministic write,
+ * no agent involved. With a `tripId`, ownership is checked like every other
+ * action here, and `context` (where the user was) is computed from the
+ * trip's own current status/decisions — the same source `describeProgress`
+ * (`app/app/trips/page.tsx`) reads for the trip list — rather than trusted
+ * from whatever the client had rendered at click time. Without one, it's
+ * just "no trip". Deliberately not a snapshot of the trip's
+ * requirements/messages: `trip_id` alone is enough for
+ * `/internal/product-metrics` to join back to `trip_requirements` and
+ * `messages` live. Allowed on a cancelled trip (`allowCancelled: true`) —
+ * reporting a problem is exactly the kind of thing a user might still want
+ * to do after giving up on a trip.
  */
 export async function submitFeedback(input: SubmitFeedbackInput): Promise<{ ok: true }> {
+  if (!isFeedbackKind(input.kind)) {
+    throw new Error("Pick what kind of feedback this is.");
+  }
+  const message = input.message?.trim() || null;
+  const categories = input.categories.slice(0, FEEDBACK_CATEGORY_LIMIT);
+  if (!message && categories.length === 0) {
+    throw new Error("Add a few words so we know what to look at.");
+  }
+  if (message && message.length > FEEDBACK_MESSAGE_MAX_LENGTH) {
+    throw new Error(`Keep it under ${FEEDBACK_MESSAGE_MAX_LENGTH} characters.`);
+  }
+
   const supabase = createServiceClient();
-  const trip = await requireOwnedTrip(supabase, input.tripId, { allowCancelled: true });
-  const decisions = await listActiveTripDecisions(supabase, input.tripId);
-  const context =
-    trip.status === "finalized" || trip.status === "cancelled"
-      ? trip.status
-      : `chain step: ${getCurrentChainStep(decisions)}`;
+  let userId: string;
+  let context: string;
+  if (input.tripId) {
+    const trip = await requireOwnedTrip(supabase, input.tripId, { allowCancelled: true });
+    userId = trip.user_id;
+    if (trip.status === "finalized" || trip.status === "cancelled") {
+      context = trip.status;
+    } else {
+      const decisions = await listActiveTripDecisions(supabase, input.tripId);
+      context = `chain step: ${getCurrentChainStep(decisions)}`;
+    }
+  } else {
+    const authClient = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await authClient.auth.getUser();
+    if (authError || !user) {
+      throw new Error("Not authenticated.");
+    }
+    userId = user.id;
+    context = "no trip";
+  }
 
   await recordFeedback(supabase, {
-    tripId: input.tripId,
-    categories: input.categories,
-    message: input.message?.trim() || null,
+    userId,
+    tripId: input.tripId ?? null,
+    kind: input.kind,
+    categories,
+    message,
     context,
+    route: sanitizeFeedbackRoute(input.route),
   });
   return { ok: true };
 }

@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { createClient } from "@/src/config/supabase/client";
+import { BETA_ENABLED } from "@/src/config/beta";
 
 export default function Home() {
   const [email, setEmail] = useState("");
@@ -47,8 +48,13 @@ export default function Home() {
   return (
     <div className="flex flex-1 items-center justify-center bg-sand-50 px-6 font-sans">
       <main className="w-full max-w-sm">
-        <p className="text-xs font-medium tracking-[0.2em] text-terracotta-600 uppercase">
+        <p className="flex items-center gap-2 text-xs font-medium tracking-[0.2em] text-terracotta-600 uppercase">
           AI-assisted trip planning
+          {BETA_ENABLED ? (
+            <span className="rounded-full border border-terracotta-200 bg-terracotta-50 px-2 py-0.5 text-[11px] font-semibold tracking-[0.12em]">
+              Beta
+            </span>
+          ) : null}
         </p>
         <h1 className="mt-2 font-serif text-4xl font-semibold tracking-tight text-navy-900">
           Wanderwise

@@ -232,18 +232,24 @@ export interface Database {
       feedback: {
         Row: {
           id: string;
-          trip_id: string;
+          trip_id: string | null;
+          user_id: string;
+          kind: string;
           categories: string[];
           message: string | null;
           context: string;
+          route: string | null;
           created_at: string;
         };
         Insert: {
           id?: string;
-          trip_id: string;
+          trip_id?: string | null;
+          user_id: string;
+          kind?: string;
           categories?: string[];
           message?: string | null;
           context: string;
+          route?: string | null;
           created_at?: string;
         };
         Relationships: [];

@@ -2107,3 +2107,33 @@ Checked how widespread this actually was before proposing a fix: **224 of 637 se
 **Verification:** `npx tsc --noEmit`/`npm run lint` clean. Live-verified in the browser at both a real mobile width (375px) and desktop width (1280px) against the same two live trips these screenshots were taken from — title now wraps cleanly with a real gap from the button on desktop, "Cancel trip" stays one line on mobile, and the first chat bubble now clears the floating button with visible room to spare. Not re-run through the full test suite or `eval:scenarios` — this is presentational-only (Tailwind classes on two client components), no domain/workflow logic touched.
 
 **Next recommended task:** none outstanding from this session — this closes out the three issues the portfolio screenshots surfaced.
+
+---
+
+## 2026-09-24 — Beta callouts: header Beta chip + dismissible banner, feedback from every /app page
+
+**What I built:**
+- **Mockups first**, reviewed before any code (inline widgets): three options for signalling "beta" (header chip, dismissible banner, first-run welcome), then the chosen combination (chip + banner) across desktop 1280 / tablet 1024 / mobile 375, including the banner-dismissed handoff and the mobile in-trip rule.
+- `app/app/_components/beta-callouts.tsx` — `BetaChip` (terracotta pill next to the wordmark; popover explaining the beta with "Send feedback"; carries a message icon below `sm:` so it reads as tappable), `BetaBanner` (above the header; short copy on mobile; dismissible), `HeaderFeedbackLink` (only once the banner is dismissed, only from `sm:` up).
+- `app/app/_components/beta-context.tsx` — `BetaProvider` (mounted once in `app/app/layout.tsx`): banner-dismissed state, the 3.5s "You can always send feedback from here" hint on the chip right after dismissal, the single shared `FeedbackDialog`, and `useRegisterFeedbackTrip` (called by `TripWorkspace` so reports from inside a trip still attach it).
+- `feedback-widget.tsx` → `feedback-dialog.tsx` (git mv): no longer owns a floating trigger; adds a "What kind?" choice (Something broke / Idea / Other); the trip-specific categories only appear for a bug reported from inside a trip; bottom sheet below `sm:`, centered dialog above; client-side validation mirroring the server's.
+- `supabase/migrations/0020_feedback_beta.sql` — `feedback.trip_id` nullable; new `user_id` (backfilled from each row's trip, then `not null`) as the RLS ownership anchor; `kind` (check-constrained, existing rows backfill to `bug`); `route`. `database.types.ts` hand-edited to match.
+- `submitFeedback` (`app/app/actions.ts`) — optional `tripId` (ownership-checked as before when present; `context = "no trip"` otherwise), `kind` validated, message length capped (2000), categories bounded, `route` passed through `sanitizeFeedbackRoute` (only plain `/app/...` paths kept).
+- `/internal/product-metrics` — kind badge, route, "No trip" on each card; kind + category filters in one row; "Bugs · Ideas · Other" tile replaces "Most common category"; trip-context expander only for reports that have a trip.
+- `src/config/beta.ts` — `BETA_ENABLED` (one switch removes every callout) and the versioned banner cookie (`ww-beta-banner-dismissed=v1`). Landing page (`app/page.tsx`) gets a Beta tag beside the eyebrow.
+- Removed the floating button's workarounds: `chat-panel.tsx`'s `pt-20` drawer-mode padding, and the now-unused `DRAWER_PEEK_SNAP` export.
+
+**Why:** the app is in beta testing; testers need to know it and need one consistent, always-reachable way to send feedback. The old floating "Report an issue" button only existed inside a trip and repeatedly collided with chat/drawer controls on mobile (see the 2026-09-22 entries). The header is the one element on every `/app` page and sits outside the trip workspace's layout-mode logic entirely.
+
+**Decisions made:**
+- **Chip + banner together, with distinct jobs:** banner = one-time announcement, chip = permanent entry point. The header "Feedback" link is hidden while the banner shows so there's never two feedback links in one strip.
+- **Banner never shows inside a trip at drawer widths (≤839px)** — CSS (`max-[839px]:hidden` keyed off the pathname), not `useLayoutMode()`, which only knows the real width after mount and would flash the banner in on every mobile trip load.
+- **Versioned cookie, not `localStorage`,** for dismissal: the server-rendered layout already knows whether to render the banner (no flash for people who closed it). Bumping `BETA_BANNER_VERSION` re-shows it once, for announcing something new.
+- **Schema (ADR Area 2):** ownership moves from "via the trip" to `feedback.user_id`, since `trip_id` can now be null — judged an obvious consequence of "feedback from any page" rather than a real fork, but flagged to the user as a table-contract change.
+- `route` is client-supplied and treated as untrusted triage context only.
+
+**Verification:** `npm run typecheck`, `npm run lint`, `npm test` (552 passed, incl. new `src/config/beta.test.ts` and extended `feedback-categories.test.ts`). Landing-page tag checked in the browser at 375px (no horizontal overflow). The signed-in `/app` screens were not yet visually verified this session — the browser pane had no session, and a temporary public preview route was (rightly) blocked as an auth-boundary change.
+
+**What didn't work / dead ends:** a temporary public `/beta-preview` route to render the real `/app` layout without signing in — refused by the permission layer since it widens `proxy.ts`'s public paths; abandoned rather than worked around.
+
+**Next up:** apply migration 0020 to the hosted project **before** pushing (the new insert writes `user_id`/`kind`/`route`, which don't exist until then); visual check of the signed-in screens; then item 3 from the beta plan (per-reply thumbs up/down, post-finalize micro-survey, "report this" on error screens, feedback triage status).
