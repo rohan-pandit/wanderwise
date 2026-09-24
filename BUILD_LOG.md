@@ -2136,4 +2136,6 @@ Checked how widespread this actually was before proposing a fix: **224 of 637 se
 
 **What didn't work / dead ends:** a temporary public `/beta-preview` route to render the real `/app` layout without signing in — refused by the permission layer since it widens `proxy.ts`'s public paths; abandoned rather than worked around.
 
-**Next up:** apply migration 0020 to the hosted project **before** pushing (the new insert writes `user_id`/`kind`/`route`, which don't exist until then); visual check of the signed-in screens; then item 3 from the beta plan (per-reply thumbs up/down, post-finalize micro-survey, "report this" on error screens, feedback triage status).
+**Migration applied (same session):** `0019` had been applied via the SQL editor last session and was missing from the remote migration history, so `supabase migration repair --status applied 0019` first, then a `db push --dry-run` confirmed only `0020` would run, then `supabase db push --db-url` (password supplied by the user for this session only, not stored). Verified live: a service-role select of the new `user_id`/`kind`/`route` columns succeeds; the table had 0 rows, so the backfill was a no-op.
+
+**Next up:** push to deploy (safe now that 0020 is live); visual check of the signed-in screens; then item 3 from the beta plan (per-reply thumbs up/down, post-finalize micro-survey, "report this" on error screens, feedback triage status).
