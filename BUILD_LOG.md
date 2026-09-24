@@ -2143,3 +2143,27 @@ Checked how widespread this actually was before proposing a fix: **224 of 637 se
 **Noticed, unrelated:** `/internal/product-metrics` shows a 1200% confirmation rate (12 finalized / 1 drafted — `tripsWithDraft` only counts a confirmed `itineraryText` decision); the Portugal trip showed "Live flight search is temporarily unavailable".
 
 **Next up:** push to deploy; then item 3 from the beta plan (per-reply thumbs up/down, post-finalize micro-survey, "report this" on error screens, feedback triage status).
+
+---
+
+## 2026-09-24 (continued) — Dashboards read past 1000 rows and render live; Sintra-style flight searches fixed
+
+**What I built:**
+- `selectAllRows` (`src/repositories/shared.ts` + `shared.test.ts`) — pages a whole-table read until a short page; used by every aggregate query in `/internal/product-metrics` and `/internal/analytics`.
+- `await connection()` in both `/internal` pages so they render per request instead of at build time.
+- Airport dataset gains OurAirports' `size` class (generator + regenerated `airport-data.ts`); `findNearestAirport` now prefers the largest airport within `MAX_HUB_DETOUR_KM` (50km) of the nearest one.
+- `mapSerpApiResponse` treats SerpAPI's exact "no results" error as `[]`.
+- `docs/END_TO_END_TESTING_ISSUES.md` #16, #17.
+
+**Why:** both surfaced while verifying the beta-callouts work — the dashboard showed an impossible 1200% confirmation rate, and the user's live Portugal (Sintra) trip failed every flight search.
+
+**Decisions made:**
+- Paging over SQL views/RPCs: keeps the dashboards' existing "fetch rows, aggregate in the Server Component" approach (`/internal/analytics`' docstring), just correct past 1000 rows.
+- Relative detour (nearest + 50km) over a fixed hub radius — measured both against all 189 fallback destinations; the fixed radius regressed towns with their own working airport, the relative rule changed 18 destinations, essentially all improvements.
+- Replaced two tests that had pinned Sintra → CAT as correct, with the reason recorded.
+
+**What didn't work / dead ends:** the fixed 150km radius (above). A first reproduction script failed on top-level `await` in a CommonJS `.ts` file under `tsx` — rerun as `.mts`.
+
+**Verification:** typecheck, lint, 560/560 tests; `next build` now lists both `/internal` routes as `ƒ`; dashboards checked in the browser with corrected numbers; live SerpAPI calls PHL⇄LIS succeed (4 searches used in total); the real Portugal trip's panel lists flight candidates.
+
+**Next up:** beta plan item 3 (per-reply thumbs up/down, post-finalize micro-survey, "report this" on error screens, feedback triage status).

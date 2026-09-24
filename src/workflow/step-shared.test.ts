@@ -64,9 +64,9 @@ describe("resolveFlightAirport", () => {
     expect("candidates" in result).toBe(true);
   });
 
-  it("falls back to the nearest real airport for a city with none of its own (the live Sintra, Portugal case)", () => {
+  it("falls back to the nearby hub airport for a city with none of its own (the live Sintra, Portugal case)", () => {
     const result = resolveFlightAirport(TRIP_ID, "Sintra, Portugal", undefined);
-    expect("resolved" in result && result.resolved.iata).toBe("CAT");
+    expect("resolved" in result && result.resolved.iata).toBe("LIS");
   });
 
   it("only throws UnknownAirportError once the nearest-airport fallback also comes back empty", () => {

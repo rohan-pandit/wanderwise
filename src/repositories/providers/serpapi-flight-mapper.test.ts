@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FlightProviderError } from "../flight-provider";
-import { mapSerpApiResponse } from "./serpapi-flight-mapper";
+import { SERPAPI_NO_RESULTS_ERROR, mapSerpApiResponse } from "./serpapi-flight-mapper";
 
 /** Shaped from a real live probe of the SerpAPI Google Flights endpoint (JFK -> MAD, 2026-11-03), trimmed to what the mapper reads. */
 const REAL_SHAPED_RESPONSE = {
@@ -74,6 +74,10 @@ describe("mapSerpApiResponse", () => {
 
   it("returns an empty array for a route with no results, without treating it as an error", () => {
     expect(mapSerpApiResponse({ search_metadata: { status: "Success" } }, "America/New_York", "Europe/Madrid")).toEqual([]);
+  });
+
+  it("treats SerpAPI's 'no results' error as an empty result, not a provider failure", () => {
+    expect(mapSerpApiResponse({ error: SERPAPI_NO_RESULTS_ERROR }, "America/New_York", "Europe/Lisbon")).toEqual([]);
   });
 
   it("throws FlightProviderError when SerpAPI reports a genuine error", () => {

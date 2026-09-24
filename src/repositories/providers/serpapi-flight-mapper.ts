@@ -63,16 +63,24 @@ function localHour(localDateTime: string): number {
  *
  * Throws `FlightProviderError` for a genuine failure (bad request, account
  * issue) — `json.error`, or a `search_metadata.status` other than
- * "Success". A route that legitimately has nothing that day is a normal
- * `Success` response with empty flight arrays, which returns `[]`, not an
- * error — same distinction `src/domain/flight-generator.ts`'s "route
+ * "Success". A route that legitimately has nothing that day returns `[]`,
+ * not an error — same distinction `src/domain/flight-generator.ts`'s "route
  * doesn't operate on this weekday" already makes for the synthetic path.
+ * SerpAPI reports that case two ways: a normal `Success` response with
+ * empty flight arrays, or an `error` of exactly `SERPAPI_NO_RESULTS_ERROR`
+ * (found live 2026-09-24 — it surfaced to the user as "live flight search
+ * is temporarily unavailable" when it really meant "no flights").
  */
+export const SERPAPI_NO_RESULTS_ERROR = "Google Flights hasn't returned any results for this query.";
+
 export function mapSerpApiResponse(
   json: SerpApiFlightsResponse,
   originTz: string,
   destinationTz: string,
 ): GeneratedFlightOption[] {
+  if (json.error === SERPAPI_NO_RESULTS_ERROR) {
+    return [];
+  }
   if (json.error) {
     throw new FlightProviderError(`SerpAPI error: ${json.error}`, null);
   }

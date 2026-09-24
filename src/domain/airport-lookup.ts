@@ -37,9 +37,18 @@ export interface Airport {
   tz: string;
   lat: number;
   lon: number;
+  size: AirportSize;
 }
 
-const ALL_AIRPORTS: Airport[] = AIRPORTS_RAW.map(([iata, name, city, country, tz, lat, lon]) => ({
+/**
+ * OurAirports' own size class. Every airport in this dataset already claims
+ * scheduled commercial service, but that bar is low — Cascais (CAT, "medium")
+ * qualifies while Google Flights has no bookable itineraries into it at all.
+ * `findNearestAirport` uses this to prefer a real hub over a closer airfield.
+ */
+export type AirportSize = "large" | "medium" | "small";
+
+const ALL_AIRPORTS: Airport[] = AIRPORTS_RAW.map(([iata, name, city, country, tz, lat, lon, size]) => ({
   iata,
   name,
   city,
@@ -47,6 +56,7 @@ const ALL_AIRPORTS: Airport[] = AIRPORTS_RAW.map(([iata, name, city, country, tz
   tz,
   lat,
   lon,
+  size,
 }));
 
 function normalize(value: string): string {
@@ -116,25 +126,48 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
 }
 
 /**
- * The closest scheduled-commercial airport to a coordinate, by straight-line
- * distance — always returns one, since `ALL_AIRPORTS` is never empty. Used
- * as the fallback of last resort once a city's own name doesn't match any
- * airport directly (`findNearestAirportForCity` below): "nearest real
- * airport" is what an actual traveler to a small town without one does
- * anyway (fly into the nearby hub, then a train/car), not something a
- * clarifying question could improve on.
+ * How much farther than the absolute nearest airport a bigger one may be
+ * and still be preferred. Relative, not a fixed radius: a fixed 150km radius
+ * was tried first and, measured against all 189 catalog destinations that
+ * use this fallback, dragged towns with a perfectly good airport of their own
+ * to a hub 100km+ away (Dali 13km -> Lijiang 122km, Torun 42km -> Poznan
+ * 136km). An extra 50km still catches every case where a real hub is only
+ * slightly farther than a barely-served airfield.
+ */
+export const MAX_HUB_DETOUR_KM = 50;
+
+const SIZE_RANK: Record<AirportSize, number> = { large: 2, medium: 1, small: 0 };
+
+/**
+ * The best scheduled-commercial airport to fly into for a coordinate —
+ * always returns one, since `ALL_AIRPORTS` is never empty. Used as the
+ * fallback of last resort once a city's own name doesn't match any airport
+ * directly (`findNearestAirportForCity` below): "fly into the nearby hub,
+ * then a train/car" is what an actual traveler to a small town without an
+ * airport does anyway, not something a clarifying question could improve on.
+ *
+ * "Best" is the largest airport no more than `MAX_HUB_DETOUR_KM` farther
+ * than the absolute nearest one, nearest first among equals. Pure
+ * nearest-by-distance was the original rule, and it sent the real Sintra,
+ * Portugal trip to Cascais (CAT, ~8km) instead of Lisbon (LIS, ~20km) —
+ * Google Flights returns no itineraries at all for CAT, so every flight
+ * search for that trip failed (found live 2026-09-24).
  */
 export function findNearestAirport(lat: number, lon: number): Airport {
-  let closest = ALL_AIRPORTS[0];
-  let closestKm = haversineKm(lat, lon, closest.lat, closest.lon);
-  for (const airport of ALL_AIRPORTS) {
-    const km = haversineKm(lat, lon, airport.lat, airport.lon);
-    if (km < closestKm) {
-      closest = airport;
-      closestKm = km;
+  const withDistance = ALL_AIRPORTS.map((airport) => ({ airport, km: haversineKm(lat, lon, airport.lat, airport.lon) }));
+  const nearestKm = Math.min(...withDistance.map((a) => a.km));
+  let best: { airport: Airport; km: number } | null = null;
+  for (const candidate of withDistance) {
+    if (candidate.km > nearestKm + MAX_HUB_DETOUR_KM) continue;
+    if (
+      !best ||
+      SIZE_RANK[candidate.airport.size] > SIZE_RANK[best.airport.size] ||
+      (SIZE_RANK[candidate.airport.size] === SIZE_RANK[best.airport.size] && candidate.km < best.km)
+    ) {
+      best = candidate;
     }
   }
-  return closest;
+  return best!.airport;
 }
 
 /**

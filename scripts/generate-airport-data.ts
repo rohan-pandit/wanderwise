@@ -79,6 +79,8 @@ export interface AirportEntry {
   tz: string;
   lat: number;
   lon: number;
+  /** OurAirports' own size class — see `AirportSize` in `src/domain/airport-lookup.ts` for how it's used. */
+  size: "large" | "medium" | "small";
 }
 
 async function main() {
@@ -130,6 +132,7 @@ async function main() {
       tz,
       lat,
       lon,
+      size: type === "large_airport" ? "large" : type === "medium_airport" ? "medium" : "small",
     });
   }
   entries.sort((a, b) => a.iata.localeCompare(b.iata));
@@ -142,7 +145,7 @@ async function main() {
   const body = entries
     .map(
       (e) =>
-        `  [${JSON.stringify(e.iata)}, ${JSON.stringify(e.name)}, ${JSON.stringify(e.city)}, ${JSON.stringify(e.country)}, ${JSON.stringify(e.tz)}, ${e.lat}, ${e.lon}]`,
+        `  [${JSON.stringify(e.iata)}, ${JSON.stringify(e.name)}, ${JSON.stringify(e.city)}, ${JSON.stringify(e.country)}, ${JSON.stringify(e.tz)}, ${e.lat}, ${e.lon}, ${JSON.stringify(e.size)}]`,
     )
     .join(",\n");
 
@@ -153,16 +156,18 @@ async function main() {
  * script's header comment for the full provenance/filtering/normalization
  * notes. Consumed by `+"`src/domain/airport-lookup.ts`"+`, never imported directly.
  *
- * Tuple shape: [iata, name, city, country, tz, lat, lon] — an array of
+ * Tuple shape: [iata, name, city, country, tz, lat, lon, size] — an array of
  * tuples rather than objects to keep this ${entries.length}-row file's parse
  * cost down (no repeated key names). \`tz\` is an IANA time zone (e.g.
  * "America/New_York"), computed directly from \`lat\`/\`lon\` via \`tz-lookup\`
  * (see this script's header comment for why, not cross-referenced from a
  * second dataset). \`lat\`/\`lon\` are also used directly for nearest-airport
  * fallback resolution (\`findNearestAirport\`, \`airport-lookup.ts\`) when a
- * city has no scheduled-commercial airport of its own.
+ * city has no scheduled-commercial airport of its own. \`size\` is OurAirports'
+ * own large/medium/small class, which that fallback uses to prefer a real hub
+ * over a closer, barely-served airfield.
  */
-export const AIRPORTS_RAW: readonly [iata: string, name: string, city: string, country: string, tz: string, lat: number, lon: number][] = [
+export const AIRPORTS_RAW: readonly [iata: string, name: string, city: string, country: string, tz: string, lat: number, lon: number, size: "large" | "medium" | "small"][] = [
 ${body},
 ];
 `;

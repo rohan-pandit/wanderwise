@@ -57,11 +57,35 @@ describe("findAirportsForCity", () => {
 });
 
 describe("findNearestAirport", () => {
-  it("finds the closest real airport to a coordinate", () => {
-    // Sintra, Portugal's real coordinates — Cascais (CAT) is genuinely
-    // closer than Lisbon (LIS), the more obvious guess.
+  it("prefers a nearby large hub over a closer small airfield (the live Sintra, Portugal case)", () => {
+    // Sintra's real coordinates. Cascais (CAT) is closer, but Google Flights
+    // has no itineraries into it — every search for a real Sintra trip failed.
     const result = findNearestAirport(38.80097, -9.37826);
-    expect(result.iata).toBe("CAT");
+    expect(result.iata).toBe("LIS");
+    expect(result.size).toBe("large");
+  });
+
+  it("prefers a medium airport within the detour allowance when no large one is", () => {
+    // Akiak, Alaska — its own small airport (AKI) is right there, but Bethel
+    // (BET, medium, ~36km) is the one with real connections; the nearest
+    // large airport is hundreds of km away.
+    const result = findNearestAirport(60.902646, -161.23106);
+    expect(result.iata).toBe("BET");
+    expect(result.size).toBe("medium");
+  });
+
+  it("keeps a town's own nearby airport rather than dragging it to a distant hub", () => {
+    // Dali, China — its own airport (DLU, ~13km) has real service; the
+    // nearest large airport (Lijiang, ~122km) is far past the allowance.
+    const result = findNearestAirport(25.6065, 100.2676);
+    expect(result.iata).toBe("DLU");
+  });
+
+  it("falls back to the plain nearest airport when nothing larger is within the detour allowance", () => {
+    // Atka, Alaska — the nearest medium/large airport is ~170km+ away.
+    const result = findNearestAirport(52.220299, -174.205994);
+    expect(result.iata).toBe("AKB");
+    expect(result.size).toBe("small");
   });
 
   it("always returns something, even for a coordinate with no nearby airport at all", () => {
@@ -74,7 +98,7 @@ describe("findNearestAirport", () => {
 describe("findNearestAirportForCity", () => {
   it("resolves a real destination with no scheduled-commercial airport of its own (the live Sintra, Portugal case)", () => {
     const result = findNearestAirportForCity("Sintra, Portugal");
-    expect(result?.iata).toBe("CAT");
+    expect(result?.iata).toBe("LIS");
   });
 
   it("resolves a major city whose only real airport is listed under a mismatched municipality name (Paris)", () => {
