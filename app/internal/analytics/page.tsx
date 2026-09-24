@@ -25,9 +25,13 @@
  * production system with real traffic) that fetching full row sets and
  * aggregating in the Server Component is simpler and more transparent than
  * writing SQL views/RPCs for each metric — revisit only if row counts ever
- * make that naive approach slow.
+ * make that naive approach slow. "Full row sets" has to be paged, though
+ * (`selectAllRows`): PostgREST silently caps a plain select at 1000 rows,
+ * and `guardrail_events` alone had passed 4000.
  */
+import { connection } from "next/server";
 import { createServiceClient } from "@/src/config/supabase/service";
+import { selectAllRows } from "@/src/repositories/shared";
 import { formatMoney, money } from "@/src/domain/money";
 
 const FAILURE_STATES = new Set(["failed_recoverable", "failed_terminal", "cancelled"]);
@@ -42,14 +46,23 @@ function ms(value: number): string {
 }
 
 export default async function AnalyticsPage() {
+  // Render per request — without a `cookies()`/`headers()` read, Next
+  // prerendered this at build time, so production showed last deploy's numbers.
+  await connection();
   const supabase = createServiceClient();
 
   const [tripsRes, agentRunsRes, toolCallsRes, guardrailEventsRes, workflowStepsRes, evalResultsRes] = await Promise.all([
-    supabase.from("trips").select("id, status"),
-    supabase.from("agent_runs").select("agent_name, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, latency_ms, cost_usd, status, trip_id"),
-    supabase.from("tool_calls").select("status"),
-    supabase.from("guardrail_events").select("guardrail_name, layer, triggered"),
-    supabase.from("workflow_steps").select("to_state"),
+    selectAllRows((from, to) => supabase.from("trips").select("id, status").order("id").range(from, to)),
+    selectAllRows((from, to) =>
+      supabase
+        .from("agent_runs")
+        .select("agent_name, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, latency_ms, cost_usd, status, trip_id")
+        .order("id")
+        .range(from, to),
+    ),
+    selectAllRows((from, to) => supabase.from("tool_calls").select("status").order("id").range(from, to)),
+    selectAllRows((from, to) => supabase.from("guardrail_events").select("guardrail_name, layer, triggered").order("id").range(from, to)),
+    selectAllRows((from, to) => supabase.from("workflow_steps").select("to_state").order("id").range(from, to)),
     supabase
       .from("eval_results")
       .select("test_case_name, passed, eval_run_id, eval_runs(run_label, created_at)")

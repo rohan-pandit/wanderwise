@@ -23,7 +23,9 @@
  * writes to, not a separate copy captured at report time (see
  * `feedback.ts`'s docstring for why not).
  */
+import { connection } from "next/server";
 import { createServiceClient } from "@/src/config/supabase/service";
+import { selectAllRows } from "@/src/repositories/shared";
 import { checkRequirementsComplete } from "@/src/domain/extraction";
 import type { RequirementRecord, RequirementFieldName } from "@/src/domain/extraction";
 import { getCurrentChainStep, type ChainDecision } from "@/src/domain/chain";
@@ -82,24 +84,30 @@ const STAGE_LABELS: Record<WorkflowState, string> = {
 };
 
 export default async function ProductMetricsPage() {
+  // Nothing here reads `cookies()`/`headers()`, so without this Next
+  // prerendered the whole page at *build* time — production showed a
+  // snapshot from the last deploy, and new beta feedback never appeared
+  // until the next one (found 2026-09-24: `next build` listed this route as
+  // `○ (Static)`). Render per request instead.
+  await connection();
   const supabase = createServiceClient();
 
+  // Every whole-table read pages through `selectAllRows`: PostgREST silently
+  // truncates a plain select at 1000 rows, which had already cut
+  // `trip_decisions` (2119 rows) roughly in half — a 1200% "confirmation
+  // rate" (12 finalized / 1 drafted) was the visible symptom. `id` is the
+  // final order-by tiebreaker so pages never overlap or skip rows.
   const [tripsRes, stateVersionsRes, requirementsRes, decisionsRes, feedbackRes] = await Promise.all([
-    supabase.from("trips").select("id, name, session_id, status, created_at"),
-    supabase.from("trip_state_versions").select("trip_id, version, state, created_at").order("version", { ascending: true }),
-    supabase.from("trip_requirements").select("trip_id, field, status"),
-    supabase.from("trip_decisions").select("trip_id, field, status"),
-    // Not `listAllFeedback` (which throws on a query error, `unwrapOrThrow`) —
-    // this page is statically prerendered (no `cookies()`/`headers()` call
-    // anywhere in it, so Next attempts it at *build* time, not request time),
-    // and every other query here already degrades to `?? []` instead of
-    // failing the whole build if Supabase is briefly unreachable (exactly
-    // what happened in CI, which builds against a placeholder URL that
-    // can't resolve at all — `ci.yml`'s own comment: "build ... never makes
-    // a real Supabase call"). A thrown error took the entire page down;
-    // matching the file's existing tolerant convention here keeps it down
-    // to just an empty feedback list instead.
-    supabase.from("feedback").select("*").order("created_at", { ascending: false }),
+    selectAllRows((from, to) => supabase.from("trips").select("id, name, session_id, status, created_at").order("id").range(from, to)),
+    selectAllRows((from, to) =>
+      supabase.from("trip_state_versions").select("trip_id, version, state, created_at").order("version", { ascending: true }).order("id").range(from, to),
+    ),
+    selectAllRows((from, to) => supabase.from("trip_requirements").select("trip_id, field, status").order("id").range(from, to)),
+    selectAllRows((from, to) => supabase.from("trip_decisions").select("trip_id, field, status").order("id").range(from, to)),
+    // Not `listAllFeedback`-style `unwrapOrThrow` — every query here degrades
+    // to `?? []` instead, so a briefly unreachable Supabase costs one empty
+    // section rather than the whole page.
+    selectAllRows((from, to) => supabase.from("feedback").select("*").order("created_at", { ascending: false }).order("id").range(from, to)),
   ]);
 
   const trips = tripsRes.data ?? [];
@@ -191,10 +199,14 @@ export default async function ProductMetricsPage() {
 
   const [feedbackRequirementsRes, feedbackMessagesRes] = await Promise.all([
     feedbackTripIds.length > 0
-      ? supabase.from("trip_requirements").select("trip_id, field, value").in("trip_id", feedbackTripIds).neq("status", "retracted")
+      ? selectAllRows((from, to) =>
+          supabase.from("trip_requirements").select("trip_id, field, value").in("trip_id", feedbackTripIds).neq("status", "retracted").order("id").range(from, to),
+        )
       : Promise.resolve({ data: [] as { trip_id: string; field: string; value: unknown }[] }),
     feedbackSessionIds.length > 0
-      ? supabase.from("messages").select("session_id, role, content").in("session_id", feedbackSessionIds).order("created_at", { ascending: true })
+      ? selectAllRows((from, to) =>
+          supabase.from("messages").select("session_id, role, content").in("session_id", feedbackSessionIds).order("created_at", { ascending: true }).order("id").range(from, to),
+        )
       : Promise.resolve({ data: [] as { session_id: string; role: string; content: string }[] }),
   ]);
 
