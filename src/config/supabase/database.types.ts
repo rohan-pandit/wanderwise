@@ -255,6 +255,28 @@ export interface Database {
         Relationships: [];
         Update: Partial<Database["public"]["Tables"]["feedback"]["Insert"]>;
       };
+      app_events: {
+        Row: {
+          id: string;
+          event_type: string;
+          user_id: string | null;
+          email: string | null;
+          trip_id: string | null;
+          payload: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          event_type: string;
+          user_id?: string | null;
+          email?: string | null;
+          trip_id?: string | null;
+          payload?: Json;
+          created_at?: string;
+        };
+        Relationships: [];
+        Update: Partial<Database["public"]["Tables"]["app_events"]["Insert"]>;
+      };
       workflow_runs: {
         Row: {
           id: string;

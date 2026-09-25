@@ -71,6 +71,16 @@ export interface FeedbackRow {
   created_at: string;
 }
 
+/** A row of `app_events` (migration 0021): sign-ins, link requests, action failures. */
+export interface AppEventRow {
+  event_type: string;
+  user_id: string | null;
+  email: string | null;
+  trip_id: string | null;
+  payload: unknown;
+  created_at: string;
+}
+
 /** Inventory id → human label (e.g. "TAP TP202 · JFK→LIS"), resolved by the page from `flights`/`hotels`/`activities`. */
 export type InventoryNames = ReadonlyMap<string, string>;
 
@@ -191,6 +201,51 @@ export function describeTripEvent(event: TripEventRow, names: InventoryNames): O
 }
 
 /**
+ * Labels one `app_events` row. `auth_callback_failed` rarely belongs to a
+ * user (a bad code identifies nobody), but it's labelled here too so any
+ * that do reach a timeline read sensibly.
+ */
+export function describeAppEvent(event: AppEventRow): Omit<TimelineItem, "at" | "tripId"> {
+  const p = asRecord(event.payload);
+  const message = typeof p.message === "string" ? p.message : null;
+  switch (event.event_type) {
+    case "sign_in_succeeded":
+      return { tone: "milestone", title: "Signed in", detail: null };
+    case "sign_in_link_requested":
+      return { tone: "workflow", title: "Requested a sign-in link", detail: null };
+    case "sign_in_link_failed":
+      return { tone: "error", title: "Sign-in link request failed", detail: message };
+    case "auth_callback_failed":
+      return { tone: "error", title: "Sign-in failed", detail: typeof p.reason === "string" ? p.reason : null };
+    case "action_failed": {
+      const action = typeof p.action === "string" ? p.action : "unknown action";
+      const how = p.kind === "thrown" ? "unexpected error" : "shown to user";
+      return { tone: "error", title: `${action} failed (${how})`, detail: message };
+    }
+  }
+  return { tone: "workflow", title: event.event_type, detail: null };
+}
+
+/** How far apart an `action_failed` and the `chain_*_failed` it duplicates can be; both are written in the same request. */
+const DUPLICATE_WINDOW_MS = 10_000;
+
+/**
+ * The propose* actions already write `chain_propose_failed` before
+ * returning `{ error }`, which `trackAction` then also records as
+ * `action_failed`. Same failure, same message, same trip, a moment apart,
+ * so it's dropped to keep one failure counted once.
+ */
+export function isDuplicateOfChainFailure(event: AppEventRow, tripEvents: TripEventRow[]): boolean {
+  const p = asRecord(event.payload);
+  if (event.event_type !== "action_failed" || p.kind !== "returned" || !event.trip_id) return false;
+  const at = new Date(event.created_at).getTime();
+  return tripEvents.some((e) => {
+    if (e.trip_id !== event.trip_id || !e.event_type.startsWith("chain_") || !e.event_type.endsWith("_failed")) return false;
+    return asRecord(e.payload).message === p.message && Math.abs(new Date(e.created_at).getTime() - at) <= DUPLICATE_WINDOW_MS;
+  });
+}
+
+/**
  * `messages` are keyed by session, not trip. Almost every session has one
  * trip; for the rare session with several, a message belongs to the most
  * recent trip created at or before it (or the session's first trip, for a
@@ -214,6 +269,8 @@ export interface UserTimelineInput {
   agentErrors: AgentErrorRow[];
   guardrailBlocks: GuardrailBlockRow[];
   feedback: FeedbackRow[];
+  /** Optional so callers from before migration 0021 keep working; `[]` when absent. */
+  appEvents?: AppEventRow[];
   names: InventoryNames;
 }
 
@@ -258,6 +315,11 @@ export function buildUserTimeline(input: UserTimelineInput): TimelineItem[] {
     items.push({ at: f.created_at, tone: "feedback", title: `Sent feedback (${f.kind})`, detail: `${categories}${f.message ?? ""}`.trim() || null, tripId: f.trip_id });
   }
 
+  for (const a of input.appEvents ?? []) {
+    if (isDuplicateOfChainFailure(a, input.tripEvents)) continue;
+    items.push({ at: a.created_at, tripId: a.trip_id, ...describeAppEvent(a) });
+  }
+
   const sorted = items
     .map((item, index) => ({ item, index }))
     .sort((a, b) => a.item.at.localeCompare(b.item.at) || a.index - b.index)
@@ -277,9 +339,11 @@ function collapseRepeats(items: TimelineItem[]): TimelineItem[] {
   for (const item of items) {
     const prev = out.at(-1);
     const isChat = item.tone === "user" || (item.tone === "agent" && item.title === "Agent");
+    // Milestones (sign-ins, trip starts) each keep their own timestamp.
     if (
       prev &&
       !isChat &&
+      item.tone !== "milestone" &&
       prev.item.tripId === item.tripId &&
       prev.item.tone === item.tone &&
       prev.item.title === item.title &&
@@ -378,16 +442,25 @@ export interface UserSummary extends UserSummaryInput {
   finalizedCount: number;
   userMessageCount: number;
   errorCount: number;
-  /** Latest of last sign-in, any trip creation, or any message — `null` for a user who never did anything. */
+  /** Recorded sign-ins (`sign_in_succeeded`, from migration 0021 onward — earlier ones only show as `lastSignInAt`). */
+  signInCount: number;
+  /** Latest of last sign-in, any trip creation, any message, or any recorded app event. `null` for a user who never did anything. */
   lastActiveAt: string | null;
 }
 
-/** One row per user for the `/internal/users` list, most recently active first. */
+/**
+ * One row per user for the `/internal/users` list, most recently active
+ * first. `appEvents` should already have `isDuplicateOfChainFailure` rows
+ * removed, so a failure isn't counted twice. An event is matched to its
+ * user by `user_id`, or by email for link requests, which happen before
+ * anyone is signed in.
+ */
 export function summarizeUsers(
   users: UserSummaryInput[],
   trips: { user_id: string; session_id: string; status: string; created_at: string; id: string }[],
   messages: { session_id: string; role: string; created_at: string }[],
   errorTripIds: string[],
+  appEvents: AppEventRow[] = [],
 ): UserSummary[] {
   const tripsByUser = new Map<string, typeof trips>();
   const userBySession = new Map<string, string>();
@@ -416,6 +489,18 @@ export function summarizeUsers(
     if (userId) errors.set(userId, (errors.get(userId) ?? 0) + 1);
   }
 
+  const userIdByEmail = new Map(users.filter((u) => u.email).map((u) => [u.email!.toLowerCase(), u.userId]));
+  const signIns = new Map<string, number>();
+  const lastEventAt = new Map<string, string>();
+  for (const a of appEvents) {
+    const userId = a.user_id ?? (a.email ? userIdByEmail.get(a.email.toLowerCase()) : undefined);
+    if (!userId) continue;
+    if (a.event_type === "sign_in_succeeded") signIns.set(userId, (signIns.get(userId) ?? 0) + 1);
+    if (a.event_type === "action_failed" || a.event_type === "sign_in_link_failed") errors.set(userId, (errors.get(userId) ?? 0) + 1);
+    const prev = lastEventAt.get(userId);
+    if (!prev || a.created_at > prev) lastEventAt.set(userId, a.created_at);
+  }
+
   const latest = (values: (string | null | undefined)[]): string | null =>
     values.filter((v): v is string => Boolean(v)).sort().at(-1) ?? null;
 
@@ -428,7 +513,8 @@ export function summarizeUsers(
         finalizedCount: userTrips.filter((t) => t.status === "finalized").length,
         userMessageCount: messageCount.get(u.userId) ?? 0,
         errorCount: errors.get(u.userId) ?? 0,
-        lastActiveAt: latest([u.lastSignInAt, lastMessageAt.get(u.userId), ...userTrips.map((t) => t.created_at)]),
+        signInCount: signIns.get(u.userId) ?? 0,
+        lastActiveAt: latest([u.lastSignInAt, lastMessageAt.get(u.userId), lastEventAt.get(u.userId), ...userTrips.map((t) => t.created_at)]),
       };
     })
     .sort((a, b) => (b.lastActiveAt ?? "").localeCompare(a.lastActiveAt ?? ""));

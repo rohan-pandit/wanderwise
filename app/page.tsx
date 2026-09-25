@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { createClient } from "@/src/config/supabase/client";
 import { BETA_ENABLED } from "@/src/config/beta";
+import { recordSignInLinkRequest } from "./auth/actions";
 
 export default function Home() {
   const [email, setEmail] = useState("");
@@ -25,6 +26,10 @@ export default function Home() {
         },
       });
 
+      // Fire-and-forget: telemetry for /internal/users, never awaited, so it
+      // can't slow down or block sign-in.
+      recordSignInLinkRequest({ email, error: error?.message ?? null }).catch(() => {});
+
       if (error) {
         setStatus("error");
         setErrorMessage(error.message);
@@ -33,6 +38,7 @@ export default function Home() {
 
       setStatus("sent");
     } catch (err) {
+      recordSignInLinkRequest({ email, error: err instanceof Error ? err.message : "network error" }).catch(() => {});
       // `signInWithOtp` normally *resolves* with `{ error }` for an
       // API-level failure (including a rate-limit rejection) — this only
       // catches a genuine network-level failure (DNS, connectivity drop),

@@ -142,6 +142,41 @@ describe("buildUserTimeline repeat folding", () => {
   });
 });
 
+describe("app events in the timeline", () => {
+  it("labels sign-ins and action failures, and drops an action failure that duplicates a chain failure", () => {
+    const timeline = buildUserTimeline(
+      emptyInput({
+        tripEvents: [
+          { trip_id: "trip-1", event_type: "chain_propose_failed", payload: { step: "flight", message: "No flights found" }, created_at: "2026-09-25T10:00:00.000Z" },
+        ],
+        appEvents: [
+          { event_type: "sign_in_succeeded", user_id: "u", email: "dan@example.com", trip_id: null, payload: {}, created_at: "2026-09-25T09:00:00Z" },
+          { event_type: "sign_in_succeeded", user_id: "u", email: "dan@example.com", trip_id: null, payload: {}, created_at: "2026-09-25T09:30:00Z" },
+          // Same failure as the chain_propose_failed above, 200ms later: dropped.
+          { event_type: "action_failed", user_id: "u", email: null, trip_id: "trip-1", payload: { action: "proposeFlightCandidates", kind: "returned", message: "No flights found" }, created_at: "2026-09-25T10:00:00.200Z" },
+          { event_type: "action_failed", user_id: "u", email: null, trip_id: "trip-1", payload: { action: "sendMessage", kind: "thrown", message: "boom" }, created_at: "2026-09-25T10:05:00Z" },
+        ],
+      }),
+    );
+    expect(timeline.map((i) => i.title)).toEqual(["Signed in", "Signed in", "Couldn't load flight options", "sendMessage failed (unexpected error)"]);
+    expect(timeline[0].tripId).toBeNull();
+    expect(countErrors(timeline)).toBe(2);
+  });
+
+  it("keeps a returned action failure that has no matching chain failure", () => {
+    const timeline = buildUserTimeline(
+      emptyInput({
+        appEvents: [
+          { event_type: "action_failed", user_id: "u", email: null, trip_id: "trip-1", payload: { action: "confirmHotelCandidate", kind: "returned", message: "Hotel sold out" }, created_at: "2026-09-25T10:00:00Z" },
+        ],
+      }),
+    );
+    expect(timeline).toEqual([
+      { at: "2026-09-25T10:00:00Z", tone: "error", title: "confirmHotelCandidate failed (shown to user)", detail: "Hotel sold out", tripId: "trip-1" },
+    ]);
+  });
+});
+
 describe("buildTripSnapshot", () => {
   it("shows current picks, preferring confirmed over proposed and ignoring superseded", () => {
     const decisions = [
@@ -215,5 +250,21 @@ describe("summarizeUsers", () => {
       lastActiveAt: "2026-09-21T09:05:00Z",
     });
     expect(summaries[1]).toMatchObject({ userId: "idle", tripCount: 0, errorCount: 0, lastActiveAt: null });
+  });
+
+  it("counts sign-ins and app-event errors, matching link requests to a user by email", () => {
+    const [summary] = summarizeUsers(
+      [{ userId: "dan", email: "dan@example.com", createdAt: "2026-09-01T00:00:00Z", lastSignInAt: null }],
+      [],
+      [],
+      [],
+      [
+        { event_type: "sign_in_succeeded", user_id: "dan", email: "dan@example.com", trip_id: null, payload: {}, created_at: "2026-09-25T09:00:00Z" },
+        { event_type: "sign_in_succeeded", user_id: "dan", email: "dan@example.com", trip_id: null, payload: {}, created_at: "2026-09-25T10:00:00Z" },
+        { event_type: "action_failed", user_id: "dan", email: null, trip_id: null, payload: {}, created_at: "2026-09-25T10:01:00Z" },
+        { event_type: "sign_in_link_failed", user_id: null, email: "DAN@example.com", trip_id: null, payload: {}, created_at: "2026-09-25T11:00:00Z" },
+      ],
+    );
+    expect(summary).toMatchObject({ signInCount: 2, errorCount: 2, lastActiveAt: "2026-09-25T11:00:00Z" });
   });
 });

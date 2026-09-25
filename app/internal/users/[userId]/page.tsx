@@ -85,7 +85,9 @@ export default async function UserActivityPage({ params }: { params: Promise<{ u
   const hasTrips = tripIds.length > 0;
   const none = <T,>() => Promise.resolve({ data: [] as T[] });
 
-  const [messagesRes, eventsRes, agentErrorsRes, guardrailRes, feedbackRes, requirementsRes, decisionsRes] = await Promise.all([
+  // Link requests happen before sign-in, so they carry only the email.
+  const emailFilter = user.email ? `,email.eq."${user.email.toLowerCase()}"` : "";
+  const [messagesRes, eventsRes, agentErrorsRes, guardrailRes, feedbackRes, requirementsRes, decisionsRes, appEventsRes] = await Promise.all([
     hasTrips
       ? selectAllRows((from, to) =>
           supabase.from("messages").select("session_id, role, content, created_at").in("session_id", sessionIds).order("created_at").order("id").range(from, to),
@@ -109,6 +111,8 @@ export default async function UserActivityPage({ params }: { params: Promise<{ u
     hasTrips
       ? supabase.from("trip_decisions").select("trip_id, field, status, value, created_at").in("trip_id", tripIds).order("created_at")
       : none<{ trip_id: string; field: string; status: string; value: unknown; created_at: string }>(),
+    // Empty (not an error page) if migration 0021 isn't applied yet.
+    supabase.from("app_events").select("event_type, user_id, email, trip_id, payload, created_at").or(`user_id.eq.${userId}${emailFilter}`),
   ]);
 
   const tripEvents = eventsRes.data ?? [];
@@ -122,6 +126,7 @@ export default async function UserActivityPage({ params }: { params: Promise<{ u
     agentErrors: agentErrorsRes.data ?? [],
     guardrailBlocks: guardrailRes.data ?? [],
     feedback: feedbackRes.data ?? [],
+    appEvents: appEventsRes.data ?? [],
     names,
   });
 
@@ -139,9 +144,10 @@ export default async function UserActivityPage({ params }: { params: Promise<{ u
     );
   const accountLevelItems = itemsByTrip.get(null) ?? [];
   const userMessageCount = timeline.filter((i) => i.tone === "user").length;
+  const signInCount = (appEventsRes.data ?? []).filter((e) => e.event_type === "sign_in_succeeded").length;
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-1 flex-col gap-8 px-6 py-8">
+    <div className="mx-auto flex w-full max-w-5xl min-w-0 flex-1 flex-col gap-8 px-6 py-8">
       <div>
         <div className="flex items-center justify-between">
           <Link href="/internal/users" className="text-sm text-teal-700 underline hover:text-teal-800">
@@ -155,13 +161,20 @@ export default async function UserActivityPage({ params }: { params: Promise<{ u
         </p>
       </div>
 
-      <section className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <section className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+        <StatCard label="Sign-ins" value={String(signInCount)} sub="recorded since migration 0021" />
         <StatCard label="Trips" value={String(trips.length)} sub={`${trips.filter((t) => t.status === "finalized").length} finalized`} />
         <StatCard label="Messages sent" value={String(userMessageCount)} sub="user-typed chat messages" />
         <StatCard label="Selections" value={String(timeline.filter((i) => i.tone === "selection").length)} sub="flights, hotels, activities" />
         <StatCard label="Errors" value={String(countErrors(timeline))} sub={`${timeline.filter((i) => i.tone === "warning").length} warnings`} />
       </section>
 
+      {accountLevelItems.length > 0 ? (
+        <section className="rounded-lg border border-sand-200 px-4 py-3">
+          <h2 className="font-semibold text-navy-900">Sign-ins &amp; account activity</h2>
+          <Timeline items={accountLevelItems} />
+        </section>
+      ) : null}
       {trips.length === 0 ? <p className="text-sm text-navy-400">This user signed up but hasn&apos;t started a trip.</p> : null}
 
       {trips.map((trip) => {
@@ -186,12 +199,6 @@ export default async function UserActivityPage({ params }: { params: Promise<{ u
         );
       })}
 
-      {accountLevelItems.length > 0 ? (
-        <section className="rounded-lg border border-sand-200 px-4 py-3">
-          <h2 className="font-semibold text-navy-900">Outside any trip</h2>
-          <Timeline items={accountLevelItems} />
-        </section>
-      ) : null}
     </div>
   );
 }

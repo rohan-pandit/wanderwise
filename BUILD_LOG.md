@@ -2205,3 +2205,44 @@ Checked how widespread this actually was before proposing a fix: **224 of 637 se
 - The detail page fetches each user's data without paging for `agent_runs`/`guardrail_events`/`trip_requirements`/`trip_decisions`. That's fine per user at current volume.
 
 **Next up:** Phase B: an `app_events` table that records sign-in success and failure and wraps the server actions to record their failures (IMPLEMENTATION_PLAN §5).
+
+---
+
+## 2026-09-25 (continued) — Per-user observability, Phase B: sign-ins, failed sign-ins, action failures
+
+**What I built:**
+- **Migration `0021_app_events.sql`:** a service-role-only `app_events` table (`event_type`, `user_id`, `email`, `trip_id`, `payload`). Hand-added to `database.types.ts`.
+- **`src/repositories/app-events.ts`:** `recordAppEvent` never throws. On a foreign-key violation it retries, first without the trip and then without the user, moving the ids into the payload. Also `normalizeEmail` and `truncateMessage`.
+- **`/auth/callback`:** records `sign_in_succeeded`, or `auth_callback_failed` with a reason from `classifyCallbackFailure` (`src/observability/sign-in-telemetry.ts`): link rejected, different browser (no verifier cookie), exchange failed, or no code.
+- **`app/auth/actions.ts` `recordSignInLinkRequest`:** called without awaiting from `app/page.tsx` after `signInWithOtp`. Records `sign_in_link_requested` or `sign_in_link_failed`.
+- **`trackAction`** (`src/observability/action-telemetry.ts`) wraps all 14 user-facing actions in `app/app/actions.ts`. A codemod renamed each body to `*Untracked` and added a thin exported wrapper, so no bodies changed. It records thrown errors and returned `{ error }`s as `action_failed`, and ignores Next's redirect/notFound control flow.
+- **Dashboard:**
+  - Sign-ins column on the list, plus a "Sign-in problems" section: links requested with no sign-in after, failed links by reason, links that couldn't be sent.
+  - User pages get a Sign-ins count and a "Sign-ins & account activity" section.
+  - A returned action failure that duplicates a `chain_*_failed` event (same trip and message, within 10s) is dropped when read, so it's counted once.
+- Tests: `action-telemetry.test.ts`, `sign-in-telemetry.test.ts`, `app-events.test.ts`, plus additions to `user-activity.test.ts`. 19 new tests in total.
+
+**Decisions made:**
+- **Keep `signInWithOtp` in the browser** and report to a public server action, instead of moving the magic-link request to the server. The PKCE verifier must stay in the browser that clicks the link, so this avoids touching the auth flow. The endpoint has to be public because nobody is signed in yet. Input is validated as an email and length-capped. Fake request rows are possible but only affect this internal dashboard; recorded in ADR-007 as accepted for the beta.
+- **Wrapper over re-indenting:** a thin exported wrapper per action keeps the diff small and each body untouched.
+- **Migration applied by the user in the Supabase SQL editor** (no DB password shared), with a `supabase_migrations.schema_migrations` insert so the CLI history stays in sync.
+
+**What didn't work / dead ends:**
+- **Foreign-key bug found during live testing, before any commit:** a failure on a nonexistent trip id would violate `app_events.trip_id`'s foreign key and be silently dropped by the best-effort write. That case (stale tab, bad link) is one of the most useful to see. Fixed with the retry described above and covered by tests.
+- **Horizontal overflow:** the new Sign-ins column made the flex container grow to the table's width instead of letting the table scroll in its box. Fixed with `min-w-0 w-full`.
+- Finding a server-action id by grepping client bundles didn't work in Turbopack dev. Read it from `.next/dev/.../server-reference-manifest.json` instead.
+
+**Verification:**
+- `npm run typecheck`, `npm run lint`, `npm test` (592/592), `npm run build`.
+- Live, against hosted Supabase:
+  - the service role reads `app_events`, and the anon key can't read or write it;
+  - a callback with a bogus code (no cookies) was recorded as "different browser". Supabase's own error was `pkce_code_verifier_not_found`, which confirms the classification;
+  - a callback carrying `error_code=otp_expired` was recorded as "link rejected";
+  - `proposeFlightCandidates` on a nonexistent trip still throws "Trip … not found." unchanged, and was recorded against the user via the foreign-key fallback;
+  - both pages load without the table (with a note), and with no horizontal overflow at 860px and 375px.
+
+**Test rows left in `app_events`:** those three events (2 `auth_callback_failed`, 1 `action_failed` on trip `00000000-…`).
+
+**Not verified live:** `sign_in_succeeded` and link requests. Both need a real magic-link email round trip; they're covered by unit tests and are simple.
+
+**Next up:** push to deploy, then confirm the next real sign-in shows up on `/internal/users`. After that, beta plan item 3.

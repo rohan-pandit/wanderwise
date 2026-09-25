@@ -27,7 +27,13 @@ The event taxonomy, trace/correlation IDs, and build-log conventions (`PROJECT_B
 
 Showing emails and raw chat per person moves this from aggregate metrics to looking at individuals. The operator accepted that explicitly for the closed beta, with no separate notice to users (2026-09-25). That needs revisiting before any public launch.
 
-Phase B, not built yet, covers what can't be seen from existing data: sign-in history, failed sign-ins, and server-action failures that are returned to the UI but never stored. See `docs/IMPLEMENTATION_PLAN.md` §5.
+**Phase B (2026-09-25)** records what existing tables couldn't show, in a service-role-only `app_events` table (migration 0021):
+- **Sign-ins:** every successful sign-in, from `/auth/callback`.
+- **Failed sign-ins,** each with a classified reason: link rejected (expired or already used), opened in a different browser (no sign-in verifier cookie), exchange failed, or no code. A failed callback usually can't identify who it was, so the dashboard lists these by time next to "link requested, no sign-in after it".
+- **Magic-link requests and failed requests,** reported by the sign-in page through a public server action. It's public because the person isn't signed in yet. The input is validated as an email and length-capped, but anyone could still write made-up request rows. That only affects this internal dashboard and is accepted for the beta.
+- **Server-action failures:** each of the 14 user-facing actions in `app/app/actions.ts` is wrapped by `trackAction`. Thrown errors and returned `{ error }` messages are both recorded, and callers get the same result. A returned failure that duplicates an existing `chain_*_failed` event is dropped when read, so it isn't counted twice.
+
+Every write is best-effort. `recordAppEvent` never throws. On a foreign-key violation, such as a failure on a trip id that doesn't exist, it moves the id into the payload rather than losing the event.
 
 ### Telemetry retention and redaction
 

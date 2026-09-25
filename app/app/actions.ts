@@ -50,6 +50,8 @@ import { createSession } from "@/src/repositories/sessions";
 import { recordGuardrailEvent } from "@/src/repositories/guardrail-events";
 import { listActiveTripDecisions } from "@/src/repositories/trip-decisions";
 import { appendTripEvent } from "@/src/repositories/trip-events";
+import { recordAppEvent } from "@/src/repositories/app-events";
+import { trackAction } from "@/src/observability/action-telemetry";
 import { recordFeedback } from "@/src/repositories/feedback";
 import { getLatestTripState } from "@/src/repositories/trip-state";
 import { generateUniqueTripSlug, getTrip, type Trip } from "@/src/repositories/trips";
@@ -251,6 +253,27 @@ export interface StepActionError {
   error: string;
 }
 
+/**
+ * Every user-facing action below is exported as a thin wrapper over its
+ * `*Untracked` implementation that goes through here, so a thrown error or
+ * a returned `{ error }` lands in `app_events` for `/internal/users`
+ * (ADR-007, Phase B). Behavior is unchanged: the same result is returned
+ * and the same error rethrown. The signed-in user is only looked up when
+ * something failed.
+ */
+function track<T>(action: string, tripId: string | null, run: () => Promise<T>): Promise<T> {
+  return trackAction(action, tripId, run, {
+    record: (event) => recordAppEvent(createServiceClient(), event),
+    currentUser: async () => {
+      const authClient = await createClient();
+      const {
+        data: { user },
+      } = await authClient.auth.getUser();
+      return user ? { id: user.id, email: user.email ?? null } : null;
+    },
+  });
+}
+
 const MAX_TRIP_NAME_LENGTH = 200;
 
 export interface CreateTripInput {
@@ -279,7 +302,7 @@ export interface CreateTripResult {
  * optional at the repository layer (`src/repositories/trips.ts`) since
  * internal/eval callers of `startTrip` don't go through this screen.
  */
-export async function createTripAction(input: CreateTripInput): Promise<CreateTripResult> {
+async function createTripActionUntracked(input: CreateTripInput): Promise<CreateTripResult> {
   const authClient = await createClient();
   const {
     data: { user },
@@ -305,6 +328,11 @@ export async function createTripAction(input: CreateTripInput): Promise<CreateTr
     slug,
   });
   return { tripId: trip.id, slug: trip.slug ?? slug };
+}
+
+/** `createTripActionUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function createTripAction(input: Parameters<typeof createTripActionUntracked>[0]): ReturnType<typeof createTripActionUntracked> {
+  return track("createTripAction", null, () => createTripActionUntracked(input));
 }
 
 export interface SendMessageInput {
@@ -336,7 +364,7 @@ export interface SendMessageResult extends ProcessIntakeTurnResult {
  * actions) — "Trip not found"/auth failures stay thrown, unchanged, since
  * those aren't reachable through normal use the way a cancelled trip is.
  */
-export async function sendMessage(input: SendMessageInput): Promise<SendMessageResult | StepActionError> {
+async function sendMessageUntracked(input: SendMessageInput): Promise<SendMessageResult | StepActionError> {
   const authClient = await createClient();
   const {
     data: { user },
@@ -448,6 +476,11 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
   return { ...result, tripId, sessionId };
 }
 
+/** `sendMessageUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function sendMessage(input: Parameters<typeof sendMessageUntracked>[0]): ReturnType<typeof sendMessageUntracked> {
+  return track("sendMessage", input.tripId, () => sendMessageUntracked(input));
+}
+
 export interface ProposeFlightCandidatesInput {
   tripId: string;
 }
@@ -471,7 +504,7 @@ export interface ProposeFlightCandidatesInput {
  * `serpapi-flight-provider.ts` never fired (SerpAPI was never even being
  * called), which pointed here.
  */
-export async function proposeFlightCandidates(input: ProposeFlightCandidatesInput): Promise<ProposeFlightStepResult | StepActionError> {
+async function proposeFlightCandidatesUntracked(input: ProposeFlightCandidatesInput): Promise<ProposeFlightStepResult | StepActionError> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId);
   try {
@@ -484,6 +517,11 @@ export async function proposeFlightCandidates(input: ProposeFlightCandidatesInpu
     }
     throw err;
   }
+}
+
+/** `proposeFlightCandidatesUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function proposeFlightCandidates(input: Parameters<typeof proposeFlightCandidatesUntracked>[0]): ReturnType<typeof proposeFlightCandidatesUntracked> {
+  return track("proposeFlightCandidates", input.tripId, () => proposeFlightCandidatesUntracked(input));
 }
 
 export interface ConfirmFlightCandidateInput {
@@ -499,7 +537,7 @@ export interface ConfirmFlightCandidateResult {
 }
 
 /** Confirms the user's picked flight pair, then either proposes the next step (first-time) or refreshes budget/itineraryText (a revision that left the rest of the chain confirmed) — see `step-router.ts`'s `advanceOrRefreshChain`. */
-export async function confirmFlightCandidate(input: ConfirmFlightCandidateInput): Promise<ConfirmFlightCandidateResult | StepActionError> {
+async function confirmFlightCandidateUntracked(input: ConfirmFlightCandidateInput): Promise<ConfirmFlightCandidateResult | StepActionError> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId);
   const confirmed = await confirmFlightStep(supabase, {
@@ -517,11 +555,16 @@ export async function confirmFlightCandidate(input: ConfirmFlightCandidateInput)
   }
 }
 
+/** `confirmFlightCandidateUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function confirmFlightCandidate(input: Parameters<typeof confirmFlightCandidateUntracked>[0]): ReturnType<typeof confirmFlightCandidateUntracked> {
+  return track("confirmFlightCandidate", input.tripId, () => confirmFlightCandidateUntracked(input));
+}
+
 export interface ProposeHotelCandidatesInput {
   tripId: string;
 }
 
-export async function proposeHotelCandidates(input: ProposeHotelCandidatesInput): Promise<ProposeHotelStepResult | StepActionError> {
+async function proposeHotelCandidatesUntracked(input: ProposeHotelCandidatesInput): Promise<ProposeHotelStepResult | StepActionError> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId);
   try {
@@ -536,6 +579,11 @@ export async function proposeHotelCandidates(input: ProposeHotelCandidatesInput)
   }
 }
 
+/** `proposeHotelCandidatesUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function proposeHotelCandidates(input: Parameters<typeof proposeHotelCandidatesUntracked>[0]): ReturnType<typeof proposeHotelCandidatesUntracked> {
+  return track("proposeHotelCandidates", input.tripId, () => proposeHotelCandidatesUntracked(input));
+}
+
 export interface ConfirmHotelCandidateInput {
   tripId: string;
   hotelId: string;
@@ -547,7 +595,7 @@ export interface ConfirmHotelCandidateResult {
   next: AdvanceOrRefreshResult;
 }
 
-export async function confirmHotelCandidate(input: ConfirmHotelCandidateInput): Promise<ConfirmHotelCandidateResult | StepActionError> {
+async function confirmHotelCandidateUntracked(input: ConfirmHotelCandidateInput): Promise<ConfirmHotelCandidateResult | StepActionError> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId);
   const confirmed = await confirmHotelStep(supabase, { tripId: input.tripId, hotelId: input.hotelId });
@@ -561,6 +609,11 @@ export async function confirmHotelCandidate(input: ConfirmHotelCandidateInput): 
   }
 }
 
+/** `confirmHotelCandidateUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function confirmHotelCandidate(input: Parameters<typeof confirmHotelCandidateUntracked>[0]): ReturnType<typeof confirmHotelCandidateUntracked> {
+  return track("confirmHotelCandidate", input.tripId, () => confirmHotelCandidateUntracked(input));
+}
+
 export interface ProposeActivityCandidatesInput {
   tripId: string;
   /** Category chips selected in the UI preference form (`activities.category` values) — see `proposeActivitiesStep`'s own docstring. */
@@ -570,7 +623,7 @@ export interface ProposeActivityCandidatesInput {
 }
 
 /** The UI-driven activity-preference form's submit action (`docs/IMPLEMENTATION_PLAN.md`'s "ACTIVITIES: PREFERENCE-DRIVEN MULTI-SELECT" redesign) — retrieves+curates candidates for the given preference, ranked, with real names/categories/prices. Not scheduled yet; the user picks via `confirmActivitySelection` below. */
-export async function proposeActivityCandidates(
+async function proposeActivityCandidatesUntracked(
   input: ProposeActivityCandidatesInput,
 ): Promise<ProposeActivitiesStepResult | StepActionError> {
   const supabase = createServiceClient();
@@ -592,13 +645,18 @@ export async function proposeActivityCandidates(
   }
 }
 
+/** `proposeActivityCandidatesUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function proposeActivityCandidates(input: Parameters<typeof proposeActivityCandidatesUntracked>[0]): ReturnType<typeof proposeActivityCandidatesUntracked> {
+  return track("proposeActivityCandidates", input.tripId, () => proposeActivityCandidatesUntracked(input));
+}
+
 export interface ConfirmActivitySelectionInput {
   tripId: string;
   activityId: string;
 }
 
 /** Adds one activity to the trip (see `confirmActivitySelection`'s own docstring, `activities-step.ts`) — the multi-select equivalent of `confirmFlightCandidate`/`confirmHotelCandidate`, callable as many times as the user wants to add activities. */
-export async function confirmActivitySelection(
+async function confirmActivitySelectionUntracked(
   input: ConfirmActivitySelectionInput,
 ): Promise<ConfirmActivitySelectionResult | StepActionError> {
   const supabase = createServiceClient();
@@ -612,13 +670,18 @@ export async function confirmActivitySelection(
   }
 }
 
+/** `confirmActivitySelectionUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function confirmActivitySelection(input: Parameters<typeof confirmActivitySelectionUntracked>[0]): ReturnType<typeof confirmActivitySelectionUntracked> {
+  return track("confirmActivitySelection", input.tripId, () => confirmActivitySelectionUntracked(input));
+}
+
 export interface RemoveActivitySelectionInput {
   tripId: string;
   activityId: string;
 }
 
 /** The inverse of `confirmActivitySelection` — removes one previously-added activity. */
-export async function removeActivitySelection(input: RemoveActivitySelectionInput): Promise<{ ok: true } | StepActionError> {
+async function removeActivitySelectionUntracked(input: RemoveActivitySelectionInput): Promise<{ ok: true } | StepActionError> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId);
   try {
@@ -631,12 +694,17 @@ export async function removeActivitySelection(input: RemoveActivitySelectionInpu
   }
 }
 
+/** `removeActivitySelectionUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function removeActivitySelection(input: Parameters<typeof removeActivitySelectionUntracked>[0]): ReturnType<typeof removeActivitySelectionUntracked> {
+  return track("removeActivitySelection", input.tripId, () => removeActivitySelectionUntracked(input));
+}
+
 export interface FinalizeActivitiesInput {
   tripId: string;
 }
 
 /** Schedules every currently-selected activity, computes budget/itineraryText (activities is the chain's last step), then fires the one-time `chain_completed` transition if the whole chain is now confirmed — idempotent, and skipped if the trip has already moved past `requirements_ready` (e.g. a later re-finalize after finalization). */
-export async function finalizeActivities(input: FinalizeActivitiesInput): Promise<FinalizeActivitiesStepResult | StepActionError> {
+async function finalizeActivitiesUntracked(input: FinalizeActivitiesInput): Promise<FinalizeActivitiesStepResult | StepActionError> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId);
   const clients = stepwiseChainClients();
@@ -665,6 +733,11 @@ export async function finalizeActivities(input: FinalizeActivitiesInput): Promis
   }
 }
 
+/** `finalizeActivitiesUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function finalizeActivities(input: Parameters<typeof finalizeActivitiesUntracked>[0]): ReturnType<typeof finalizeActivitiesUntracked> {
+  return track("finalizeActivities", input.tripId, () => finalizeActivitiesUntracked(input));
+}
+
 export interface ConfirmCascadeAndReviseInput {
   tripId: string;
   step: ChainStep;
@@ -681,7 +754,7 @@ export interface ConfirmCascadeAndReviseInput {
  * requested (see `sendMessage`'s docstring). Returns the fresh candidates
  * directly so the client can render them without a further round trip.
  */
-export async function confirmCascadeAndRevise(input: ConfirmCascadeAndReviseInput): Promise<ReviseChainStepResult | StepActionError> {
+async function confirmCascadeAndReviseUntracked(input: ConfirmCascadeAndReviseInput): Promise<ReviseChainStepResult | StepActionError> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId);
   try {
@@ -691,6 +764,11 @@ export async function confirmCascadeAndRevise(input: ConfirmCascadeAndReviseInpu
     if (friendly) return { error: friendly };
     throw err;
   }
+}
+
+/** `confirmCascadeAndReviseUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function confirmCascadeAndRevise(input: Parameters<typeof confirmCascadeAndReviseUntracked>[0]): ReturnType<typeof confirmCascadeAndReviseUntracked> {
+  return track("confirmCascadeAndRevise", input.tripId, () => confirmCascadeAndReviseUntracked(input));
 }
 
 export interface FinalizeTripInput {
@@ -731,7 +809,7 @@ export interface FinalizeTripBudgetOverrideRequired {
  * guardrails are added later, this is the natural place to aggregate them
  * rather than tying `guardrailsPassed` to just this one check.
  */
-export async function finalizeTrip(
+async function finalizeTripUntracked(
   input: FinalizeTripInput,
 ): Promise<FinalizeTripResult | FinalizeTripBudgetOverrideRequired> {
   const supabase = createServiceClient();
@@ -784,6 +862,11 @@ export async function finalizeTrip(
   return { tripId: input.tripId, workflowState };
 }
 
+/** `finalizeTripUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function finalizeTrip(input: Parameters<typeof finalizeTripUntracked>[0]): ReturnType<typeof finalizeTripUntracked> {
+  return track("finalizeTrip", input.tripId, () => finalizeTripUntracked(input));
+}
+
 export interface CancelTripInput {
   tripId: string;
 }
@@ -804,7 +887,7 @@ export interface CancelTripResult {
  * workflow-state plumbing needed, just a real caller for a transition that
  * was previously only reachable from unit tests.
  */
-export async function cancelTrip(input: CancelTripInput): Promise<CancelTripResult> {
+async function cancelTripUntracked(input: CancelTripInput): Promise<CancelTripResult> {
   const supabase = createServiceClient();
   await requireOwnedTrip(supabase, input.tripId, { allowCancelled: true });
 
@@ -817,6 +900,11 @@ export async function cancelTrip(input: CancelTripInput): Promise<CancelTripResu
   });
 
   return { tripId: input.tripId, workflowState };
+}
+
+/** `cancelTripUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function cancelTrip(input: Parameters<typeof cancelTripUntracked>[0]): ReturnType<typeof cancelTripUntracked> {
+  return track("cancelTrip", input.tripId, () => cancelTripUntracked(input));
 }
 
 export interface SubmitFeedbackInput {
@@ -847,7 +935,7 @@ const FEEDBACK_CATEGORY_LIMIT = 10;
  * reporting a problem is exactly the kind of thing a user might still want
  * to do after giving up on a trip.
  */
-export async function submitFeedback(input: SubmitFeedbackInput): Promise<{ ok: true }> {
+async function submitFeedbackUntracked(input: SubmitFeedbackInput): Promise<{ ok: true }> {
   if (!isFeedbackKind(input.kind)) {
     throw new Error("Pick what kind of feedback this is.");
   }
@@ -895,6 +983,11 @@ export async function submitFeedback(input: SubmitFeedbackInput): Promise<{ ok: 
     route: sanitizeFeedbackRoute(input.route),
   });
   return { ok: true };
+}
+
+/** `submitFeedbackUntracked`, with failures recorded to `app_events` — see `track`. */
+export async function submitFeedback(input: Parameters<typeof submitFeedbackUntracked>[0]): ReturnType<typeof submitFeedbackUntracked> {
+  return track("submitFeedback", input.tripId ?? null, () => submitFeedbackUntracked(input));
 }
 
 export type { PendingCascadeConfirmation };
