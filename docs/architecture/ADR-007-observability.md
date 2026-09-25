@@ -21,6 +21,14 @@ The event taxonomy, trace/correlation IDs, and build-log conventions (`PROJECT_B
 
 **Two separate pages, not one.** `/internal/analytics` answers "is the system working and what does it cost" (finalization rate, cost/latency/cache-read by agent, guardrail trigger frequency, workflow failure-state breakdown, eval pass-rate trend). `/internal/product-metrics` answers "are users completing the funnel" (trip-start rate, requirement-completion rate, draft-generation rate, confirmation/revision rate, time-to-first-draft/finalized, abandonment stage), and shows qualitative feedback honestly as "not yet collected" rather than omitting or faking it. Per §13.4's own explicit rule, a high agent-call count must not read as product success — conflating the two into one page would blur exactly that distinction.
 
+### Per-user activity view (added 2026-09-25)
+
+**A third page, `/internal/users`, for looking at individual users, next to the two aggregate dashboards.** It lists every account (email, last active, trips, messages, errors). Each account opens a per-trip timeline showing both sides of the chat, every option shown and selected, workflow transitions, agent errors, guardrail triggers and feedback, plus a snapshot of where the trip stands now. Phase A reads only tables the app already writes. `src/observability/user-activity.ts` holds the merging and labelling as pure, tested functions. Access is the same `INTERNAL_ACCESS_EMAIL` gate as the other `/internal` pages.
+
+Showing emails and raw chat per person moves this from aggregate metrics to looking at individuals. The operator accepted that explicitly for the closed beta, with no separate notice to users (2026-09-25). That needs revisiting before any public launch.
+
+Phase B, not built yet, covers what can't be seen from existing data: sign-in history, failed sign-ins, and server-action failures that are returned to the UI but never stored. See `docs/IMPLEMENTATION_PLAN.md` §5.
+
 ### Telemetry retention and redaction
 
 **Redact the one genuinely sensitive field at write time; document retention rather than automate it yet.**
@@ -41,4 +49,5 @@ The event taxonomy, trace/correlation IDs, and build-log conventions (`PROJECT_B
 - Every `tool_calls` row written from this point forward has any `requiredAccessibility` value masked as `"[redacted]"` in both `arguments` and `result`; rows written before this change (a small number of throwaway Phase 6–8 eval/dev-signin rows, already noted in `BUILD_LOG.md` as synthetic) are not retroactively redacted, since nothing currently reads or displays that historical data.
 - If a future extracted field turns out to carry comparably sensitive content (none currently does), it needs to be added to `redaction.ts`'s `SENSITIVE_FIELD_NAMES` set deliberately — this isn't a general PII scrubber, it's a narrow, named allowlist-of-what-to-mask.
 - Before this system holds real user data (i.e., before any claim of being production-ready), the documented retention policy above needs to become real code — a scheduled cleanup job, not just a paragraph in this ADR. Tracked in `docs/IMPLEMENTATION_PLAN.md` §5 until that happens.
+- Since the beta opened, the hosted database holds real people's chat alongside synthetic data. The per-user view shows that chat as written. Only `tool_calls` goes through `redactSensitiveTelemetry`; `messages` is not redacted, so an accessibility need a user types appears in the transcript. That makes the retention job above more pressing, not less.
 - The eval-grading decision (ADR-006) and this ADR are linked: every eval run's `eval_runs`/`eval_results` rows flow into `/internal/analytics`'s pass-rate trend, so a change to what the eval suite persists affects this dashboard directly.

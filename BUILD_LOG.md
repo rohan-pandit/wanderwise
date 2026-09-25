@@ -2167,3 +2167,41 @@ Checked how widespread this actually was before proposing a fix: **224 of 637 se
 **Verification:** typecheck, lint, 560/560 tests; `next build` now lists both `/internal` routes as `ƒ`; dashboards checked in the browser with corrected numbers; live SerpAPI calls PHL⇄LIS succeed (4 searches used in total); the real Portugal trip's panel lists flight candidates.
 
 **Next up:** beta plan item 3 (per-reply thumbs up/down, post-finalize micro-survey, "report this" on error screens, feedback triage status).
+
+---
+
+## 2026-09-25 — Per-user activity view (`/internal/users`), Phase A
+
+**What I built:**
+- `/internal/users` lists every account: email, last active, last sign-in, trips (and how many were finalized), messages sent, errors, and signup date. An account that asked for a magic link but never signed in shows "never — link unused".
+- `/internal/users/[userId]` has account facts and stat cards, then each trip (newest first) with:
+  - a **snapshot**: requirements, chain step, the chosen flights, hotel and activities, all by name;
+  - a **timeline** in time order: both sides of the chat, options shown, selections, workflow transitions, agent errors, guardrail triggers and feedback.
+- `src/observability/user-activity.ts` (+ `user-activity.test.ts`, 13 tests) holds pure functions that merge and label the timeline, build the trip snapshot, and summarize each user. The pages only fetch data.
+- `app/internal/_components/internal-nav.tsx` links all three internal pages. `summarizeRequirements` moved out of `/internal/product-metrics` into the new module, so both pages share one copy.
+- ADR-007 has a new "Per-user activity view" decision plus a consequence about real beta chat and redaction. IMPLEMENTATION_PLAN §5 tracks Phase B.
+
+**Why:** the user wanted to see how individual people actually use the app: who signed in, what they said, what the agent answered, what they picked, and where it failed. Phase A answers that from existing data only, with no migration.
+
+**Decisions made:**
+- **Privacy (ADR-007 area):** the view shows emails and raw chat per person. The user explicitly chose no separate notice for the closed beta. Recorded in ADR-007 to revisit before any public launch.
+- **Grouped by trip, not one flat stream:** each trip is its own story, and one trip per session holds in the hosted data (44 trips, max 1 per session).
+- **Back-to-back identical events are folded** into one "(×N)" row. Chat is never folded. The hosted data has 821 `flight_step_proposed` rows across 44 trips, mostly from the 2026-09-18 re-propose loop (already fixed), which buried the actual choices.
+- Timestamps are shown in UTC, so a server-rendered page reads the same wherever it renders.
+
+**What didn't work / dead ends:** a hydration warning (`<details open>`) showed up during verification. It came from my own script opening a `<details>` before a reload; a fresh tab loads clean.
+
+**Verification:** `npm run typecheck`, `npm run lint`, `npm test` (573/573, 13 new), `npm run build` (all four `/internal` routes `ƒ`). Checked in the browser against hosted data, signed in via a magic link the user pasted into the pane:
+- the list shows 9 accounts, 5 of them "link unused";
+- a real user's trip reads as a full story, ending in "Couldn't revise flight options" followed by the user's "I don't see any flight options";
+- the heaviest account (38 trips) renders in ~2s in dev, with selections named ("Air Canada AC 8517 · PHL→MEX…");
+- no horizontal overflow at 375px;
+- both existing dashboards still render with the new nav.
+
+**Assumptions / limitations:**
+- Sign-in history is only Supabase's `last_sign_in_at`.
+- Failed sign-ins and server-action failures are invisible until Phase B.
+- Agent errors and guardrail triggers are matched to a user by `trip_id` only.
+- The detail page fetches each user's data without paging for `agent_runs`/`guardrail_events`/`trip_requirements`/`trip_decisions`. That's fine per user at current volume.
+
+**Next up:** Phase B: an `app_events` table that records sign-in success and failure and wraps the server actions to record their failures (IMPLEMENTATION_PLAN §5).

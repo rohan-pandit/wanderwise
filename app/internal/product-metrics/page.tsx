@@ -30,6 +30,8 @@ import { checkRequirementsComplete } from "@/src/domain/extraction";
 import type { RequirementRecord, RequirementFieldName } from "@/src/domain/extraction";
 import { getCurrentChainStep, type ChainDecision } from "@/src/domain/chain";
 import type { WorkflowState } from "@/src/workflow/state-machine";
+import { summarizeRequirements } from "@/src/observability/user-activity";
+import { InternalNav } from "../_components/internal-nav";
 import { FeedbackList, type FeedbackEntryView } from "./feedback-list";
 
 function pct(numerator: number, denominator: number): string {
@@ -40,27 +42,6 @@ function pct(numerator: number, denominator: number): string {
 function duration(ms: number): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
   return `${(ms / 60_000).toFixed(1)}min`;
-}
-
-/** A one-line "what the user entered" summary for a feedback report's trip context — reads whatever's present rather than requiring completeness, since a report can happen mid-intake before every field is filled in. */
-function summarizeRequirements(rows: { field: string; value: unknown }[]): string | null {
-  const byField = new Map(rows.map((r) => [r.field, r.value]));
-  const destination = byField.get("destination");
-  const origin = byField.get("origin");
-  const departureDate = byField.get("departureDate");
-  const returnDate = byField.get("returnDate");
-  const partySize = byField.get("partySize");
-  const budget = byField.get("budgetTotalUsd");
-
-  const parts = [
-    destination ? String(destination) : null,
-    origin ? `from ${origin}` : null,
-    departureDate && returnDate ? `${departureDate} → ${returnDate}` : null,
-    typeof partySize === "number" ? `${partySize} traveler${partySize === 1 ? "" : "s"}` : null,
-    typeof budget === "number" ? `$${budget.toLocaleString()} budget` : null,
-  ].filter(Boolean);
-
-  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 const STAGE_LABELS: Record<WorkflowState, string> = {
@@ -248,9 +229,7 @@ export default async function ProductMetricsPage() {
       <div>
         <div className="flex items-center justify-between">
           <h1 className="font-serif text-2xl font-semibold text-navy-900">Product metrics</h1>
-          <a href="/internal/analytics" className="text-sm text-teal-700 underline hover:text-teal-800">
-            ← Engineering dashboard
-          </a>
+          <InternalNav current="/internal/product-metrics" />
         </div>
         <p className="mt-1 text-sm text-navy-400">
           PROJECT_BRIEF.md §13.4 — product outcomes, kept separate from the engineering dashboard so a high agent-call count is never mistaken for product success.

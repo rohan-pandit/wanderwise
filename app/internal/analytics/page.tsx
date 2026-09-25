@@ -33,6 +33,7 @@ import { connection } from "next/server";
 import { createServiceClient } from "@/src/config/supabase/service";
 import { selectAllRows } from "@/src/repositories/shared";
 import { formatMoney, money } from "@/src/domain/money";
+import { InternalNav } from "../_components/internal-nav";
 
 const FAILURE_STATES = new Set(["failed_recoverable", "failed_terminal", "cancelled"]);
 
@@ -157,9 +158,7 @@ export default async function AnalyticsPage() {
       <div>
         <div className="flex items-center justify-between">
           <h1 className="font-serif text-2xl font-semibold text-navy-900">Engineering dashboard</h1>
-          <a href="/internal/product-metrics" className="text-sm text-teal-700 underline hover:text-teal-800">
-            Product metrics →
-          </a>
+          <InternalNav current="/internal/analytics" />
         </div>
         <p className="mt-1 text-sm text-navy-400">
           PROJECT_BRIEF.md §13.3 — workflow health, cost, latency, cache, and guardrail activity across every trip.
